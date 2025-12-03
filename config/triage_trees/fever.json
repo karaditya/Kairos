@@ -1,0 +1,212 @@
+{
+  "id": "fever",
+  "name": "Fever / Infection",
+  "description": "Assessment for fever, chills, and possible infection",
+  "version": "1.0",
+  "questions": [
+    {
+      "id": "fever_measured",
+      "type": "yesno",
+      "text": "Have you measured your temperature?",
+      "next_if_yes": "temperature_value",
+      "next_if_no": "fever_feeling"
+    },
+    {
+      "id": "temperature_value",
+      "type": "numeric",
+      "text": "What was your temperature? (in °C)",
+      "min": 35,
+      "max": 43,
+      "unit": "°C",
+      "thresholds": [
+        {"op": ">=", "value": 40, "next": "fever_duration"},
+        {"op": ">=", "value": 38, "next": "fever_duration"},
+        {"op": "<", "value": 38, "next": "other_symptoms"}
+      ],
+      "next": "fever_duration"
+    },
+    {
+      "id": "fever_feeling",
+      "type": "choice",
+      "text": "How would you describe your fever?",
+      "options": [
+        {"value": "hot", "label": "I feel very hot"},
+        {"value": "warm", "label": "I feel warm"},
+        {"value": "chills", "label": "I have chills/shivering"},
+        {"value": "none", "label": "I don't feel feverish"}
+      ],
+      "next_conditions": {
+        "hot": "fever_duration",
+        "warm": "fever_duration",
+        "chills": "fever_duration",
+        "none": "other_symptoms"
+      }
+    },
+    {
+      "id": "fever_duration",
+      "type": "choice",
+      "text": "How long have you had the fever?",
+      "options": [
+        {"value": "hours", "label": "Less than 24 hours"},
+        {"value": "1-3days", "label": "1-3 days"},
+        {"value": "4-7days", "label": "4-7 days"},
+        {"value": "week_plus", "label": "More than a week"}
+      ],
+      "next": "headache"
+    },
+    {
+      "id": "headache",
+      "type": "yesno",
+      "text": "Do you have a headache?",
+      "next_if_yes": "headache_severity",
+      "next_if_no": "neck_stiffness"
+    },
+    {
+      "id": "headache_severity",
+      "type": "choice",
+      "text": "How severe is your headache?",
+      "options": [
+        {"value": "mild", "label": "Mild"},
+        {"value": "moderate", "label": "Moderate"},
+        {"value": "severe", "label": "Severe"},
+        {"value": "worst_ever", "label": "Worst headache of my life"}
+      ],
+      "next": "neck_stiffness"
+    },
+    {
+      "id": "neck_stiffness",
+      "type": "yesno",
+      "text": "Do you have neck stiffness or pain when moving your neck?",
+      "next_if_yes": "rash",
+      "next_if_no": "rash"
+    },
+    {
+      "id": "rash",
+      "type": "yesno",
+      "text": "Do you have a rash?",
+      "next_if_yes": "rash_description",
+      "next_if_no": "breathing_difficulty"
+    },
+    {
+      "id": "rash_description",
+      "type": "choice",
+      "text": "What does the rash look like?",
+      "options": [
+        {"value": "flat_red", "label": "Flat red spots"},
+        {"value": "raised", "label": "Raised bumps"},
+        {"value": "blisters", "label": "Blisters or fluid-filled"},
+        {"value": "purple", "label": "Purple or doesn't fade when pressed"},
+        {"value": "other", "label": "Other"}
+      ],
+      "next": "breathing_difficulty"
+    },
+    {
+      "id": "breathing_difficulty",
+      "type": "yesno",
+      "text": "Are you having difficulty breathing?",
+      "next_if_yes": "breathing_severity",
+      "next_if_no": "cough"
+    },
+    {
+      "id": "breathing_severity",
+      "type": "choice",
+      "text": "How would you describe your breathing difficulty?",
+      "options": [
+        {"value": "mild", "label": "Slightly short of breath with activity"},
+        {"value": "moderate", "label": "Short of breath at rest"},
+        {"value": "severe", "label": "Very difficult to breathe"},
+        {"value": "cant_speak", "label": "Can't speak full sentences"}
+      ],
+      "next": "cough"
+    },
+    {
+      "id": "cough",
+      "type": "yesno",
+      "text": "Do you have a cough?",
+      "next_if_yes": "cough_type",
+      "next_if_no": "other_symptoms"
+    },
+    {
+      "id": "cough_type",
+      "type": "choice",
+      "text": "What type of cough do you have?",
+      "options": [
+        {"value": "dry", "label": "Dry cough"},
+        {"value": "productive_clear", "label": "Cough with clear/white mucus"},
+        {"value": "productive_colored", "label": "Cough with yellow/green mucus"},
+        {"value": "bloody", "label": "Coughing up blood"}
+      ],
+      "next": "other_symptoms"
+    },
+    {
+      "id": "other_symptoms",
+      "type": "choice",
+      "text": "Do you have any of these symptoms? (Select all that apply)",
+      "multiple": true,
+      "options": [
+        {"value": "body_aches", "label": "Body aches"},
+        {"value": "fatigue", "label": "Extreme fatigue"},
+        {"value": "loss_appetite", "label": "Loss of appetite"},
+        {"value": "nausea", "label": "Nausea or vomiting"},
+        {"value": "diarrhea", "label": "Diarrhea"},
+        {"value": "confusion", "label": "Confusion or difficulty thinking"},
+        {"value": "none", "label": "None of these"}
+      ],
+      "next": "recent_travel"
+    },
+    {
+      "id": "recent_travel",
+      "type": "yesno",
+      "text": "Have you traveled outside the country in the past 3 weeks?",
+      "next_if_yes": "travel_location",
+      "next_if_no": "sick_contacts"
+    },
+    {
+      "id": "travel_location",
+      "type": "text",
+      "text": "Where did you travel to?",
+      "next": "sick_contacts"
+    },
+    {
+      "id": "sick_contacts",
+      "type": "yesno",
+      "text": "Have you been in contact with anyone who is sick?",
+      "next_if_yes": "contact_symptoms",
+      "next_if_no": "medications"
+    },
+    {
+      "id": "contact_symptoms",
+      "type": "text",
+      "text": "What symptoms did they have?",
+      "next": "medications"
+    },
+    {
+      "id": "medications",
+      "type": "yesno",
+      "text": "Are you currently taking any medications?",
+      "next_if_yes": "medication_list",
+      "next_if_no": "chronic_conditions"
+    },
+    {
+      "id": "medication_list",
+      "type": "text",
+      "text": "Please list your current medications:",
+      "next": "chronic_conditions"
+    },
+    {
+      "id": "chronic_conditions",
+      "type": "choice",
+      "text": "Do you have any of these conditions?",
+      "multiple": true,
+      "options": [
+        {"value": "diabetes", "label": "Diabetes"},
+        {"value": "heart_disease", "label": "Heart disease"},
+        {"value": "lung_disease", "label": "Lung disease (asthma, COPD)"},
+        {"value": "immunocompromised", "label": "Weakened immune system"},
+        {"value": "cancer", "label": "Cancer"},
+        {"value": "none", "label": "None of these"}
+      ],
+      "next": "end"
+    }
+  ]
+}

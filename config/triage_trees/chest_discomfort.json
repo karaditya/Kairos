@@ -1,0 +1,249 @@
+{
+  "id": "chest_discomfort",
+  "name": "Chest Discomfort",
+  "description": "Assessment for chest pain, pressure, or discomfort",
+  "version": "1.0",
+  "questions": [
+    {
+      "id": "pain_type",
+      "type": "choice",
+      "text": "How would you describe your chest discomfort?",
+      "options": [
+        {"value": "sharp", "label": "Sharp or stabbing pain"},
+        {"value": "pressure", "label": "Pressure or squeezing"},
+        {"value": "burning", "label": "Burning sensation"},
+        {"value": "aching", "label": "Dull ache"},
+        {"value": "tightness", "label": "Tightness"},
+        {"value": "other", "label": "Other"}
+      ],
+      "next": "pain_location"
+    },
+    {
+      "id": "pain_location",
+      "type": "choice",
+      "text": "Where exactly is the discomfort located?",
+      "options": [
+        {"value": "center", "label": "Center of chest"},
+        {"value": "left", "label": "Left side of chest"},
+        {"value": "right", "label": "Right side of chest"},
+        {"value": "widespread", "label": "Across whole chest"},
+        {"value": "moving", "label": "Moves around"}
+      ],
+      "next": "pain_radiation"
+    },
+    {
+      "id": "pain_radiation",
+      "type": "choice",
+      "text": "Does the pain spread to other areas?",
+      "multiple": true,
+      "options": [
+        {"value": "left_arm", "label": "Left arm"},
+        {"value": "right_arm", "label": "Right arm"},
+        {"value": "jaw", "label": "Jaw or neck"},
+        {"value": "back", "label": "Back"},
+        {"value": "shoulder", "label": "Shoulder(s)"},
+        {"value": "none", "label": "No, it stays in one place"}
+      ],
+      "next": "pain_severity"
+    },
+    {
+      "id": "pain_severity",
+      "type": "numeric",
+      "text": "On a scale of 0-10, how severe is the pain? (0=none, 10=worst)",
+      "min": 0,
+      "max": 10,
+      "next": "pain_duration"
+    },
+    {
+      "id": "pain_duration",
+      "type": "choice",
+      "text": "How long have you had this pain?",
+      "options": [
+        {"value": "minutes", "label": "Less than 30 minutes"},
+        {"value": "hours_few", "label": "30 minutes to a few hours"},
+        {"value": "hours_many", "label": "Several hours"},
+        {"value": "days", "label": "Days"},
+        {"value": "weeks", "label": "Weeks or longer"}
+      ],
+      "next": "pain_onset"
+    },
+    {
+      "id": "pain_onset",
+      "type": "choice",
+      "text": "How did the pain start?",
+      "options": [
+        {"value": "sudden", "label": "Suddenly"},
+        {"value": "gradual", "label": "Gradually"},
+        {"value": "after_activity", "label": "After physical activity"},
+        {"value": "after_eating", "label": "After eating"},
+        {"value": "at_rest", "label": "While resting"}
+      ],
+      "next": "breathing_pain"
+    },
+    {
+      "id": "breathing_pain",
+      "type": "yesno",
+      "text": "Does the pain get worse when you breathe deeply?",
+      "next_if_yes": "shortness_breath",
+      "next_if_no": "shortness_breath"
+    },
+    {
+      "id": "shortness_breath",
+      "type": "yesno",
+      "text": "Are you having difficulty breathing or shortness of breath?",
+      "next_if_yes": "breathing_severity",
+      "next_if_no": "sweating"
+    },
+    {
+      "id": "breathing_severity",
+      "type": "choice",
+      "text": "How severe is your breathing difficulty?",
+      "options": [
+        {"value": "mild", "label": "Mild - slightly short of breath"},
+        {"value": "moderate", "label": "Moderate - noticeable difficulty"},
+        {"value": "severe", "label": "Severe - struggling to breathe"},
+        {"value": "cant_talk", "label": "Cannot speak full sentences"}
+      ],
+      "next": "sweating"
+    },
+    {
+      "id": "sweating",
+      "type": "yesno",
+      "text": "Are you sweating more than usual (cold sweat)?",
+      "next_if_yes": "nausea",
+      "next_if_no": "nausea"
+    },
+    {
+      "id": "nausea",
+      "type": "yesno",
+      "text": "Do you feel nauseous or have you vomited?",
+      "next_if_yes": "dizziness",
+      "next_if_no": "dizziness"
+    },
+    {
+      "id": "dizziness",
+      "type": "yesno",
+      "text": "Do you feel dizzy or lightheaded?",
+      "next_if_yes": "palpitations",
+      "next_if_no": "palpitations"
+    },
+    {
+      "id": "palpitations",
+      "type": "yesno",
+      "text": "Can you feel your heart racing or beating irregularly?",
+      "next_if_yes": "palpitations_type",
+      "next_if_no": "position_change"
+    },
+    {
+      "id": "palpitations_type",
+      "type": "choice",
+      "text": "How would you describe your heartbeat?",
+      "options": [
+        {"value": "fast", "label": "Fast but regular"},
+        {"value": "irregular", "label": "Irregular or skipping beats"},
+        {"value": "pounding", "label": "Pounding or forceful"},
+        {"value": "flutter", "label": "Fluttering sensation"}
+      ],
+      "next": "position_change"
+    },
+    {
+      "id": "position_change",
+      "type": "yesno",
+      "text": "Does changing position (sitting, lying, standing) affect the pain?",
+      "next_if_yes": "position_effect",
+      "next_if_no": "recent_injury"
+    },
+    {
+      "id": "position_effect",
+      "type": "choice",
+      "text": "How does position affect the pain?",
+      "options": [
+        {"value": "better_sitting", "label": "Better when sitting up"},
+        {"value": "better_lying", "label": "Better when lying down"},
+        {"value": "worse_lying", "label": "Worse when lying flat"},
+        {"value": "no_pattern", "label": "No clear pattern"}
+      ],
+      "next": "recent_injury"
+    },
+    {
+      "id": "recent_injury",
+      "type": "yesno",
+      "text": "Have you had any recent injury or trauma to your chest?",
+      "next_if_yes": "injury_description",
+      "next_if_no": "similar_episodes"
+    },
+    {
+      "id": "injury_description",
+      "type": "text",
+      "text": "Please describe the injury:",
+      "next": "similar_episodes"
+    },
+    {
+      "id": "similar_episodes",
+      "type": "yesno",
+      "text": "Have you had similar episodes before?",
+      "next_if_yes": "diagnosed_condition",
+      "next_if_no": "heart_history"
+    },
+    {
+      "id": "diagnosed_condition",
+      "type": "yesno",
+      "text": "Were you diagnosed with a condition for these episodes?",
+      "next_if_yes": "condition_name",
+      "next_if_no": "heart_history"
+    },
+    {
+      "id": "condition_name",
+      "type": "text",
+      "text": "What were you diagnosed with?",
+      "next": "heart_history"
+    },
+    {
+      "id": "heart_history",
+      "type": "choice",
+      "text": "Do you have any of these conditions?",
+      "multiple": true,
+      "options": [
+        {"value": "heart_attack", "label": "Previous heart attack"},
+        {"value": "heart_disease", "label": "Heart disease"},
+        {"value": "high_bp", "label": "High blood pressure"},
+        {"value": "high_cholesterol", "label": "High cholesterol"},
+        {"value": "diabetes", "label": "Diabetes"},
+        {"value": "blood_clots", "label": "Blood clots or DVT"},
+        {"value": "none", "label": "None of these"}
+      ],
+      "next": "family_history"
+    },
+    {
+      "id": "family_history",
+      "type": "yesno",
+      "text": "Does anyone in your immediate family have heart disease?",
+      "next_if_yes": "smoking",
+      "next_if_no": "smoking"
+    },
+    {
+      "id": "smoking",
+      "type": "choice",
+      "text": "Do you smoke or use tobacco?",
+      "options": [
+        {"value": "current", "label": "Yes, currently"},
+        {"value": "former", "label": "Former smoker"},
+        {"value": "never", "label": "Never"}
+      ],
+      "next": "medications"
+    },
+    {
+      "id": "medications",
+      "type": "yesno",
+      "text": "Are you taking any medications, especially blood thinners or heart medications?",
+      "next_if_yes": "medication_list",
+      "next_if_no": "end"
+    },
+    {
+      "id": "medication_list",
+      "type": "text",
+      "text": "Please list your medications:",
+      "next": "end"
+    }
+  ]
+}

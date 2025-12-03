@@ -1,0 +1,18 @@
+# Offline Triage Pre-Screen MVP
+# Python 3.10+ required
+
+# Web Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# Data validation
+pydantic==2.5.2
+
+# Local LLM inference (CPU-compatible)
+llama-cpp-python==0.2.20
+
+# For async file operations (optional but recommended)
+aiofiles==23.2.1
+
+# Development tools (optional)
+python-multipart==0.0.6

@@ -1,0 +1,246 @@
+{
+  "version": "1.0",
+  "description": "Deterministic risk rules for triage. These rules CANNOT be overridden by the LLM.",
+  "rules": [
+    {
+      "id": "infant",
+      "description": "Patient is an infant (under 2 years old)",
+      "band": "red",
+      "priority": 100,
+      "conditions": [
+        {"field": "demographics.age", "op": "<", "value": 2}
+      ]
+    },
+    {
+      "id": "severe_breathing",
+      "description": "Severe breathing difficulty - cannot speak full sentences",
+      "band": "red",
+      "priority": 100,
+      "conditions": [
+        {"field": "answers.breathing_severity", "op": "==", "value": "cant_speak"}
+      ]
+    },
+    {
+      "id": "severe_breathing_alt",
+      "description": "Severe breathing difficulty reported",
+      "band": "red",
+      "priority": 100,
+      "conditions": [
+        {"field": "answers.breathing_severity", "op": "==", "value": "severe"}
+      ]
+    },
+    {
+      "id": "chest_pain_with_sob",
+      "description": "Chest pain with shortness of breath",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "answers.chief_complaint", "op": "==", "value": "chest_discomfort"},
+        {"field": "answers.shortness_breath", "op": "is_true", "value": true}
+      ]
+    },
+    {
+      "id": "chest_pain_radiation",
+      "description": "Chest pain radiating to arm or jaw",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "answers.chief_complaint", "op": "==", "value": "chest_discomfort"},
+        {"field": "answers.pain_radiation", "op": "in", "value": ["left_arm", "jaw"]}
+      ]
+    },
+    {
+      "id": "chest_pain_sweating",
+      "description": "Chest pain with sweating (possible cardiac event)",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "answers.chief_complaint", "op": "==", "value": "chest_discomfort"},
+        {"field": "answers.sweating", "op": "is_true", "value": true}
+      ]
+    },
+    {
+      "id": "worst_headache",
+      "description": "Worst headache of life (possible SAH)",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "answers.headache_severity", "op": "==", "value": "worst_ever"}
+      ]
+    },
+    {
+      "id": "meningitis_signs",
+      "description": "Fever with neck stiffness (possible meningitis)",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "answers.chief_complaint", "op": "==", "value": "fever"},
+        {"field": "answers.neck_stiffness", "op": "is_true", "value": true}
+      ]
+    },
+    {
+      "id": "petechial_rash",
+      "description": "Non-blanching rash with fever (possible sepsis)",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "answers.chief_complaint", "op": "==", "value": "fever"},
+        {"field": "answers.rash_description", "op": "==", "value": "purple"}
+      ]
+    },
+    {
+      "id": "very_high_fever",
+      "description": "Very high fever (≥40°C / 104°F)",
+      "band": "red",
+      "priority": 90,
+      "conditions": [
+        {"field": "answers.temperature_value", "op": ">=", "value": 40}
+      ]
+    },
+    {
+      "id": "confusion",
+      "description": "Confusion or altered mental status",
+      "band": "red",
+      "priority": 90,
+      "conditions": [
+        {"field": "answers.other_symptoms", "op": "contains", "value": "confusion"}
+      ]
+    },
+    {
+      "id": "coughing_blood",
+      "description": "Coughing up blood",
+      "band": "red",
+      "priority": 90,
+      "conditions": [
+        {"field": "answers.cough_type", "op": "==", "value": "bloody"}
+      ]
+    },
+    {
+      "id": "elderly",
+      "description": "Patient is elderly (over 65 years)",
+      "band": "amber",
+      "priority": 60,
+      "conditions": [
+        {"field": "demographics.age", "op": ">", "value": 65}
+      ]
+    },
+    {
+      "id": "pregnant",
+      "description": "Patient is pregnant",
+      "band": "amber",
+      "priority": 60,
+      "conditions": [
+        {"field": "demographics.pregnant", "op": "is_true", "value": true}
+      ]
+    },
+    {
+      "id": "young_child",
+      "description": "Patient is a young child (2-5 years)",
+      "band": "amber",
+      "priority": 55,
+      "conditions": [
+        {"field": "demographics.age", "op": ">=", "value": 2},
+        {"field": "demographics.age", "op": "<", "value": 5}
+      ]
+    },
+    {
+      "id": "high_fever",
+      "description": "High fever (39-40°C / 102-104°F)",
+      "band": "amber",
+      "priority": 50,
+      "conditions": [
+        {"field": "answers.temperature_value", "op": ">=", "value": 39},
+        {"field": "answers.temperature_value", "op": "<", "value": 40}
+      ]
+    },
+    {
+      "id": "moderate_breathing",
+      "description": "Moderate breathing difficulty",
+      "band": "amber",
+      "priority": 50,
+      "conditions": [
+        {"field": "answers.breathing_severity", "op": "==", "value": "moderate"}
+      ]
+    },
+    {
+      "id": "chest_pain_severe",
+      "description": "Severe chest pain (8-10)",
+      "band": "amber",
+      "priority": 50,
+      "conditions": [
+        {"field": "answers.pain_severity", "op": ">=", "value": 8}
+      ]
+    },
+    {
+      "id": "immunocompromised",
+      "description": "Patient has weakened immune system",
+      "band": "amber",
+      "priority": 50,
+      "conditions": [
+        {"field": "answers.chronic_conditions", "op": "contains", "value": "immunocompromised"}
+      ]
+    },
+    {
+      "id": "history_heart_disease",
+      "description": "Patient has history of heart disease",
+      "band": "amber",
+      "priority": 50,
+      "conditions": [
+        {"field": "answers.heart_history", "op": "contains", "value": "heart_disease"}
+      ]
+    },
+    {
+      "id": "history_heart_attack",
+      "description": "Patient has history of heart attack",
+      "band": "amber",
+      "priority": 55,
+      "conditions": [
+        {"field": "answers.heart_history", "op": "contains", "value": "heart_attack"}
+      ]
+    },
+    {
+      "id": "prolonged_fever",
+      "description": "Fever lasting more than a week",
+      "band": "amber",
+      "priority": 40,
+      "conditions": [
+        {"field": "answers.fever_duration", "op": "==", "value": "week_plus"}
+      ]
+    },
+    {
+      "id": "irregular_heartbeat",
+      "description": "Irregular heartbeat reported",
+      "band": "amber",
+      "priority": 45,
+      "conditions": [
+        {"field": "answers.palpitations_type", "op": "==", "value": "irregular"}
+      ]
+    },
+    {
+      "id": "fever_present",
+      "description": "Fever present (38-39°C / 100-102°F)",
+      "band": "green",
+      "priority": 20,
+      "conditions": [
+        {"field": "answers.temperature_value", "op": ">=", "value": 38},
+        {"field": "answers.temperature_value", "op": "<", "value": 39}
+      ]
+    },
+    {
+      "id": "mild_symptoms",
+      "description": "Mild symptoms reported",
+      "band": "green",
+      "priority": 10,
+      "conditions": [
+        {"field": "answers.breathing_severity", "op": "==", "value": "mild"}
+      ]
+    },
+    {
+      "id": "default_green",
+      "description": "No high-risk factors identified",
+      "band": "green",
+      "priority": -100,
+      "conditions": []
+    }
+  ]
+}
