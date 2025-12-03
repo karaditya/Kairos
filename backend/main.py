@@ -412,11 +412,11 @@ async def list_cases(status: Optional[str] = None, _: bool = Depends(verify_staf
             "ticket_id": c.ticket_id,
             "created_at": c.created_at.isoformat(),
             "risk_band": c.risk_band,
-            "chief_complaint": c.answers.get("chief_complaint", "unknown"),
-            "age": c.demographics.get("age"),
-            "sex": c.demographics.get("sex"),
-            "status": c.status,
-            "summary_preview": c.summary[:100] + "..." if len(c.summary) > 100 else c.summary
+            "demographics": c.demographics,
+            "summary": c.summary,
+            "key_flags": c.key_flags,
+            "triggered_rules": c.triggered_rules,
+            "status": c.status
         }
         for c in cases
     ])
