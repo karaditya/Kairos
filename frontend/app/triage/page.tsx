@@ -65,7 +65,7 @@ export default function TriagePage() {
         pregnant: sex === "female" ? pregnant : undefined,
       });
 
-      setComplaints(response.next_question.options);
+      setComplaints(response.next_question?.options || []);
       setProgress(response.progress);
       setStep("complaint");
     } catch (err) {
@@ -461,7 +461,7 @@ export default function TriagePage() {
                   </p>
                 </div>
 
-                {summary.key_flags.length > 0 && (
+                {summary.key_flags && summary.key_flags.length > 0 && (
                   <div>
                     <h3 className="font-semibold mb-2">Key Flags</h3>
                     <ul className="list-disc list-inside space-y-1">

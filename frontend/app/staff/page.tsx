@@ -102,8 +102,8 @@ export default function StaffPortal() {
 
     const matchesSearch =
       searchQuery === "" ||
-      c.ticket_id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.summary.toLowerCase().includes(searchQuery.toLowerCase());
+      c.ticket_id?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      c.summary?.toLowerCase().includes(searchQuery.toLowerCase());
 
     return matchesFilter && matchesSearch;
   });
