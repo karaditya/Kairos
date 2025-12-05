@@ -20,8 +20,6 @@ from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Depends, Header
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -486,19 +484,8 @@ async def update_case_status(case_id: str, status: Dict[str, str], _: bool = Dep
 # =============================================================================
 # Static Files & Frontend
 # =============================================================================
-
-@app.get("/", response_class=HTMLResponse)
-async def patient_ui():
-    """Serve patient interface."""
-    return FileResponse("../frontend-old/patient.html")
-
-@app.get("/staff", response_class=HTMLResponse)
-async def staff_ui():
-    """Serve staff interface."""
-    return FileResponse("../frontend-old/staff.html")
-
-# Mount static files
-app.mount("/static", StaticFiles(directory="../frontend-old"), name="static")
+# Note: Frontend is now served by Next.js on port 3000
+# Old HTML routes removed after migrating to Next.js
 
 # =============================================================================
 # Helper Functions
