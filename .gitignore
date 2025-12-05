@@ -6,3 +6,5 @@ __pycache__/
 models/
 logs/
 data/
+frontend/node_modules/
+frontend/build/ 
