@@ -27,6 +27,7 @@ This guide explains how to run the integrated system with the React/Next.js fron
 1. **Python 3.8+** - For the backend
 2. **Node.js 18+** - For the frontend
 3. **LLM Model** (optional) - GGUF format model for AI summaries
+4. **NVIDIA CUDA Toolkit** (optional) - For GPU acceleration: `sudo apt install nvidia-cuda-toolkit`
 
 ## Quick Start
 
@@ -41,8 +42,10 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
 # (Optional) Enable GPU acceleration - for NVIDIA GPU users
+# First install CUDA toolkit: sudo apt install nvidia-cuda-toolkit -y
+# Then rebuild with CUDA:
 # pip uninstall llama-cpp-python -y
-# CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python --no-cache-dir
+# CUDACXX=/usr/bin/nvcc CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install llama-cpp-python --no-cache-dir --force-reinstall
 
 # (Optional) Download LLM model
 mkdir -p models
@@ -217,13 +220,25 @@ gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:app
 - System will fallback to template-based responses if LLM fails
 
 ### GPU not being used (nvidia-smi shows no GPU memory)
-- Check if llama-cpp-python was built with CUDA support:
+- **Install CUDA toolkit first** (required for building with GPU support):
   ```bash
+  sudo apt update
+  sudo apt install nvidia-cuda-toolkit -y
+  nvcc --version  # Verify installation
+  ```
+- **Rebuild llama-cpp-python with CUDA support:**
+  ```bash
+  source venv/bin/activate
   pip uninstall llama-cpp-python -y
-  CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python --no-cache-dir
+  CUDACXX=/usr/bin/nvcc CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install llama-cpp-python --no-cache-dir --force-reinstall
+  ```
+- **Verify CUDA library exists:**
+  ```bash
+  ls venv/lib/python3.12/site-packages/llama_cpp/lib/libggml-cuda.so
   ```
 - Verify `N_GPU_LAYERS` is set (e.g., `N_GPU_LAYERS=-1`)
 - Check NVIDIA drivers are installed: `nvidia-smi`
+- After starting backend with GPU, `nvidia-smi` should show ~1GB GPU memory used
 
 ### Frontend build errors
 - Run `npm install` in frontend directory

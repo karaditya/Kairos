@@ -43,6 +43,7 @@ Built with **FastAPI** (backend) + **Next.js/React** (frontend) + **Local LLM**.
 
 - **Python 3.10+** for backend
 - **Node.js 18+** and **npm** for frontend
+- **NVIDIA CUDA Toolkit** (optional, for GPU acceleration) - Ubuntu: `sudo apt install nvidia-cuda-toolkit`
 
 ### 1. Clone/Download the Project
 
@@ -67,13 +68,30 @@ pip install -r requirements.txt
 
 If you have an NVIDIA GPU with CUDA support, you can enable GPU acceleration for faster inference:
 
+**Step 1: Install CUDA Toolkit** (one-time setup)
+```bash
+# Ubuntu/Debian
+sudo apt update
+sudo apt install nvidia-cuda-toolkit -y
+
+# Verify installation
+nvcc --version
+```
+
+**Step 2: Build llama-cpp-python with CUDA**
 ```bash
 source venv/bin/activate
 pip uninstall llama-cpp-python -y
-CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python --no-cache-dir
+CUDACXX=/usr/bin/nvcc CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install llama-cpp-python --no-cache-dir --force-reinstall
 ```
 
-This builds llama-cpp-python with CUDA support. You can still use CPU mode by setting `N_GPU_LAYERS=0`.
+**Step 3: Verify GPU support**
+```bash
+# Check for CUDA library
+ls venv/lib/python3.12/site-packages/llama_cpp/lib/libggml-cuda.so
+```
+
+This builds llama-cpp-python with CUDA support (~3-5 minutes). You can still use CPU mode by setting `N_GPU_LAYERS=0`.
 
 #### Download the LLM Model (Optional but Recommended)
 
@@ -322,7 +340,8 @@ Edit files in `config/triage_trees/` to modify questions:
 - **100% Local** - No cloud dependencies
 - **Offline-First** - Works without internet
 - **SQLite Database** - No database server needed
-- **GGUF Models** - Quantized models for efficient CPU inference
+- **GGUF Models** - Quantized models for efficient CPU/GPU inference
+- **CUDA Support** - Optional GPU acceleration with NVIDIA GPUs
 
 ---
 
@@ -525,6 +544,24 @@ For questions about deployment or customization, please open an issue.
 - **Verify model path:** Check that the model file exists at `models/llama-3.2-1b-instruct-q4_k_m.gguf`
 - **Check file permissions:** Ensure model file is readable
 - **Fallback mode:** System works without model - you'll see a warning message
+
+### GPU acceleration not working
+- **Install CUDA toolkit first:**
+  ```bash
+  sudo apt install nvidia-cuda-toolkit -y
+  nvcc --version  # Should show CUDA version
+  ```
+- **Rebuild llama-cpp-python with CUDA:**
+  ```bash
+  source venv/bin/activate
+  pip uninstall llama-cpp-python -y
+  CUDACXX=/usr/bin/nvcc CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install llama-cpp-python --no-cache-dir --force-reinstall
+  ```
+- **Verify CUDA library exists:**
+  ```bash
+  ls venv/lib/python3.12/site-packages/llama_cpp/lib/libggml-cuda.so
+  ```
+- **Check GPU memory usage:** `nvidia-smi` should show ~1GB used when model loads with `N_GPU_LAYERS=-1`
 
 ### Database issues
 - **Reset database:** Delete `data/triage.db` and restart backend (auto-recreates)
