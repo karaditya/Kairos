@@ -27,8 +27,7 @@ if [ ! -f "models/llama-3.2-1b-instruct-q4_k_m.gguf" ]; then
     echo ""
     echo "To download the model, run:"
     echo "  mkdir -p models && cd models"
-    echo "  wget https://huggingface.co/lmstudio-community/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
-    echo "  mv Llama-3.2-1B-Instruct-Q4_K_M.gguf llama-3.2-1b-instruct-q4_k_m.gguf"
+    echo "  wget https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf -O llama-3.2-1b-instruct-q4_k_m.gguf"
     echo ""
 fi
 

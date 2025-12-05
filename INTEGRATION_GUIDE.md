@@ -43,8 +43,7 @@ pip install -r requirements.txt
 # (Optional) Download LLM model
 mkdir -p models
 cd models
-wget https://huggingface.co/lmstudio-community/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf
-mv Llama-3.2-1B-Instruct-Q4_K_M.gguf llama-3.2-1b-instruct-q4_k_m.gguf
+wget https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf -O llama-3.2-1b-instruct-q4_k_m.gguf
 cd ..
 
 # Start the backend
