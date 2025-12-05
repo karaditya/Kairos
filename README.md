@@ -59,9 +59,21 @@ cd triage_mvp
 python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install dependencies
+# Install dependencies (CPU-only by default)
 pip install -r requirements.txt
 ```
+
+**Optional: Enable GPU Acceleration**
+
+If you have an NVIDIA GPU with CUDA support, you can enable GPU acceleration for faster inference:
+
+```bash
+source venv/bin/activate
+pip uninstall llama-cpp-python -y
+CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python --no-cache-dir
+```
+
+This builds llama-cpp-python with CUDA support. You can still use CPU mode by setting `N_GPU_LAYERS=0`.
 
 #### Download the LLM Model (Optional but Recommended)
 
@@ -120,9 +132,14 @@ cd ..
 
 Open two terminal windows:
 
-**Terminal 1 - Backend:**
+**Terminal 1 - Backend (CPU mode - default):**
 ```bash
 ./start-backend.sh
+```
+
+**Terminal 1 - Backend (GPU mode - if CUDA-enabled):**
+```bash
+N_GPU_LAYERS=-1 ./start-backend.sh
 ```
 
 **Terminal 2 - Frontend:**
@@ -132,11 +149,18 @@ Open two terminal windows:
 
 #### Option B: Manual Start
 
-**Terminal 1 - Backend:**
+**Terminal 1 - Backend (CPU mode):**
 ```bash
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 cd backend
 python main.py
+```
+
+**Terminal 1 - Backend (GPU mode):**
+```bash
+source venv/bin/activate
+cd backend
+N_GPU_LAYERS=-1 python main.py
 ```
 
 **Terminal 2 - Frontend:**
@@ -145,12 +169,24 @@ cd frontend
 npm run dev
 ```
 
-#### Custom Backend Settings
+#### Environment Variable Options
+
+You can customize the backend behavior using environment variables:
 
 ```bash
-MODEL_PATH="../models/llama-3.2-1b-instruct-q4_k_m.gguf" \
-STAFF_PIN="9999" \
-python backend/main.py
+# GPU Acceleration (requires CUDA-enabled llama-cpp-python)
+N_GPU_LAYERS=-1 python backend/main.py       # All layers on GPU
+N_GPU_LAYERS=20 python backend/main.py       # 20 layers on GPU, rest on CPU
+N_GPU_LAYERS=0 python backend/main.py        # CPU only (default)
+
+# Change staff PIN
+STAFF_PIN="9999" python backend/main.py
+
+# Use custom model path
+MODEL_PATH="../models/my-model.gguf" python backend/main.py
+
+# Combine multiple settings
+N_GPU_LAYERS=-1 STAFF_PIN="9999" python backend/main.py
 ```
 
 ### 5. Access the Application
@@ -226,6 +262,7 @@ triage_mvp/
 | `DB_PATH` | `data/triage.db` | SQLite database path |
 | `CONFIG_DIR` | `config` | Directory for JSON configs |
 | `STAFF_PIN` | `1234` | Staff portal PIN |
+| `N_GPU_LAYERS` | `0` | GPU layers: `0` = CPU only, `-1` = all GPU, or specify number |
 
 ### Risk Rules
 

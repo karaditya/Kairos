@@ -37,8 +37,12 @@ This guide explains how to run the integrated system with the React/Next.js fron
 python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install Python dependencies
+# Install Python dependencies (CPU-only)
 pip install -r requirements.txt
+
+# (Optional) Enable GPU acceleration - for NVIDIA GPU users
+# pip uninstall llama-cpp-python -y
+# CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python --no-cache-dir
 
 # (Optional) Download LLM model
 mkdir -p models
@@ -46,9 +50,12 @@ cd models
 wget https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf -O llama-3.2-1b-instruct-q4_k_m.gguf
 cd ..
 
-# Start the backend
+# Start the backend (CPU mode)
 cd backend
 python main.py
+
+# Or with GPU acceleration (if CUDA-enabled llama-cpp-python installed)
+# N_GPU_LAYERS=-1 python main.py
 ```
 
 The backend will start on **http://localhost:8000**
@@ -111,9 +118,13 @@ export MODEL_PATH="models/llama-3.2-1b-instruct-q4_k_m.gguf"
 export DB_PATH="data/triage.db"
 export CONFIG_DIR="config"
 export STAFF_PIN="1234"
+export N_GPU_LAYERS=0  # CPU only (default). Use -1 for full GPU, or specify number of layers
 
 # Then start backend
 cd backend && python main.py
+
+# Or use inline environment variables
+N_GPU_LAYERS=-1 STAFF_PIN="1234" python backend/main.py
 ```
 
 ### Frontend Configuration
@@ -204,6 +215,15 @@ gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:app
 - Verify model file exists at specified path
 - Check model is in GGUF format
 - System will fallback to template-based responses if LLM fails
+
+### GPU not being used (nvidia-smi shows no GPU memory)
+- Check if llama-cpp-python was built with CUDA support:
+  ```bash
+  pip uninstall llama-cpp-python -y
+  CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python --no-cache-dir
+  ```
+- Verify `N_GPU_LAYERS` is set (e.g., `N_GPU_LAYERS=-1`)
+- Check NVIDIA drivers are installed: `nvidia-smi`
 
 ### Frontend build errors
 - Run `npm install` in frontend directory

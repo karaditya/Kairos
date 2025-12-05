@@ -8,7 +8,9 @@ uvicorn[standard]==0.24.0
 # Data validation
 pydantic==2.5.2
 
-# Local LLM inference (CPU-compatible)
+# Local LLM inference
+# CPU-only: pip install llama-cpp-python==0.2.20
+# GPU (CUDA): CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python --no-cache-dir
 llama-cpp-python==0.2.20
 
 # For async file operations (optional but recommended)

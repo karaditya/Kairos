@@ -33,5 +33,6 @@ fi
 
 # Start backend
 echo "Starting FastAPI backend on http://localhost:8000..."
+echo "GPU Acceleration: ${N_GPU_LAYERS:-0} layers (set N_GPU_LAYERS env var to change)"
 cd backend
 python main.py

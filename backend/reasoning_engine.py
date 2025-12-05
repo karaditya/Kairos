@@ -135,20 +135,25 @@ class ReasoningEngine:
         if not LLAMA_AVAILABLE:
             print("LLM library not available - using fallback mode")
             return
-        
+
         if not os.path.exists(self.model_path):
             print(f"Model not found at {self.model_path}")
             print("Download a GGUF model and place it there.")
             print("See README for instructions.")
             return
-        
+
         try:
+            # GPU layers: 0 = CPU only, -1 = all GPU, or specify number of layers
+            n_gpu_layers = int(os.environ.get("N_GPU_LAYERS", "0"))
+
             print(f"Loading LLM from {self.model_path}...")
+            print(f"GPU layers: {n_gpu_layers} ({'CPU only' if n_gpu_layers == 0 else 'GPU accelerated'})")
+
             self.model = Llama(
                 model_path=self.model_path,
-                n_ctx=2048,           # Context window
-                n_threads=4,          # CPU threads
-                n_gpu_layers=0,       # CPU only
+                n_ctx=2048,
+                n_threads=4,
+                n_gpu_layers=n_gpu_layers,
                 verbose=False
             )
             self.is_loaded = True
