@@ -292,17 +292,14 @@ UPDATED REASONING:"""
 
 
 # =============================================================================
-# Single Clean Prompt - Works With All Models
+# Simple Prompt for Small Models
 # =============================================================================
 
-STAFF_QA_PROMPT = """You are a clinical triage assistant. You help healthcare staff understand patient cases. You do not diagnose or prescribe treatment.
+STAFF_QA_PROMPT = """Patient: {case_data}
 
-PATIENT INFORMATION:
-{case_data}
+Question: {question}
 
-STAFF QUESTION: {question}
-
-Please answer the question based on the patient data. Explain your reasoning, and suggest follow-up questions the provider should ask the patient."""
+Answer the question, then list 3 follow-up questions to ask the patient."""
 
 
 # =============================================================================
