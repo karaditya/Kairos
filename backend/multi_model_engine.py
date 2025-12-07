@@ -23,11 +23,15 @@ CRITICAL: The engine CANNOT override deterministic risk bands.
 import os
 import gc
 import threading
+import html
+import logging
 from typing import Dict, List, Any, Tuple, Optional
 from dataclasses import dataclass
 from datetime import datetime
 
 import re
+
+logger = logging.getLogger(__name__)
 
 from model_registry import (
     SUPPORTED_MODELS,
@@ -71,6 +75,59 @@ def parse_reasoning_response(text: str) -> dict:
         reasoning = think_match.group(1).strip()
         has_reasoning = True
         text = re.sub(think_pattern, '', text, flags=re.DOTALL | re.IGNORECASE).strip()
+        # Sanitize to prevent XSS
+        reasoning = html.escape(reasoning)
+    else:
+        # Pattern 2: Section headers (REASONING:, ANALYSIS:, etc.)
+        text_upper = text.upper()
+        reasoning_markers = ['REASONING:', 'ANALYSIS:', 'THINKING:', 'THOUGHT PROCESS:']
+        answer_markers = ['ANSWER:', 'FINAL ANSWER:', 'RESPONSE:', 'CONCLUSION:']
+
+        reasoning_start = -1
+        reasoning_marker_len = 0
+
+        # Find first reasoning marker
+        for marker in reasoning_markers:
+            idx = text_upper.find(marker)
+            if idx != -1 and (reasoning_start == -1 or idx < reasoning_start):
+                reasoning_start = idx
+                reasoning_marker_len = len(marker)
+
+        if reasoning_start != -1:
+            # Find where reasoning ends (at answer marker)
+            answer_start = -1
+            for marker in answer_markers:
+                idx = text_upper.find(marker, reasoning_start + reasoning_marker_len)
+                if idx != -1 and (answer_start == -1 or idx < answer_start):
+                    answer_start = idx
+
+            if answer_start != -1:
+                # Extract reasoning and answer
+                reasoning = text[reasoning_start + reasoning_marker_len:answer_start].strip()
+                # Find answer marker length to skip it
+                answer_marker_len = 0
+                for marker in answer_markers:
+                    if text_upper[answer_start:answer_start + len(marker)] == marker:
+                        answer_marker_len = len(marker)
+                        break
+
+                # Check for multiple sections
+                next_reasoning_idx = text_upper.find('REASONING:', answer_start)
+                if next_reasoning_idx != -1:
+                    logger.warning("Multiple REASONING/ANSWER sections detected, using first pair only")
+                    text = text[answer_start + answer_marker_len:next_reasoning_idx].strip()
+                else:
+                    text = text[answer_start + answer_marker_len:].strip()
+
+                has_reasoning = True
+                # Sanitize to prevent XSS
+                reasoning = html.escape(reasoning)
+            else:
+                # Reasoning found but no answer marker
+                logger.warning(f"REASONING marker found at {reasoning_start} but no ANSWER marker")
+        elif reasoning_start != -1 or any(text_upper.find(marker) != -1 for marker in answer_markers):
+            # Partial markers found
+            logger.warning("Only partial REASONING/ANSWER markers found")
 
     # Clean up prefixes
     text = re.sub(r'^(STAFF\s*ANSWER\s*:?\s*)+', '', text, flags=re.IGNORECASE).strip()
@@ -80,7 +137,7 @@ def parse_reasoning_response(text: str) -> dict:
     suggested_questions = []
 
     # Pattern: Look for "questions" header followed by numbered list
-    questions_section_pattern = r'(?:should\s+ask|following\s+questions|suggest(?:ed)?\s+questions?)[:\s]*\n*((?:\d+\.\s*.+?\n?)+)'
+    questions_section_pattern = r'(?:should\s+ask|follow-?up\s+questions|following\s+questions|suggest(?:ed)?\s+questions?)[:\s]*\n*((?:\d+\.\s*.+?\n?)+)'
     questions_match = re.search(questions_section_pattern, text, re.IGNORECASE | re.DOTALL)
 
     if questions_match:
@@ -130,6 +187,9 @@ def parse_reasoning_response(text: str) -> dict:
         last_period = max(answer.rfind('.'), answer.rfind('!'), answer.rfind('?'))
         if last_period > len(answer) * 0.5:  # Only truncate if we keep most of it
             answer = answer[:last_period + 1]
+
+    # Sanitize answer to prevent XSS
+    answer = html.escape(answer)
 
     return {
         "reasoning": reasoning,
@@ -221,7 +281,26 @@ PATIENT CASE:
 
 STAFF QUESTION: {question}
 
-Provide a response in this EXACT format:
+Instructions:
+1. First, show your thinking process and analysis (use "REASONING:" header)
+2. Then provide a clear, actionable answer (use "ANSWER:" header)
+3. Base your response on the patient information provided
+4. Be concise but thorough
+
+Example:
+
+Question: Should we admit a 65-year-old with chest pain, normal ECG, troponin 0.03?
+
+REASONING:
+Patient has chest pain with mildly elevated troponin (normal <0.01). Normal ECG is reassuring but doesn't rule out ACS. Need to consider: timing of onset, troponin trend, cardiac risk factors. Even mild troponin elevation with chest pain requires serial monitoring. Conservative approach warranted for patient safety.
+
+ANSWER:
+Yes, recommend admission for serial troponins and observation. Patient needs rule-out ACS protocol with repeat troponins at 3 and 6 hours. Monitor for evolving ECG changes.
+
+Now provide your response in this EXACT format:
+
+REASONING:
+[Show your analytical thinking process here]
 
 ANSWER:
 [Write 2-3 sentences directly answering the question based on the patient data]
@@ -640,7 +719,7 @@ class MultiModelEngine:
             question=question
         )
 
-        raw_response = self._generate(prompt, max_tokens=512, temperature=0.3)
+        raw_response = self._generate(prompt, max_tokens=768, temperature=0.3)  # Increased from 512 to accommodate REASONING + ANSWER sections
 
         # Parse to separate reasoning from answer
         parsed = parse_reasoning_response(raw_response)

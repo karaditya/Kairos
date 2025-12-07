@@ -644,7 +644,7 @@ export default function StaffPortal() {
                             )}
 
                             {/* Chain of Thought (Collapsible) */}
-                            {answer.has_reasoning && answer.reasoning && (
+                            {answer.reasoning && answer.reasoning.trim().length > 0 && (
                               <div className="border border-purple-200 dark:border-purple-800 rounded-lg overflow-hidden">
                                 <button
                                   onClick={() => setShowReasoning(!showReasoning)}
