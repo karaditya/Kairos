@@ -270,6 +270,7 @@ export const api = {
     answer: string;
     reasoning: string | null;
     has_reasoning: boolean;
+    suggested_questions: string[];
     cited_data: string[];
     model_used: string;
     disclaimer: string;

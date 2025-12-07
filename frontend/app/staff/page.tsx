@@ -41,6 +41,7 @@ export default function StaffPortal() {
     answer: string;
     reasoning: string | null;
     has_reasoning: boolean;
+    suggested_questions: string[];
     cited_data: string[];
     model_used: string;
     disclaimer: string;
@@ -609,12 +610,38 @@ export default function StaffPortal() {
                               <div className="flex items-start gap-3">
                                 <MessageSquare className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
                                 <div className="flex-1">
+                                  <h4 className="text-sm font-semibold text-blue-700 dark:text-blue-300 mb-2">
+                                    Answer
+                                  </h4>
                                   <p className="text-gray-800 dark:text-gray-200 leading-relaxed">
-                                    {answer.answer}
+                                    {answer.answer || "No specific answer generated."}
                                   </p>
                                 </div>
                               </div>
                             </div>
+
+                            {/* Suggested Follow-up Questions */}
+                            {answer.suggested_questions && answer.suggested_questions.length > 0 && (
+                              <div className="bg-green-50 dark:bg-green-900/20 p-4 rounded-lg border border-green-200 dark:border-green-800">
+                                <h4 className="text-sm font-semibold text-green-700 dark:text-green-300 mb-3 flex items-center gap-2">
+                                  <AlertCircle className="h-4 w-4" />
+                                  Suggested Follow-up Questions
+                                </h4>
+                                <ul className="space-y-2">
+                                  {answer.suggested_questions.map((q, idx) => (
+                                    <li
+                                      key={idx}
+                                      className="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300"
+                                    >
+                                      <span className="flex-shrink-0 w-5 h-5 rounded-full bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-200 text-xs flex items-center justify-center font-medium">
+                                        {idx + 1}
+                                      </span>
+                                      <span>{q}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
 
                             {/* Chain of Thought (Collapsible) */}
                             {answer.has_reasoning && answer.reasoning && (
@@ -647,12 +674,12 @@ export default function StaffPortal() {
                             )}
 
                             {/* Model & Disclaimer */}
-                            <div className="flex items-center justify-between text-xs text-gray-500">
+                            <div className="flex items-center justify-between text-xs text-gray-500 pt-2 border-t border-gray-200 dark:border-gray-700">
                               <span className="flex items-center gap-1">
                                 <Cpu className="h-3 w-3" />
                                 {answer.model_used}
                               </span>
-                              <span>{answer.disclaimer}</span>
+                              <span className="text-right max-w-[60%]">{answer.disclaimer}</span>
                             </div>
                           </div>
                         )}

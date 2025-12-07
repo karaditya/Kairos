@@ -87,6 +87,7 @@ class StaffAskResponse(BaseModel):
     answer: str
     reasoning: Optional[str] = None
     has_reasoning: bool = False
+    suggested_questions: List[str] = []
     cited_data: List[str]
     model_used: str
     disclaimer: str
@@ -485,6 +486,7 @@ async def staff_ask(case_id: str, request: StaffAskRequestWithModel, _: bool = D
         answer=result["answer"],
         reasoning=result["reasoning"],
         has_reasoning=result["has_reasoning"],
+        suggested_questions=result["suggested_questions"],
         cited_data=result["cited_data"],
         model_used=result["model_used"],
         disclaimer="This is decision support only. Clinical judgment is required for all patient care decisions."

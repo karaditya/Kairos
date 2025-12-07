@@ -45,19 +45,23 @@ from model_registry import (
 
 def parse_reasoning_response(text: str) -> dict:
     """
-    Parse model response to separate chain-of-thought from final answer.
+    Parse model response to separate chain-of-thought, answer, and suggested questions.
 
-    Handles DeepSeek R1 style <think>...</think> tags and similar patterns.
+    Handles DeepSeek R1 style <think>...</think> tags and extracts suggested questions.
 
     Returns:
         {
-            "reasoning": str or None,  # The thinking/reasoning process
-            "answer": str,             # The final clean answer
-            "has_reasoning": bool      # Whether CoT was present
+            "reasoning": str or None,           # The thinking/reasoning process
+            "answer": str,                      # The main answer
+            "suggested_questions": list[str],   # Follow-up questions
+            "has_reasoning": bool               # Whether CoT was present
         }
     """
     if not text:
-        return {"reasoning": None, "answer": "", "has_reasoning": False}
+        return {"reasoning": None, "answer": "", "suggested_questions": [], "has_reasoning": False}
+
+    reasoning = None
+    has_reasoning = False
 
     # Pattern 1: <think>...</think> tags (DeepSeek R1 style)
     think_pattern = r'<think>(.*?)</think>'
@@ -65,26 +69,74 @@ def parse_reasoning_response(text: str) -> dict:
 
     if think_match:
         reasoning = think_match.group(1).strip()
-        # Remove the think tags and get the answer
-        answer = re.sub(think_pattern, '', text, flags=re.DOTALL | re.IGNORECASE).strip()
-        # Clean up any duplicate content or "STAFF ANSWER:" prefixes
-        answer = re.sub(r'^(STAFF\s*ANSWER\s*:?\s*)+', '', answer, flags=re.IGNORECASE).strip()
-        return {"reasoning": reasoning, "answer": answer, "has_reasoning": True}
+        has_reasoning = True
+        text = re.sub(think_pattern, '', text, flags=re.DOTALL | re.IGNORECASE).strip()
 
-    # Pattern 2: **Thinking:** or **Reasoning:** sections
-    section_pattern = r'\*\*(Thinking|Reasoning|Analysis)\*\*:?\s*(.*?)(?=\*\*(Answer|Response|Summary)\*\*|$)'
-    section_match = re.search(section_pattern, text, re.DOTALL | re.IGNORECASE)
+    # Clean up prefixes
+    text = re.sub(r'^(STAFF\s*ANSWER\s*:?\s*)+', '', text, flags=re.IGNORECASE).strip()
+    text = re.sub(r'^(RESPONSE\s*:?\s*)+', '', text, flags=re.IGNORECASE).strip()
 
-    if section_match:
-        reasoning = section_match.group(2).strip()
-        answer = re.sub(section_pattern, '', text, flags=re.DOTALL | re.IGNORECASE).strip()
-        answer = re.sub(r'\*\*(Answer|Response|Summary)\*\*:?\s*', '', answer, flags=re.IGNORECASE).strip()
-        return {"reasoning": reasoning, "answer": answer, "has_reasoning": True}
+    # Extract suggested questions (numbered list patterns)
+    suggested_questions = []
 
-    # No reasoning pattern found - return as-is
-    # But still clean up any weird prefixes
-    clean_answer = re.sub(r'^(STAFF\s*ANSWER\s*:?\s*)+', '', text, flags=re.IGNORECASE).strip()
-    return {"reasoning": None, "answer": clean_answer, "has_reasoning": False}
+    # Pattern: Look for "questions" header followed by numbered list
+    questions_section_pattern = r'(?:should\s+ask|following\s+questions|suggest(?:ed)?\s+questions?)[:\s]*\n*((?:\d+\.\s*.+?\n?)+)'
+    questions_match = re.search(questions_section_pattern, text, re.IGNORECASE | re.DOTALL)
+
+    if questions_match:
+        questions_text = questions_match.group(1)
+        # Extract individual questions
+        question_items = re.findall(r'\d+\.\s*(.+?)(?=\d+\.|$)', questions_text, re.DOTALL)
+        # Clean and deduplicate
+        seen = set()
+        for q in question_items:
+            q_clean = q.strip().rstrip('?') + '?'
+            q_clean = re.sub(r'\s+', ' ', q_clean)  # Normalize whitespace
+            if q_clean not in seen and len(q_clean) > 10:  # Skip too-short items
+                seen.add(q_clean)
+                suggested_questions.append(q_clean)
+                if len(suggested_questions) >= 5:  # Limit to 5 questions
+                    break
+
+        # Remove the questions section from the answer
+        text = text[:questions_match.start()].strip()
+
+    # Also try simpler numbered list at end
+    if not suggested_questions:
+        simple_list_pattern = r'(\d+\.\s*.+?)(?=\n\d+\.|\Z)'
+        matches = re.findall(simple_list_pattern, text, re.DOTALL)
+        if len(matches) >= 3:  # If we have a list of 3+ items, treat as questions
+            seen = set()
+            for m in matches:
+                q = m.strip()
+                q = re.sub(r'^\d+\.\s*', '', q).strip()
+                if '?' in q or 'what' in q.lower() or 'how' in q.lower() or 'have' in q.lower():
+                    q_clean = q.rstrip('?') + '?'
+                    if q_clean not in seen and len(q_clean) > 10:
+                        seen.add(q_clean)
+                        suggested_questions.append(q_clean)
+                        if len(suggested_questions) >= 5:
+                            break
+            if suggested_questions:
+                # Remove the list from answer
+                first_match = re.search(r'\d+\.\s*.+', text)
+                if first_match:
+                    text = text[:first_match.start()].strip()
+
+    # Clean up the answer
+    answer = text.strip()
+    # Remove trailing incomplete sentences
+    if answer and not answer.endswith(('.', '!', '?', ':')):
+        last_period = max(answer.rfind('.'), answer.rfind('!'), answer.rfind('?'))
+        if last_period > len(answer) * 0.5:  # Only truncate if we keep most of it
+            answer = answer[:last_period + 1]
+
+    return {
+        "reasoning": reasoning,
+        "answer": answer,
+        "suggested_questions": suggested_questions,
+        "has_reasoning": has_reasoning
+    }
 
 # =============================================================================
 # LLM Backend
@@ -162,21 +214,24 @@ Keep your reasoning notes brief (2-3 sentences).
 UPDATED REASONING:"""
 
 
-STAFF_QA_PROMPT_TEMPLATE = """You are helping a healthcare staff member understand a patient case.
+STAFF_QA_PROMPT_TEMPLATE = """You are a medical triage assistant helping staff understand a patient case.
 
 PATIENT CASE:
 {case_data}
 
 STAFF QUESTION: {question}
 
-INSTRUCTIONS:
-- Answer based ONLY on the data provided
-- Cite specific data points (e.g., "Patient reported fever of 39C")
-- If asked about diagnosis, remind them you cannot diagnose
-- If asked about treatment, remind them a physician must decide
-- Focus on explaining the triage logic and suggesting follow-up questions
+Provide a response in this EXACT format:
 
-RESPONSE:"""
+ANSWER:
+[Write 2-3 sentences directly answering the question based on the patient data]
+
+FOLLOW-UP QUESTIONS:
+1. [First suggested question for the provider to ask]
+2. [Second suggested question]
+3. [Third suggested question]
+
+Remember: Do NOT diagnose. Only summarize data and suggest questions."""
 
 
 # =============================================================================
@@ -596,6 +651,7 @@ class MultiModelEngine:
             "answer": parsed["answer"],
             "reasoning": parsed["reasoning"],
             "has_reasoning": parsed["has_reasoning"],
+            "suggested_questions": parsed["suggested_questions"],
             "cited_data": cited_data,
             "model_used": self._current_model.config.name if self._current_model else "Fallback"
         }
