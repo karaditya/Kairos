@@ -29,6 +29,13 @@ class ModelQuality(Enum):
     ADVANCED = "advanced"   # Best quality, slower
 
 
+class PromptStyle(Enum):
+    """How the model prefers to receive/format prompts."""
+    THINK_TAGS = "think_tags"   # DeepSeek R1: uses <think>...</think> for reasoning
+    STRUCTURED = "structured"   # Llama/Phi: follows structured instructions well
+    SIMPLE = "simple"           # Basic models: need simple, direct prompts
+
+
 @dataclass
 class ModelConfig:
     """Configuration for a supported model."""
@@ -42,6 +49,7 @@ class ModelConfig:
     size_category: ModelSize                # Size tier
     quality: ModelQuality                   # Quality tier
     context_length: int                     # Max context window
+    prompt_style: PromptStyle = PromptStyle.STRUCTURED  # How model handles prompts
     recommended_threads: int = 4            # Recommended CPU threads
     recommended_gpu_layers: int = 0         # Recommended GPU layers (0 = CPU only)
     supports_medical: bool = True           # Suitable for medical summarization
@@ -73,6 +81,7 @@ SUPPORTED_MODELS: Dict[str, ModelConfig] = {
         size_category=ModelSize.SMALL,
         quality=ModelQuality.BASIC,
         context_length=2048,
+        prompt_style=PromptStyle.SIMPLE,
         recommended_threads=4,
         recommended_gpu_layers=0,
         quantization="Q4_K_M",
@@ -141,6 +150,7 @@ SUPPORTED_MODELS: Dict[str, ModelConfig] = {
         size_category=ModelSize.SMALL,
         quality=ModelQuality.STANDARD,
         context_length=4096,
+        prompt_style=PromptStyle.THINK_TAGS,
         recommended_threads=4,
         recommended_gpu_layers=10,
         quantization="Q4_K_M",
@@ -161,6 +171,7 @@ SUPPORTED_MODELS: Dict[str, ModelConfig] = {
         size_category=ModelSize.LARGE,
         quality=ModelQuality.ADVANCED,
         context_length=8192,
+        prompt_style=PromptStyle.THINK_TAGS,
         recommended_threads=8,
         recommended_gpu_layers=35,
         quantization="Q4_K_M",
@@ -253,6 +264,7 @@ SUPPORTED_MODELS: Dict[str, ModelConfig] = {
         size_category=ModelSize.SMALL,
         quality=ModelQuality.BASIC,
         context_length=2048,
+        prompt_style=PromptStyle.SIMPLE,
         recommended_threads=4,
         recommended_gpu_layers=0,
         quantization="Q4_K_M",

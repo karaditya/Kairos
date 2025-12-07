@@ -48,215 +48,169 @@ from model_registry import (
 
 def parse_reasoning_response(text: str) -> dict:
     """
-    Parse model response to separate chain-of-thought, answer, and suggested questions.
+    Parse model response using a simple, robust approach.
 
-    Handles DeepSeek R1 style <think>...</think> tags and extracts suggested questions.
+    Design Philosophy:
+    - Work WITH the model's natural output (DeepSeek uses <think> tags)
+    - Don't expect perfect formatting from small models
+    - Extract reasoning, answer, and questions through smart heuristics
+    - Clean up for display in post-processing
 
     Returns:
         {
-            "reasoning": str or None,           # The thinking/reasoning process
-            "answer": str,                      # The main answer
-            "suggested_questions": list[str],   # Follow-up questions
-            "has_reasoning": bool               # Whether CoT was present
+            "reasoning": str or None,
+            "answer": str,
+            "suggested_questions": list[str],
+            "has_reasoning": bool
         }
     """
     if not text:
         return {"reasoning": None, "answer": "", "suggested_questions": [], "has_reasoning": False}
 
+    text = text.strip()
     reasoning = None
     has_reasoning = False
 
-    # Clean up prompt leakage - remove instruction text that model might echo
-    # These patterns match at start OR end of text
-    prompt_leakage_patterns = [
-        r'Use the format:?\s*\[?REASONING\]?\s*\[?ANSWER\]?\s*\[?FOLLOW-?UP QUESTIONS\]?\.?\s*',
-        r'Use the format\s*["\u201c\u201d"\']*REASONING["\u201c\u201d"\']*:?\s*followed by\s*["\u201c\u201d"\']*ANSWER["\u201c\u201d"\']*:?\.?\s*',
-        r'Now provide your response.*?:\s*',
-        r'Format your response.*?:\s*',
-        r'Provide your response with these sections:?\s*',
-    ]
-    for pattern in prompt_leakage_patterns:
-        # Remove from start
-        text = re.sub(r'^' + pattern, '', text, flags=re.IGNORECASE | re.DOTALL).strip()
-        # Remove from end
-        text = re.sub(pattern + r'$', '', text, flags=re.IGNORECASE | re.DOTALL).strip()
+    # =================================================================
+    # STEP 0: Detect and truncate repetitive loops / hallucinations
+    # =================================================================
 
-    # Pattern 0: [REASONING]...[ANSWER] bracket format
-    bracket_pattern = r'\[REASONING\]\s*(.*?)\s*\[ANSWER\]\s*(.*?)(?:\[FOLLOW-?UP|$)'
-    bracket_match = re.search(bracket_pattern, text, re.DOTALL | re.IGNORECASE)
-    if bracket_match:
-        reasoning = bracket_match.group(1).strip()
-        text = bracket_match.group(2).strip()
-        has_reasoning = True if reasoning else False
-        # Remove follow-up section if present
-        followup_idx = text.upper().find('[FOLLOW')
-        if followup_idx != -1:
-            text = text[:followup_idx].strip()
-    else:
-        # Pattern 1: <think>...</think> tags (DeepSeek R1 style)
-        think_pattern = r'<think>(.*?)</think>'
-        think_match = re.search(think_pattern, text, re.DOTALL | re.IGNORECASE)
+    # Pattern 1: "But wait" loops (model getting stuck)
+    but_wait_count = text.lower().count("but wait")
+    if but_wait_count >= 3:
+        # Find the first "but wait" and cut there
+        first_but_wait = text.lower().find("but wait")
+        if first_but_wait > 100:  # Keep at least some content
+            text = text[:first_but_wait].strip()
 
-        # Pattern 1b: Handle missing <think> but present </think> (malformed output)
-        if not think_match:
-            # Check if there's a </think> without opening tag
-            close_think_match = re.search(r'</think>', text, re.IGNORECASE)
-            if close_think_match:
-                # Everything before </think> is the reasoning
-                reasoning = text[:close_think_match.start()].strip()
-                text = text[close_think_match.end():].strip()
-                has_reasoning = True if reasoning else False
+    # Pattern 2: Multiple choice hallucination (model thinks it's a quiz)
+    if re.search(r'(?:options are|correct answer is|A\)|B\)|C\))', text, re.IGNORECASE):
+        # Try to find content before the quiz hallucination
+        quiz_start = re.search(r'(?:The options are|The question is|The correct answer)', text, re.IGNORECASE)
+        if quiz_start and quiz_start.start() > 100:
+            text = text[:quiz_start.start()].strip()
 
-        if think_match:
-            reasoning = think_match.group(1).strip()
-            has_reasoning = True
-            text = re.sub(think_pattern, '', text, flags=re.DOTALL | re.IGNORECASE).strip()
-        else:
-            # Pattern 2: Section headers (REASONING:, ANALYSIS:, etc.)
-            text_upper = text.upper()
-            reasoning_markers = ['REASONING:', 'ANALYSIS:', 'THINKING:', 'THOUGHT PROCESS:']
-            answer_markers = ['ANSWER:', 'FINAL ANSWER:', 'RESPONSE:', 'CONCLUSION:']
-
-            reasoning_start = -1
-            reasoning_marker_len = 0
-
-            # Find first reasoning marker
-            for marker in reasoning_markers:
-                idx = text_upper.find(marker)
-                if idx != -1 and (reasoning_start == -1 or idx < reasoning_start):
-                    reasoning_start = idx
-                    reasoning_marker_len = len(marker)
-
-            if reasoning_start != -1:
-                # Find where reasoning ends (at answer marker)
-                answer_start = -1
-                for marker in answer_markers:
-                    idx = text_upper.find(marker, reasoning_start + reasoning_marker_len)
-                    if idx != -1 and (answer_start == -1 or idx < answer_start):
-                        answer_start = idx
-
-                if answer_start != -1:
-                    # Extract reasoning and answer
-                    reasoning = text[reasoning_start + reasoning_marker_len:answer_start].strip()
-                    # Find answer marker length to skip it
-                    answer_marker_len = 0
-                    for marker in answer_markers:
-                        if text_upper[answer_start:answer_start + len(marker)] == marker:
-                            answer_marker_len = len(marker)
+    # Pattern 3: Repeated sentences
+    sentences = re.split(r'[.!?]\s+', text)
+    if len(sentences) > 5:
+        seen = {}
+        cut_at = None
+        for i, sent in enumerate(sentences):
+            sent_clean = sent.strip().lower()
+            if len(sent_clean) > 30:
+                if sent_clean in seen:
+                    seen[sent_clean] += 1
+                    if seen[sent_clean] >= 2:
+                        # Find this sentence in original text and cut before second occurrence
+                        first = text.lower().find(sent_clean)
+                        second = text.lower().find(sent_clean, first + len(sent_clean))
+                        if second > 0:
+                            cut_at = second
                             break
+                else:
+                    seen[sent_clean] = 1
+        if cut_at:
+            text = text[:cut_at].strip()
 
-                    # Check for multiple sections
-                    next_reasoning_idx = text_upper.find('REASONING:', answer_start)
-                    if next_reasoning_idx != -1:
-                        text = text[answer_start + answer_marker_len:next_reasoning_idx].strip()
-                    else:
-                        text = text[answer_start + answer_marker_len:].strip()
+    # =================================================================
+    # STEP 1: Extract reasoning/thinking (model's internal thought process)
+    # =================================================================
 
-                    has_reasoning = True
+    # DeepSeek R1 native format: <think>...</think>
+    think_match = re.search(r'<think>(.*?)</think>', text, re.DOTALL | re.IGNORECASE)
+    if think_match:
+        reasoning = think_match.group(1).strip()
+        text = text[:think_match.start()] + text[think_match.end():]
+        text = text.strip()
+        has_reasoning = True
+    else:
+        # Handle malformed: content followed by </think> without opening tag
+        close_match = re.search(r'^(.*?)</think>', text, re.DOTALL | re.IGNORECASE)
+        if close_match:
+            reasoning = close_match.group(1).strip()
+            text = text[close_match.end():].strip()
+            has_reasoning = True
 
-    # Clean up prefixes
-    text = re.sub(r'^(STAFF\s*ANSWER\s*:?\s*)+', '', text, flags=re.IGNORECASE).strip()
-    text = re.sub(r'^(RESPONSE\s*:?\s*)+', '', text, flags=re.IGNORECASE).strip()
+    # =================================================================
+    # STEP 2: Clean up any format markers/headers the model might output
+    # =================================================================
 
-    # Extract suggested questions (numbered list patterns)
+    # Remove common section headers (model might still use these)
+    header_patterns = [
+        r'^\s*\[?(?:REASONING|ANALYSIS|THINKING)\]?:?\s*',
+        r'^\s*\[?(?:ANSWER|RESPONSE|CONCLUSION)\]?:?\s*',
+        r'^\s*\[?FOLLOW-?UP.*?\]?:?\s*',
+    ]
+    for pattern in header_patterns:
+        text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.MULTILINE)
+
+
+    # =================================================================
+    # STEP 3: Extract follow-up questions
+    # =================================================================
+
     suggested_questions = []
 
-    # Pattern: Look for "questions" header followed by numbered list
-    questions_section_pattern = r'(?:should\s+ask|follow-?up\s+questions|following\s+questions|suggest(?:ed)?\s+questions?)[:\s]*\n*((?:\d+\.\s*.+?\n?)+)'
-    questions_match = re.search(questions_section_pattern, text, re.IGNORECASE | re.DOTALL)
+    # Look for numbered list (1. 2. 3.) which typically contains questions
+    # Find where the list starts
+    list_start = re.search(r'\n\s*1[.\)]\s*', text)
+    if list_start:
+        list_text = text[list_start.start():]
+        main_text = text[:list_start.start()].strip()
 
-    if questions_match:
-        questions_text = questions_match.group(1)
-        # Extract individual questions
-        question_items = re.findall(r'\d+\.\s*(.+?)(?=\d+\.|$)', questions_text, re.DOTALL)
-        # Clean and deduplicate
-        seen = set()
-        for q in question_items:
-            q_clean = q.strip().rstrip('?') + '?'
-            q_clean = re.sub(r'\s+', ' ', q_clean)  # Normalize whitespace
-            if q_clean not in seen and len(q_clean) > 10:  # Skip too-short items
-                seen.add(q_clean)
-                suggested_questions.append(q_clean)
-                if len(suggested_questions) >= 5:  # Limit to 5 questions
-                    break
+        # Extract numbered items
+        items = re.findall(r'(?:^|\n)\s*\d+[.\)]\s*(.+?)(?=\n\s*\d+[.\)]|\Z)', list_text, re.DOTALL)
 
-        # Remove the questions section from the answer
-        text = text[:questions_match.start()].strip()
+        for item in items[:5]:  # Max 5 questions
+            q = item.strip()
+            # Clean up the question
+            q = re.sub(r'\s+', ' ', q)
+            if len(q) > 10:  # Skip very short items
+                # Ensure it ends with ?
+                if not q.endswith('?'):
+                    q = q.rstrip('.,:;') + '?'
+                suggested_questions.append(q)
 
-    # Also try simpler numbered list at end
-    if not suggested_questions:
-        simple_list_pattern = r'(\d+\.\s*.+?)(?=\n\d+\.|\Z)'
-        matches = re.findall(simple_list_pattern, text, re.DOTALL)
-        if len(matches) >= 3:  # If we have a list of 3+ items, treat as questions
-            seen = set()
-            for m in matches:
-                q = m.strip()
-                q = re.sub(r'^\d+\.\s*', '', q).strip()
-                if '?' in q or 'what' in q.lower() or 'how' in q.lower() or 'have' in q.lower():
-                    q_clean = q.rstrip('?') + '?'
-                    if q_clean not in seen and len(q_clean) > 10:
-                        seen.add(q_clean)
-                        suggested_questions.append(q_clean)
-                        if len(suggested_questions) >= 5:
-                            break
-            if suggested_questions:
-                # Remove the list from answer
-                first_match = re.search(r'\d+\.\s*.+', text)
-                if first_match:
-                    text = text[:first_match.start()].strip()
+        if suggested_questions:
+            text = main_text
 
-    # Clean up the answer
+    # =================================================================
+    # STEP 4: Clean up the final answer (preserve markdown!)
+    # =================================================================
+
     answer = text.strip()
-    # Remove trailing incomplete sentences
-    if answer and not answer.endswith(('.', '!', '?', ':')):
-        last_period = max(answer.rfind('.'), answer.rfind('!'), answer.rfind('?'))
-        if last_period > len(answer) * 0.5:  # Only truncate if we keep most of it
-            answer = answer[:last_period + 1]
+
+    # =================================================================
+    # STEP 5: Final sanitization
+    # =================================================================
 
     return {
-        "reasoning": sanitize_output(reasoning) if reasoning else None,
-        "answer": sanitize_output(answer),
-        "suggested_questions": [sanitize_output(q) for q in suggested_questions],
+        "reasoning": _sanitize_text(reasoning) if reasoning else None,
+        "answer": _sanitize_text(answer),
+        "suggested_questions": [_sanitize_text(q) for q in suggested_questions],
         "has_reasoning": has_reasoning
     }
 
 
-def sanitize_output(text: str) -> str:
-    """
-    Sanitize model output by cleaning up HTML entities and formatting issues.
-
-    Args:
-        text: Raw text from model output
-
-    Returns:
-        Cleaned text
-    """
+def _sanitize_text(text: str) -> str:
+    """Clean up text for display."""
     if not text:
         return text
 
-    # Replace HTML entities
-    html_entities = {
-        '&quot;': '"',
-        '&apos;': "'",
-        '&amp;': '&',
-        '&lt;': '<',
-        '&gt;': '>',
-        '&#39;': "'",
-        '&#34;': '"',
-        '&nbsp;': ' ',
+    # HTML entities
+    replacements = {
+        '&quot;': '"', '&apos;': "'", '&amp;': '&',
+        '&lt;': '<', '&gt;': '>', '&nbsp;': ' ',
+        '\u201c': '"', '\u201d': '"',  # Curly double quotes
+        '\u2018': "'", '\u2019': "'",  # Curly single quotes
     }
-    for entity, char in html_entities.items():
-        text = text.replace(entity, char)
+    for old, new in replacements.items():
+        text = text.replace(old, new)
 
-    # Replace curly/smart quotes with straight quotes
-    text = text.replace('\u201c', '"')  # left double
-    text = text.replace('\u201d', '"')  # right double
-    text = text.replace('\u2018', "'")  # left single
-    text = text.replace('\u2019', "'")  # right single
-
-    # Clean up excessive whitespace
+    # Normalize whitespace
     text = re.sub(r'\n{3,}', '\n\n', text)
     text = re.sub(r' {2,}', ' ', text)
+    text = re.sub(r'^\s+', '', text, flags=re.MULTILINE)
 
     return text.strip()
 
@@ -337,16 +291,18 @@ Keep your reasoning notes brief (2-3 sentences).
 UPDATED REASONING:"""
 
 
-STAFF_QA_PROMPT_TEMPLATE = """You are a medical triage assistant helping staff understand a patient case.
+# =============================================================================
+# Single Clean Prompt - Works With All Models
+# =============================================================================
 
-PATIENT CASE:
+STAFF_QA_PROMPT = """You are a clinical triage assistant. You help healthcare staff understand patient cases. You do not diagnose or prescribe treatment.
+
+PATIENT INFORMATION:
 {case_data}
 
 STAFF QUESTION: {question}
 
-First analyze the data, then provide a direct answer. End with 3 follow-up questions the provider should ask.
-
-Do NOT diagnose. Only summarize data and suggest questions."""
+Please answer the question based on the patient data. Explain your reasoning, and suggest follow-up questions the provider should ask the patient."""
 
 
 # =============================================================================
@@ -750,12 +706,19 @@ class MultiModelEngine:
 
         case_text = self._format_case_for_staff(clinical_state)
 
-        prompt = STAFF_QA_PROMPT_TEMPLATE.format(
+        prompt = STAFF_QA_PROMPT.format(
             case_data=case_text,
             question=question
         )
 
-        raw_response = self._generate(prompt, max_tokens=768, temperature=0.3)  # Increased from 512 to accommodate REASONING + ANSWER sections
+        raw_response = self._generate(prompt, max_tokens=768, temperature=0.3)
+
+        # Log full raw output for debugging
+        print("=" * 60)
+        print("RAW MODEL OUTPUT:")
+        print("=" * 60)
+        print(raw_response)
+        print("=" * 60)
 
         # Parse to separate reasoning from answer
         parsed = parse_reasoning_response(raw_response)

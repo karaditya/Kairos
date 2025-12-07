@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { motion } from "framer-motion";
+import ReactMarkdown from "react-markdown";
 import {
   Lock,
   Search,
@@ -613,9 +614,11 @@ export default function StaffPortal() {
                                   <h4 className="text-sm font-semibold text-blue-700 dark:text-blue-300 mb-2">
                                     Answer
                                   </h4>
-                                  <p className="text-gray-800 dark:text-gray-200 leading-relaxed">
-                                    {answer.answer || "No specific answer generated."}
-                                  </p>
+                                  <div className="text-gray-800 dark:text-gray-200 leading-relaxed prose prose-sm dark:prose-invert max-w-none">
+                                    <ReactMarkdown>
+                                      {answer.answer || "No specific answer generated."}
+                                    </ReactMarkdown>
+                                  </div>
                                 </div>
                               </div>
                             </div>
@@ -665,9 +668,11 @@ export default function StaffPortal() {
                                 </button>
                                 {showReasoning && (
                                   <div className="p-4 bg-purple-50/50 dark:bg-purple-900/10 border-t border-purple-200 dark:border-purple-800">
-                                    <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed whitespace-pre-wrap font-mono">
-                                      {answer.reasoning}
-                                    </p>
+                                    <div className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed prose prose-sm dark:prose-invert max-w-none">
+                                      <ReactMarkdown>
+                                        {answer.reasoning}
+                                      </ReactMarkdown>
+                                    </div>
                                   </div>
                                 )}
                               </div>
