@@ -121,10 +121,25 @@ The system supports **10+ offline models** with dynamic model switching. You can
 
 ⭐ = Recommended for beginners | 🧠 = Shows reasoning process | 🏥 = Medical-specialized
 
-**Quick Download (Recommended for CPU):**
+**Option A: Using Download Script (Easiest - Recommended)**
 
 ```bash
-# Create models directory
+# Make script executable
+chmod +x download_models.sh
+
+# Download single model
+./download_models.sh llama-3.2-1b
+
+# Download multiple models
+./download_models.sh llama-3.2-1b deepseek-r1-1.5b qwen2.5-1.5b
+
+# List available models
+./download_models.sh --list
+```
+
+**Option B: Manual Download with wget**
+
+```bash
 mkdir -p models
 cd models
 
@@ -135,27 +150,7 @@ wget https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Ll
 cd ..
 ```
 
-**Download Multiple Models:**
-
-```bash
-mkdir -p models
-cd models
-
-# Llama 3.2 1B (CPU-friendly)
-wget https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf \
-  -O llama-3.2-1b-instruct-q4_k_m.gguf
-
-# DeepSeek R1 1.5B (shows chain-of-thought reasoning)
-wget https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf \
-  -O deepseek-r1-1.5b-q4_k_m.gguf
-
-# Qwen 2.5 1.5B (good balance)
-wget https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf
-
-cd ..
-```
-
-**Download with Hugging Face CLI (Alternative):**
+**Option C: Using Hugging Face CLI**
 
 ```bash
 pip install huggingface_hub
