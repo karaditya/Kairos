@@ -21,15 +21,22 @@ Built with **FastAPI** (backend) + **Next.js/React** (frontend) + **Local LLM**.
 ### Staff Mode
 - 🔐 PIN-protected access
 - 📊 Real-time case list with filtering and search
-- 💬 AI-powered Q&A about cases
+- 💬 **AI-powered Q&A with reasoning visualization**
+  - 🟣 **Purple box**: Chain-of-thought reasoning (collapsible)
+  - 🔵 **Blue box**: Final answer
+  - 🟢 **Green box**: Suggested follow-up questions
+- 🔄 **Dynamic model switching** - Switch between 10+ models on the fly
 - ✅ Status tracking (Pending/Reviewed/Discharged)
 - 📝 Auto-generated clinical summaries
-- 🎨 Modern UI with Tailwind CSS
+- 🎨 Modern UI with Tailwind CSS and animations
 
 ### Technical
 - 🔒 100% offline operation (no internet required after setup)
-- 🧠 Local LLM with TRM-style iterative reasoning
+- 🧠 **Multi-model support** with 10+ offline LLMs
+- 🔄 **Dynamic model switching** during runtime (no restart needed)
+- 🧬 **Chain-of-thought reasoning** - See how AI thinks (DeepSeek models)
 - 📜 Deterministic risk rules (model cannot override)
+- 🔐 **XSS protection** with HTML sanitization
 - 💾 SQLite database for data persistence
 - 🔧 JSON-configurable triage trees
 - ⚡ Fast API backend with async operations
@@ -93,45 +100,105 @@ ls venv/lib/python3.12/site-packages/llama_cpp/lib/libggml-cuda.so
 
 This builds llama-cpp-python with CUDA support (~3-5 minutes). You can still use CPU mode by setting `N_GPU_LAYERS=0`.
 
-#### Download the LLM Model (Optional but Recommended)
+#### Download LLM Models (Optional but Recommended)
 
-You need a GGUF model file. Choose one of these options:
+The system supports **10+ offline models** with dynamic model switching. You can download one or multiple models.
 
-**Option A: Llama 3.2 1B Instruct (Recommended - Smallest, ~738MB)**
+**Supported Models:**
+
+| Model | Family | Size | Speed | Quality | Best For |
+|-------|--------|------|-------|---------|----------|
+| **Llama 3.2 1B** ⭐ | Meta | 738MB | ⚡⚡⚡ | ⭐⭐ | CPU-only, fast inference |
+| **Llama 3.2 3B** | Meta | 2GB | ⚡⚡ | ⭐⭐⭐ | Balanced quality/speed |
+| **Gemma 2 2B** | Google | 1.6GB | ⚡⚡⚡ | ⭐⭐⭐ | Google's compact model |
+| **DeepSeek R1 1.5B** 🧠 | DeepSeek | 1GB | ⚡⚡⚡ | ⭐⭐⭐ | Chain-of-thought reasoning |
+| **DeepSeek R1 7B** | DeepSeek | 4.4GB | ⚡ | ⭐⭐⭐⭐ | Advanced reasoning (GPU) |
+| **Phi 3.5 Mini** | Microsoft | 2.5GB | ⚡⚡ | ⭐⭐⭐⭐ | High quality, moderate size |
+| **Qwen 2.5 1.5B** | Alibaba | 1GB | ⚡⚡⚡ | ⭐⭐⭐ | Efficient, good reasoning |
+| **Qwen 2.5 3B** | Alibaba | 2GB | ⚡⚡ | ⭐⭐⭐⭐ | Excellent medical reasoning |
+| **SmolLM2 1.7B** | HuggingFace | 1GB | ⚡⚡⚡ | ⭐⭐ | Lightweight, efficient |
+| **MedLlama 3** 🏥 | Medical | 4.7GB | ⚡ | ⭐⭐⭐⭐⭐ | Medical-specific (GPU) |
+
+⭐ = Recommended for beginners | 🧠 = Shows reasoning process | 🏥 = Medical-specialized
+
+**Quick Download (Recommended for CPU):**
+
+```bash
+# Create models directory
+mkdir -p models
+cd models
+
+# Download Llama 3.2 1B (fastest, smallest)
+wget https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf \
+  -O llama-3.2-1b-instruct-q4_k_m.gguf
+
+cd ..
+```
+
+**Download Multiple Models:**
 
 ```bash
 mkdir -p models
 cd models
 
-# Download from Hugging Face (bartowski's reliable repository)
-wget https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf -O llama-3.2-1b-instruct-q4_k_m.gguf
+# Llama 3.2 1B (CPU-friendly)
+wget https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf \
+  -O llama-3.2-1b-instruct-q4_k_m.gguf
+
+# DeepSeek R1 1.5B (shows chain-of-thought reasoning)
+wget https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf \
+  -O deepseek-r1-1.5b-q4_k_m.gguf
+
+# Qwen 2.5 1.5B (good balance)
+wget https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf
 
 cd ..
 ```
 
-**Option B: Phi-3.5 Mini Instruct (Better quality, ~2.5GB)**
-
-```bash
-mkdir -p models
-cd models
-wget https://huggingface.co/lmstudio-community/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf
-mv Phi-3.5-mini-instruct-Q4_K_M.gguf llama-3.2-1b-instruct-q4_k_m.gguf
-cd ..
-```
-
-**Option C: Using Hugging Face Hub CLI**
+**Download with Hugging Face CLI (Alternative):**
 
 ```bash
 pip install huggingface_hub
 mkdir -p models
+
+# Example: Download Llama 3.2 1B
 huggingface-cli download bartowski/Llama-3.2-1B-Instruct-GGUF \
     Llama-3.2-1B-Instruct-Q4_K_M.gguf \
     --local-dir models \
     --local-dir-use-symlinks False
+
+# Rename to expected filename
 mv models/Llama-3.2-1B-Instruct-Q4_K_M.gguf models/llama-3.2-1b-instruct-q4_k_m.gguf
 ```
 
-**Note:** The system works in fallback mode without a model, but LLM-powered summaries won't be available.
+**Model Switching:**
+
+Once you've downloaded multiple models, you can switch between them in the Staff Portal:
+1. Open http://localhost:3000/staff
+2. Look for the model selector dropdown (CPU icon) in the top-right
+3. Select any downloaded model
+4. The system will automatically switch and use the new model
+
+**Note:** The system works in fallback mode without models, but AI-powered features won't be available.
+
+**Expected Model Filenames:**
+
+The system looks for models with these exact filenames in the `models/` directory:
+
+| Model | Expected Filename |
+|-------|-------------------|
+| Llama 3.2 1B | `llama-3.2-1b-instruct-q4_k_m.gguf` |
+| Llama 3.2 3B | `llama-3.2-3b-instruct-q4_k_m.gguf` |
+| Gemma 2 2B | `gemma-2-2b-instruct-q4_k_m.gguf` |
+| DeepSeek R1 1.5B | `deepseek-r1-1.5b-q4_k_m.gguf` |
+| DeepSeek R1 7B | `deepseek-r1-7b-q4_k_m.gguf` |
+| Phi 3.5 Mini | `phi-3.5-mini-instruct-q4_k_m.gguf` |
+| Qwen 2.5 1.5B | `qwen2.5-1.5b-instruct-q4_k_m.gguf` |
+| Qwen 2.5 3B | `qwen2.5-3b-instruct-q4_k_m.gguf` |
+| SmolLM2 1.7B | `smollm2-1.7b-instruct-q4_k_m.gguf` |
+| MedLlama3 v20 | `medllama3-v20-q4_k_m.gguf` |
+
+After downloading, rename files to match these exact names. The system automatically detects which models are available.
 
 ### 3. Frontend Setup
 
@@ -216,6 +283,39 @@ N_GPU_LAYERS=-1 STAFF_PIN="9999" python backend/main.py
 
 ---
 
+## ✨ What's New
+
+### Recent Features (Latest Update)
+
+#### 🧬 Chain-of-Thought Reasoning Visualization
+- **Purple Box**: See how the AI thinks through problems (DeepSeek models)
+- **Collapsible**: Click to expand/hide the reasoning process
+- Helps staff understand AI decision-making
+
+#### 🔄 Dynamic Model Switching
+- Switch between 10+ models without restarting
+- Compare responses from different models
+- Model selector in staff portal (top-right dropdown)
+
+#### 🎨 Improved Answer Display
+- **Blue Box**: Main answer
+- **Green Box**: Suggested follow-up questions (automatically extracted)
+- **Purple Box**: Chain-of-thought reasoning
+- Clean, organized UI with color-coded sections
+
+#### 🔐 Security Enhancements
+- **XSS Protection**: All LLM outputs are HTML-escaped
+- **Logging**: Parsing failures now logged for debugging
+- **Multi-section Support**: Handles complex model outputs gracefully
+
+#### 📊 Model Management API
+- `/models` endpoint lists all supported models
+- `/models/switch` allows runtime model switching
+- `/models/stats` shows engine statistics
+- Check availability before downloading
+
+---
+
 ## 📁 Project Structure
 
 ```
@@ -224,7 +324,8 @@ triage_mvp/
 │   ├── main.py                   # FastAPI application & API routes
 │   ├── database.py               # SQLite database layer
 │   ├── triage_engine.py          # Question flow & risk rules
-│   └── reasoning_engine.py       # TRM-style LLM reasoning
+│   ├── multi_model_engine.py     # Multi-model LLM reasoning engine
+│   └── model_registry.py         # Supported models configuration
 │
 ├── frontend/                     # Next.js Frontend
 │   ├── app/                      # Next.js 13+ app directory
@@ -379,8 +480,18 @@ This produces more thoughtful, coherent summaries than single-shot generation.
 | POST | `/staff/auth` | Authenticate with PIN |
 | GET | `/staff/cases` | List all cases |
 | GET | `/staff/case/{id}` | Get case details |
-| POST | `/staff/case/{id}/ask` | Ask question about case |
+| POST | `/staff/case/{id}/ask` | Ask question (with optional `model_id`) |
 | POST | `/staff/case/{id}/status` | Update case status |
+
+### Model Management Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/models` | List all supported models |
+| GET | `/models/current` | Get currently loaded model |
+| GET | `/models/{model_id}` | Get specific model info |
+| POST | `/models/switch` | Switch to different model (staff only) |
+| GET | `/models/stats` | Get engine statistics (staff only) |
 
 ---
 
@@ -411,9 +522,18 @@ This produces more thoughtful, coherent summaries than single-shot generation.
 2. Enter PIN: 1234 (default)
 3. Browse the case list with real-time updates
 4. Click on a case to view details
-5. Ask: "Why was this patient flagged?"
-6. Try marking case as reviewed/discharged
-7. Toggle dark mode to test theme switching
+5. **Test AI Q&A:**
+   - Ask: "Why was this patient flagged?"
+   - Look for **3 colored boxes**:
+     - 🟣 Purple = Chain-of-thought reasoning (click to expand)
+     - 🔵 Blue = Final answer
+     - 🟢 Green = Suggested follow-up questions
+6. **Test model switching:**
+   - Click the model dropdown (CPU icon, top-right)
+   - Switch to a different model (if you downloaded multiple)
+   - Ask another question to see the new model's response
+7. Try marking case as reviewed/discharged
+8. Toggle dark mode to test theme switching
 
 ### Test Without Model (Fallback Mode)
 
@@ -541,9 +661,15 @@ For questions about deployment or customization, please open an issue.
 - **Check API URL:** Frontend uses `NEXT_PUBLIC_API_URL` (defaults to `http://localhost:8000`)
 
 ### Model not loading
-- **Verify model path:** Check that the model file exists at `models/llama-3.2-1b-instruct-q4_k_m.gguf`
-- **Check file permissions:** Ensure model file is readable
-- **Fallback mode:** System works without model - you'll see a warning message
+- **Verify model files exist:**
+  ```bash
+  ls -lh models/*.gguf
+  ```
+- **Check model registry:** Visit http://localhost:8000/models to see available models
+- **Download models:** Use wget commands from the "Download LLM Models" section
+- **Check file permissions:** Ensure model files are readable
+- **Fallback mode:** System works without models - you'll see a warning message
+- **Model switching:** Staff portal shows which models are available vs. loaded
 
 ### GPU acceleration not working
 - **Install CUDA toolkit first:**
