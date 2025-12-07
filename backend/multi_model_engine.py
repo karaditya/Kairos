@@ -23,7 +23,6 @@ CRITICAL: The engine CANNOT override deterministic risk bands.
 import os
 import gc
 import threading
-import html
 import logging
 from typing import Dict, List, Any, Tuple, Optional
 from dataclasses import dataclass
@@ -75,8 +74,6 @@ def parse_reasoning_response(text: str) -> dict:
         reasoning = think_match.group(1).strip()
         has_reasoning = True
         text = re.sub(think_pattern, '', text, flags=re.DOTALL | re.IGNORECASE).strip()
-        # Sanitize to prevent XSS
-        reasoning = html.escape(reasoning)
     else:
         # Pattern 2: Section headers (REASONING:, ANALYSIS:, etc.)
         text_upper = text.upper()
@@ -120,8 +117,6 @@ def parse_reasoning_response(text: str) -> dict:
                     text = text[answer_start + answer_marker_len:].strip()
 
                 has_reasoning = True
-                # Sanitize to prevent XSS
-                reasoning = html.escape(reasoning)
             else:
                 # Reasoning found but no answer marker
                 logger.warning(f"REASONING marker found at {reasoning_start} but no ANSWER marker")
@@ -187,9 +182,6 @@ def parse_reasoning_response(text: str) -> dict:
         last_period = max(answer.rfind('.'), answer.rfind('!'), answer.rfind('?'))
         if last_period > len(answer) * 0.5:  # Only truncate if we keep most of it
             answer = answer[:last_period + 1]
-
-    # Sanitize answer to prevent XSS
-    answer = html.escape(answer)
 
     return {
         "reasoning": reasoning,
