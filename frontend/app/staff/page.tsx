@@ -13,7 +13,10 @@ import {
   Zap,
   HardDrive,
   ChevronDown,
+  ChevronRight,
   Loader2,
+  Brain,
+  MessageSquare,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,7 +37,15 @@ export default function StaffPortal() {
   const [searchQuery, setSearchQuery] = useState("");
 
   const [askQuestion, setAskQuestion] = useState("");
-  const [answer, setAnswer] = useState<any>(null);
+  const [answer, setAnswer] = useState<{
+    answer: string;
+    reasoning: string | null;
+    has_reasoning: boolean;
+    cited_data: string[];
+    model_used: string;
+    disclaimer: string;
+  } | null>(null);
+  const [showReasoning, setShowReasoning] = useState(false);
 
   // Model management state
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -592,13 +603,57 @@ export default function StaffPortal() {
                         </div>
 
                         {answer && (
-                          <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded">
-                            <p className="text-gray-700 dark:text-gray-300">
-                              {answer.answer}
-                            </p>
-                            <p className="text-xs text-gray-500 mt-2">
-                              {answer.disclaimer}
-                            </p>
+                          <div className="space-y-3">
+                            {/* Main Answer */}
+                            <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border border-blue-200 dark:border-blue-800">
+                              <div className="flex items-start gap-3">
+                                <MessageSquare className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
+                                <div className="flex-1">
+                                  <p className="text-gray-800 dark:text-gray-200 leading-relaxed">
+                                    {answer.answer}
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Chain of Thought (Collapsible) */}
+                            {answer.has_reasoning && answer.reasoning && (
+                              <div className="border border-purple-200 dark:border-purple-800 rounded-lg overflow-hidden">
+                                <button
+                                  onClick={() => setShowReasoning(!showReasoning)}
+                                  className="w-full flex items-center gap-2 p-3 bg-purple-50 dark:bg-purple-900/20 hover:bg-purple-100 dark:hover:bg-purple-900/30 transition-colors"
+                                >
+                                  {showReasoning ? (
+                                    <ChevronDown className="h-4 w-4 text-purple-600" />
+                                  ) : (
+                                    <ChevronRight className="h-4 w-4 text-purple-600" />
+                                  )}
+                                  <Brain className="h-4 w-4 text-purple-600" />
+                                  <span className="text-sm font-medium text-purple-700 dark:text-purple-300">
+                                    View AI Reasoning Process
+                                  </span>
+                                  <span className="text-xs text-purple-500 ml-auto">
+                                    Chain-of-Thought
+                                  </span>
+                                </button>
+                                {showReasoning && (
+                                  <div className="p-4 bg-purple-50/50 dark:bg-purple-900/10 border-t border-purple-200 dark:border-purple-800">
+                                    <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed whitespace-pre-wrap font-mono">
+                                      {answer.reasoning}
+                                    </p>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {/* Model & Disclaimer */}
+                            <div className="flex items-center justify-between text-xs text-gray-500">
+                              <span className="flex items-center gap-1">
+                                <Cpu className="h-3 w-3" />
+                                {answer.model_used}
+                              </span>
+                              <span>{answer.disclaimer}</span>
+                            </div>
                           </div>
                         )}
                       </div>

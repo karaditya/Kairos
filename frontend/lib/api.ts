@@ -266,7 +266,14 @@ export const api = {
     question: string,
     staffPin: string,
     modelId?: string
-  ): Promise<{ answer: string; cited_data: string[]; disclaimer: string }> {
+  ): Promise<{
+    answer: string;
+    reasoning: string | null;
+    has_reasoning: boolean;
+    cited_data: string[];
+    model_used: string;
+    disclaimer: string;
+  }> {
     const response = await fetch(
       `${API_BASE_URL}/staff/case/${caseId}/ask`,
       {

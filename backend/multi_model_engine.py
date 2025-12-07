@@ -27,6 +27,8 @@ from typing import Dict, List, Any, Tuple, Optional
 from dataclasses import dataclass
 from datetime import datetime
 
+import re
+
 from model_registry import (
     SUPPORTED_MODELS,
     ModelConfig,
@@ -35,6 +37,54 @@ from model_registry import (
     model_to_dict,
     DEFAULT_MODEL_ID,
 )
+
+
+# =============================================================================
+# Response Parsing (Chain-of-Thought Models)
+# =============================================================================
+
+def parse_reasoning_response(text: str) -> dict:
+    """
+    Parse model response to separate chain-of-thought from final answer.
+
+    Handles DeepSeek R1 style <think>...</think> tags and similar patterns.
+
+    Returns:
+        {
+            "reasoning": str or None,  # The thinking/reasoning process
+            "answer": str,             # The final clean answer
+            "has_reasoning": bool      # Whether CoT was present
+        }
+    """
+    if not text:
+        return {"reasoning": None, "answer": "", "has_reasoning": False}
+
+    # Pattern 1: <think>...</think> tags (DeepSeek R1 style)
+    think_pattern = r'<think>(.*?)</think>'
+    think_match = re.search(think_pattern, text, re.DOTALL | re.IGNORECASE)
+
+    if think_match:
+        reasoning = think_match.group(1).strip()
+        # Remove the think tags and get the answer
+        answer = re.sub(think_pattern, '', text, flags=re.DOTALL | re.IGNORECASE).strip()
+        # Clean up any duplicate content or "STAFF ANSWER:" prefixes
+        answer = re.sub(r'^(STAFF\s*ANSWER\s*:?\s*)+', '', answer, flags=re.IGNORECASE).strip()
+        return {"reasoning": reasoning, "answer": answer, "has_reasoning": True}
+
+    # Pattern 2: **Thinking:** or **Reasoning:** sections
+    section_pattern = r'\*\*(Thinking|Reasoning|Analysis)\*\*:?\s*(.*?)(?=\*\*(Answer|Response|Summary)\*\*|$)'
+    section_match = re.search(section_pattern, text, re.DOTALL | re.IGNORECASE)
+
+    if section_match:
+        reasoning = section_match.group(2).strip()
+        answer = re.sub(section_pattern, '', text, flags=re.DOTALL | re.IGNORECASE).strip()
+        answer = re.sub(r'\*\*(Answer|Response|Summary)\*\*:?\s*', '', answer, flags=re.IGNORECASE).strip()
+        return {"reasoning": reasoning, "answer": answer, "has_reasoning": True}
+
+    # No reasoning pattern found - return as-is
+    # But still clean up any weird prefixes
+    clean_answer = re.sub(r'^(STAFF\s*ANSWER\s*:?\s*)+', '', text, flags=re.IGNORECASE).strip()
+    return {"reasoning": None, "answer": clean_answer, "has_reasoning": False}
 
 # =============================================================================
 # LLM Backend
@@ -505,7 +555,7 @@ class MultiModelEngine:
         question: str,
         clinical_state: Dict[str, Any],
         model_id: Optional[str] = None
-    ) -> Tuple[str, List[str]]:
+    ) -> Dict[str, Any]:
         """
         Answer a staff question about a case.
 
@@ -515,7 +565,13 @@ class MultiModelEngine:
             model_id: Optional model to use
 
         Returns:
-            (answer_text, list_of_cited_data_points)
+            {
+                "answer": str,           # Clean final answer
+                "reasoning": str | None, # Chain-of-thought (if available)
+                "has_reasoning": bool,   # Whether CoT was present
+                "cited_data": list,      # Referenced data points
+                "model_used": str        # Model that generated response
+            }
         """
         # Switch model if requested
         if model_id and model_id != (self._current_model.model_id if self._current_model else None):
@@ -529,10 +585,20 @@ class MultiModelEngine:
             question=question
         )
 
-        answer = self._generate(prompt, max_tokens=512, temperature=0.3)
-        cited_data = self._extract_citations(answer, clinical_state)
+        raw_response = self._generate(prompt, max_tokens=512, temperature=0.3)
 
-        return answer, cited_data
+        # Parse to separate reasoning from answer
+        parsed = parse_reasoning_response(raw_response)
+
+        cited_data = self._extract_citations(parsed["answer"], clinical_state)
+
+        return {
+            "answer": parsed["answer"],
+            "reasoning": parsed["reasoning"],
+            "has_reasoning": parsed["has_reasoning"],
+            "cited_data": cited_data,
+            "model_used": self._current_model.config.name if self._current_model else "Fallback"
+        }
 
     # =========================================================================
     # Data Formatting Helpers

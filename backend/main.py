@@ -85,7 +85,10 @@ class StaffAskRequest(BaseModel):
 
 class StaffAskResponse(BaseModel):
     answer: str
+    reasoning: Optional[str] = None
+    has_reasoning: bool = False
     cited_data: List[str]
+    model_used: str
     disclaimer: str
 
 class CaseListResponse(BaseModel):
@@ -472,15 +475,18 @@ async def staff_ask(case_id: str, request: StaffAskRequestWithModel, _: bool = D
     }
 
     # Use reasoning engine to answer (with optional model selection)
-    answer, cited_data = reasoning_engine.answer_staff_question(
+    result = reasoning_engine.answer_staff_question(
         request.question,
         clinical_state,
         model_id=request.model_id
     )
 
     return StaffAskResponse(
-        answer=answer,
-        cited_data=cited_data,
+        answer=result["answer"],
+        reasoning=result["reasoning"],
+        has_reasoning=result["has_reasoning"],
+        cited_data=result["cited_data"],
+        model_used=result["model_used"],
         disclaimer="This is decision support only. Clinical judgment is required for all patient care decisions."
     )
 
