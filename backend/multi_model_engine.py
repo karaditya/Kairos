@@ -66,63 +66,93 @@ def parse_reasoning_response(text: str) -> dict:
     reasoning = None
     has_reasoning = False
 
-    # Pattern 1: <think>...</think> tags (DeepSeek R1 style)
-    think_pattern = r'<think>(.*?)</think>'
-    think_match = re.search(think_pattern, text, re.DOTALL | re.IGNORECASE)
+    # Clean up prompt leakage - remove instruction text that model might echo
+    # These patterns match at start OR end of text
+    prompt_leakage_patterns = [
+        r'Use the format:?\s*\[?REASONING\]?\s*\[?ANSWER\]?\s*\[?FOLLOW-?UP QUESTIONS\]?\.?\s*',
+        r'Use the format\s*["\u201c\u201d"\']*REASONING["\u201c\u201d"\']*:?\s*followed by\s*["\u201c\u201d"\']*ANSWER["\u201c\u201d"\']*:?\.?\s*',
+        r'Now provide your response.*?:\s*',
+        r'Format your response.*?:\s*',
+        r'Provide your response with these sections:?\s*',
+    ]
+    for pattern in prompt_leakage_patterns:
+        # Remove from start
+        text = re.sub(r'^' + pattern, '', text, flags=re.IGNORECASE | re.DOTALL).strip()
+        # Remove from end
+        text = re.sub(pattern + r'$', '', text, flags=re.IGNORECASE | re.DOTALL).strip()
 
-    if think_match:
-        reasoning = think_match.group(1).strip()
-        has_reasoning = True
-        text = re.sub(think_pattern, '', text, flags=re.DOTALL | re.IGNORECASE).strip()
+    # Pattern 0: [REASONING]...[ANSWER] bracket format
+    bracket_pattern = r'\[REASONING\]\s*(.*?)\s*\[ANSWER\]\s*(.*?)(?:\[FOLLOW-?UP|$)'
+    bracket_match = re.search(bracket_pattern, text, re.DOTALL | re.IGNORECASE)
+    if bracket_match:
+        reasoning = bracket_match.group(1).strip()
+        text = bracket_match.group(2).strip()
+        has_reasoning = True if reasoning else False
+        # Remove follow-up section if present
+        followup_idx = text.upper().find('[FOLLOW')
+        if followup_idx != -1:
+            text = text[:followup_idx].strip()
     else:
-        # Pattern 2: Section headers (REASONING:, ANALYSIS:, etc.)
-        text_upper = text.upper()
-        reasoning_markers = ['REASONING:', 'ANALYSIS:', 'THINKING:', 'THOUGHT PROCESS:']
-        answer_markers = ['ANSWER:', 'FINAL ANSWER:', 'RESPONSE:', 'CONCLUSION:']
+        # Pattern 1: <think>...</think> tags (DeepSeek R1 style)
+        think_pattern = r'<think>(.*?)</think>'
+        think_match = re.search(think_pattern, text, re.DOTALL | re.IGNORECASE)
 
-        reasoning_start = -1
-        reasoning_marker_len = 0
+        # Pattern 1b: Handle missing <think> but present </think> (malformed output)
+        if not think_match:
+            # Check if there's a </think> without opening tag
+            close_think_match = re.search(r'</think>', text, re.IGNORECASE)
+            if close_think_match:
+                # Everything before </think> is the reasoning
+                reasoning = text[:close_think_match.start()].strip()
+                text = text[close_think_match.end():].strip()
+                has_reasoning = True if reasoning else False
 
-        # Find first reasoning marker
-        for marker in reasoning_markers:
-            idx = text_upper.find(marker)
-            if idx != -1 and (reasoning_start == -1 or idx < reasoning_start):
-                reasoning_start = idx
-                reasoning_marker_len = len(marker)
+        if think_match:
+            reasoning = think_match.group(1).strip()
+            has_reasoning = True
+            text = re.sub(think_pattern, '', text, flags=re.DOTALL | re.IGNORECASE).strip()
+        else:
+            # Pattern 2: Section headers (REASONING:, ANALYSIS:, etc.)
+            text_upper = text.upper()
+            reasoning_markers = ['REASONING:', 'ANALYSIS:', 'THINKING:', 'THOUGHT PROCESS:']
+            answer_markers = ['ANSWER:', 'FINAL ANSWER:', 'RESPONSE:', 'CONCLUSION:']
 
-        if reasoning_start != -1:
-            # Find where reasoning ends (at answer marker)
-            answer_start = -1
-            for marker in answer_markers:
-                idx = text_upper.find(marker, reasoning_start + reasoning_marker_len)
-                if idx != -1 and (answer_start == -1 or idx < answer_start):
-                    answer_start = idx
+            reasoning_start = -1
+            reasoning_marker_len = 0
 
-            if answer_start != -1:
-                # Extract reasoning and answer
-                reasoning = text[reasoning_start + reasoning_marker_len:answer_start].strip()
-                # Find answer marker length to skip it
-                answer_marker_len = 0
+            # Find first reasoning marker
+            for marker in reasoning_markers:
+                idx = text_upper.find(marker)
+                if idx != -1 and (reasoning_start == -1 or idx < reasoning_start):
+                    reasoning_start = idx
+                    reasoning_marker_len = len(marker)
+
+            if reasoning_start != -1:
+                # Find where reasoning ends (at answer marker)
+                answer_start = -1
                 for marker in answer_markers:
-                    if text_upper[answer_start:answer_start + len(marker)] == marker:
-                        answer_marker_len = len(marker)
-                        break
+                    idx = text_upper.find(marker, reasoning_start + reasoning_marker_len)
+                    if idx != -1 and (answer_start == -1 or idx < answer_start):
+                        answer_start = idx
 
-                # Check for multiple sections
-                next_reasoning_idx = text_upper.find('REASONING:', answer_start)
-                if next_reasoning_idx != -1:
-                    logger.warning("Multiple REASONING/ANSWER sections detected, using first pair only")
-                    text = text[answer_start + answer_marker_len:next_reasoning_idx].strip()
-                else:
-                    text = text[answer_start + answer_marker_len:].strip()
+                if answer_start != -1:
+                    # Extract reasoning and answer
+                    reasoning = text[reasoning_start + reasoning_marker_len:answer_start].strip()
+                    # Find answer marker length to skip it
+                    answer_marker_len = 0
+                    for marker in answer_markers:
+                        if text_upper[answer_start:answer_start + len(marker)] == marker:
+                            answer_marker_len = len(marker)
+                            break
 
-                has_reasoning = True
-            else:
-                # Reasoning found but no answer marker
-                logger.warning(f"REASONING marker found at {reasoning_start} but no ANSWER marker")
-        elif reasoning_start != -1 or any(text_upper.find(marker) != -1 for marker in answer_markers):
-            # Partial markers found
-            logger.warning("Only partial REASONING/ANSWER markers found")
+                    # Check for multiple sections
+                    next_reasoning_idx = text_upper.find('REASONING:', answer_start)
+                    if next_reasoning_idx != -1:
+                        text = text[answer_start + answer_marker_len:next_reasoning_idx].strip()
+                    else:
+                        text = text[answer_start + answer_marker_len:].strip()
+
+                    has_reasoning = True
 
     # Clean up prefixes
     text = re.sub(r'^(STAFF\s*ANSWER\s*:?\s*)+', '', text, flags=re.IGNORECASE).strip()
@@ -184,11 +214,52 @@ def parse_reasoning_response(text: str) -> dict:
             answer = answer[:last_period + 1]
 
     return {
-        "reasoning": reasoning,
-        "answer": answer,
-        "suggested_questions": suggested_questions,
+        "reasoning": sanitize_output(reasoning) if reasoning else None,
+        "answer": sanitize_output(answer),
+        "suggested_questions": [sanitize_output(q) for q in suggested_questions],
         "has_reasoning": has_reasoning
     }
+
+
+def sanitize_output(text: str) -> str:
+    """
+    Sanitize model output by cleaning up HTML entities and formatting issues.
+
+    Args:
+        text: Raw text from model output
+
+    Returns:
+        Cleaned text
+    """
+    if not text:
+        return text
+
+    # Replace HTML entities
+    html_entities = {
+        '&quot;': '"',
+        '&apos;': "'",
+        '&amp;': '&',
+        '&lt;': '<',
+        '&gt;': '>',
+        '&#39;': "'",
+        '&#34;': '"',
+        '&nbsp;': ' ',
+    }
+    for entity, char in html_entities.items():
+        text = text.replace(entity, char)
+
+    # Replace curly/smart quotes with straight quotes
+    text = text.replace('\u201c', '"')  # left double
+    text = text.replace('\u201d', '"')  # right double
+    text = text.replace('\u2018', "'")  # left single
+    text = text.replace('\u2019', "'")  # right single
+
+    # Clean up excessive whitespace
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r' {2,}', ' ', text)
+
+    return text.strip()
+
 
 # =============================================================================
 # LLM Backend
@@ -273,36 +344,9 @@ PATIENT CASE:
 
 STAFF QUESTION: {question}
 
-Instructions:
-1. First, show your thinking process and analysis (use "REASONING:" header)
-2. Then provide a clear, actionable answer (use "ANSWER:" header)
-3. Base your response on the patient information provided
-4. Be concise but thorough
+First analyze the data, then provide a direct answer. End with 3 follow-up questions the provider should ask.
 
-Example:
-
-Question: Should we admit a 65-year-old with chest pain, normal ECG, troponin 0.03?
-
-REASONING:
-Patient has chest pain with mildly elevated troponin (normal <0.01). Normal ECG is reassuring but doesn't rule out ACS. Need to consider: timing of onset, troponin trend, cardiac risk factors. Even mild troponin elevation with chest pain requires serial monitoring. Conservative approach warranted for patient safety.
-
-ANSWER:
-Yes, recommend admission for serial troponins and observation. Patient needs rule-out ACS protocol with repeat troponins at 3 and 6 hours. Monitor for evolving ECG changes.
-
-Now provide your response in this EXACT format:
-
-REASONING:
-[Show your analytical thinking process here]
-
-ANSWER:
-[Write 2-3 sentences directly answering the question based on the patient data]
-
-FOLLOW-UP QUESTIONS:
-1. [First suggested question for the provider to ask]
-2. [Second suggested question]
-3. [Third suggested question]
-
-Remember: Do NOT diagnose. Only summarize data and suggest questions."""
+Do NOT diagnose. Only summarize data and suggest questions."""
 
 
 # =============================================================================
