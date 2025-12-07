@@ -25,7 +25,8 @@ from pydantic import BaseModel
 
 from database import Database, Session, Case
 from triage_engine import TriageEngine, RiskEngine
-from reasoning_engine import ReasoningEngine
+from multi_model_engine import MultiModelEngine, get_engine
+from model_registry import get_all_models, get_model_config, model_to_dict
 
 # =============================================================================
 # Configuration
@@ -90,6 +91,13 @@ class StaffAskResponse(BaseModel):
 class CaseListResponse(BaseModel):
     cases: List[Dict[str, Any]]
 
+class ModelSwitchRequest(BaseModel):
+    model_id: str
+
+class StaffAskRequestWithModel(BaseModel):
+    question: str
+    model_id: Optional[str] = None
+
 # =============================================================================
 # Application Lifecycle
 # =============================================================================
@@ -98,7 +106,7 @@ class CaseListResponse(BaseModel):
 db: Database = None
 triage_engine: TriageEngine = None
 risk_engine: RiskEngine = None
-reasoning_engine: ReasoningEngine = None
+reasoning_engine: MultiModelEngine = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -120,12 +128,18 @@ async def lifespan(app: FastAPI):
     risk_engine = RiskEngine(CONFIG_DIR)
     print(f"  ✓ Risk engine loaded: {len(risk_engine.rules)} red-flag rules")
     
-    # Initialize reasoning engine (LLM)
-    reasoning_engine = ReasoningEngine(MODEL_PATH)
+    # Initialize multi-model reasoning engine
+    models_dir = os.path.dirname(MODEL_PATH)
+    reasoning_engine = get_engine(models_dir=models_dir, reinitialize=True)
     if reasoning_engine.is_loaded:
-        print(f"  ✓ LLM loaded: {MODEL_PATH}")
+        current = reasoning_engine.get_current_model()
+        print(f"  ✓ LLM loaded: {current['name']} ({current['model_id']})")
     else:
-        print(f"  ⚠ LLM not loaded (will use fallback mode)")
+        print(f"  ⚠ No LLM loaded (will use fallback mode)")
+
+    # List available models
+    available = [m for m in reasoning_engine.get_available_models() if m["is_available"]]
+    print(f"  ✓ Available models: {len(available)}")
     
     print("🚀 Triage MVP ready!")
     print(f"   Patient interface: http://localhost:8000/")
@@ -136,7 +150,7 @@ async def lifespan(app: FastAPI):
     # Cleanup
     print("Shutting down...")
     if reasoning_engine:
-        reasoning_engine.unload()
+        reasoning_engine.unload_model()
 
 # =============================================================================
 # FastAPI Application
@@ -441,12 +455,12 @@ async def get_case(case_id: str, _: bool = Depends(verify_staff_pin)):
     }
 
 @app.post("/staff/case/{case_id}/ask", response_model=StaffAskResponse)
-async def staff_ask(case_id: str, request: StaffAskRequest, _: bool = Depends(verify_staff_pin)):
-    """Staff helper - ask questions about a case."""
+async def staff_ask(case_id: str, request: StaffAskRequestWithModel, _: bool = Depends(verify_staff_pin)):
+    """Staff helper - ask questions about a case with optional model selection."""
     case = db.get_case(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    
+
     # Build clinical context
     clinical_state = {
         "demographics": case.demographics,
@@ -456,13 +470,14 @@ async def staff_ask(case_id: str, request: StaffAskRequest, _: bool = Depends(ve
         "triggered_rules": case.triggered_rules,
         "summary": case.summary
     }
-    
-    # Use reasoning engine to answer
+
+    # Use reasoning engine to answer (with optional model selection)
     answer, cited_data = reasoning_engine.answer_staff_question(
-        request.question, 
-        clinical_state
+        request.question,
+        clinical_state,
+        model_id=request.model_id
     )
-    
+
     return StaffAskResponse(
         answer=answer,
         cited_data=cited_data,
@@ -475,11 +490,74 @@ async def update_case_status(case_id: str, status: Dict[str, str], _: bool = Dep
     case = db.get_case(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    
+
     case.status = status.get("status", case.status)
     db.update_case(case)
-    
+
     return {"success": True, "new_status": case.status}
+
+# =============================================================================
+# Model Management Endpoints
+# =============================================================================
+
+@app.get("/models")
+async def list_models():
+    """List all supported models with availability status."""
+    return {
+        "models": reasoning_engine.get_available_models(),
+        "current_model": reasoning_engine.get_current_model(),
+    }
+
+@app.get("/models/current")
+async def get_current_model():
+    """Get currently loaded model information."""
+    current = reasoning_engine.get_current_model()
+    if not current:
+        return {"loaded": False, "message": "No model currently loaded"}
+    return {"loaded": True, "model": current}
+
+@app.get("/models/{model_id}")
+async def get_model_info(model_id: str):
+    """Get detailed information about a specific model."""
+    config = get_model_config(model_id)
+    if not config:
+        raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
+
+    model_info = model_to_dict(config)
+    model_info["is_available"] = reasoning_engine._model_exists(model_id)
+    model_info["is_loaded"] = (
+        reasoning_engine._current_model is not None and
+        reasoning_engine._current_model.model_id == model_id
+    )
+    return model_info
+
+@app.post("/models/switch", dependencies=[Depends(verify_staff_pin)])
+async def switch_model(request: ModelSwitchRequest):
+    """Switch to a different model (staff only)."""
+    config = get_model_config(request.model_id)
+    if not config:
+        raise HTTPException(status_code=404, detail=f"Unknown model: {request.model_id}")
+
+    if not reasoning_engine._model_exists(request.model_id):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model not downloaded. Download {config.filename} first."
+        )
+
+    success = reasoning_engine.switch_model(request.model_id)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to switch model")
+
+    return {
+        "success": True,
+        "message": f"Switched to {config.name}",
+        "model": reasoning_engine.get_current_model()
+    }
+
+@app.get("/models/stats", dependencies=[Depends(verify_staff_pin)])
+async def get_model_stats():
+    """Get engine statistics (staff only)."""
+    return reasoning_engine.get_engine_stats()
 
 # =============================================================================
 # Static Files & Frontend

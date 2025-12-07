@@ -44,6 +44,40 @@ export interface CaseResponse {
   status: string;
 }
 
+export interface ModelInfo {
+  id: string;
+  name: string;
+  family: string;
+  description: string;
+  filename: string;
+  download_url: string;
+  size_mb: number;
+  size_category: string;
+  quality: string;
+  context_length: number;
+  quantization: string;
+  speed_rating: number;
+  quality_rating: number;
+  memory_mb: number;
+  tags: string[];
+  is_available: boolean;
+  is_loaded: boolean;
+}
+
+export interface CurrentModel {
+  model_id: string;
+  name: string;
+  family: string;
+  loaded_at: string;
+  inference_count: number;
+  is_loaded: boolean;
+}
+
+export interface ModelsResponse {
+  models: ModelInfo[];
+  current_model: CurrentModel | null;
+}
+
 // API functions
 export const api = {
   // Patient endpoints
@@ -178,6 +212,73 @@ export const api = {
       }
     );
     if (!response.ok) throw new Error("Failed to update case status");
+    return response.json();
+  },
+
+  // Model management endpoints
+  async getModels(): Promise<ModelsResponse> {
+    const response = await fetch(`${API_BASE_URL}/models`);
+    if (!response.ok) throw new Error("Failed to fetch models");
+    return response.json();
+  },
+
+  async getCurrentModel(): Promise<{ loaded: boolean; model?: CurrentModel }> {
+    const response = await fetch(`${API_BASE_URL}/models/current`);
+    if (!response.ok) throw new Error("Failed to fetch current model");
+    return response.json();
+  },
+
+  async getModelInfo(modelId: string): Promise<ModelInfo> {
+    const response = await fetch(`${API_BASE_URL}/models/${modelId}`);
+    if (!response.ok) throw new Error("Failed to fetch model info");
+    return response.json();
+  },
+
+  async switchModel(
+    modelId: string,
+    staffPin: string
+  ): Promise<{ success: boolean; message: string; model: CurrentModel }> {
+    const response = await fetch(`${API_BASE_URL}/models/switch`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Staff-Pin": staffPin,
+      },
+      body: JSON.stringify({ model_id: modelId }),
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Failed to switch model");
+    }
+    return response.json();
+  },
+
+  async getModelStats(staffPin: string): Promise<any> {
+    const response = await fetch(`${API_BASE_URL}/models/stats`, {
+      headers: { "X-Staff-Pin": staffPin },
+    });
+    if (!response.ok) throw new Error("Failed to fetch model stats");
+    return response.json();
+  },
+
+  async askQuestionWithModel(
+    caseId: string,
+    question: string,
+    staffPin: string,
+    modelId?: string
+  ): Promise<{ answer: string; cited_data: string[]; disclaimer: string }> {
+    const response = await fetch(
+      `${API_BASE_URL}/staff/case/${caseId}/ask`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Staff-Pin": staffPin,
+        },
+        body: JSON.stringify({ question, model_id: modelId }),
+      }
+    );
+    if (!response.ok) throw new Error("Failed to ask question");
     return response.json();
   },
 };

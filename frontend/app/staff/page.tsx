@@ -2,11 +2,23 @@
 
 import React, { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Lock, Search, AlertCircle, CheckCircle, Clock, ArrowLeft } from "lucide-react";
+import {
+  Lock,
+  Search,
+  AlertCircle,
+  CheckCircle,
+  Clock,
+  ArrowLeft,
+  Cpu,
+  Zap,
+  HardDrive,
+  ChevronDown,
+  Loader2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { api, type CaseResponse } from "@/lib/api";
+import { api, type CaseResponse, type ModelInfo, type CurrentModel } from "@/lib/api";
 import Link from "next/link";
 
 export default function StaffPortal() {
@@ -23,6 +35,13 @@ export default function StaffPortal() {
 
   const [askQuestion, setAskQuestion] = useState("");
   const [answer, setAnswer] = useState<any>(null);
+
+  // Model management state
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [currentModel, setCurrentModel] = useState<CurrentModel | null>(null);
+  const [selectedModelId, setSelectedModelId] = useState<string>("");
+  const [showModelSelector, setShowModelSelector] = useState(false);
+  const [modelSwitching, setModelSwitching] = useState(false);
 
   const handleAuth = async () => {
     if (!pin) {
@@ -47,8 +66,44 @@ export default function StaffPortal() {
   useEffect(() => {
     if (authenticated) {
       fetchCases();
+      fetchModels();
     }
   }, [authenticated]);
+
+  const fetchModels = async () => {
+    try {
+      const response = await api.getModels();
+      setModels(response.models);
+      setCurrentModel(response.current_model);
+      if (response.current_model) {
+        setSelectedModelId(response.current_model.model_id);
+      }
+    } catch (err) {
+      console.error("Failed to fetch models:", err);
+    }
+  };
+
+  const handleSwitchModel = async (modelId: string) => {
+    if (modelId === currentModel?.model_id) {
+      setShowModelSelector(false);
+      return;
+    }
+
+    setModelSwitching(true);
+    setError("");
+
+    try {
+      const response = await api.switchModel(modelId, staffPin);
+      setCurrentModel(response.model);
+      setSelectedModelId(modelId);
+      setShowModelSelector(false);
+      await fetchModels();
+    } catch (err: any) {
+      setError(err.message || "Failed to switch model");
+    } finally {
+      setModelSwitching(false);
+    }
+  };
 
   const fetchCases = async () => {
     try {
@@ -64,10 +119,11 @@ export default function StaffPortal() {
 
     setLoading(true);
     try {
-      const response = await api.askQuestion(
+      const response = await api.askQuestionWithModel(
         selectedCase.id,
         askQuestion,
-        staffPin
+        staffPin,
+        selectedModelId || undefined
       );
       setAnswer(response);
       setAskQuestion("");
@@ -76,6 +132,18 @@ export default function StaffPortal() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const getQualityColor = (rating: number) => {
+    if (rating >= 8) return "text-green-600";
+    if (rating >= 6) return "text-yellow-600";
+    return "text-gray-600";
+  };
+
+  const getSpeedColor = (rating: number) => {
+    if (rating >= 8) return "text-blue-600";
+    if (rating >= 6) return "text-yellow-600";
+    return "text-orange-600";
   };
 
   const handleUpdateStatus = async (caseId: string, status: string) => {
@@ -198,7 +266,106 @@ export default function StaffPortal() {
               Review and manage patient triage cases
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 items-center">
+            {/* Model Selector */}
+            <div className="relative">
+              <Button
+                onClick={() => setShowModelSelector(!showModelSelector)}
+                variant="outline"
+                className="flex items-center gap-2"
+                disabled={modelSwitching}
+              >
+                {modelSwitching ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Cpu className="h-4 w-4" />
+                )}
+                <span className="max-w-[150px] truncate">
+                  {currentModel?.name || "No Model"}
+                </span>
+                <ChevronDown className="h-4 w-4" />
+              </Button>
+
+              {showModelSelector && (
+                <div className="absolute right-0 top-full mt-2 w-96 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 z-50 max-h-[500px] overflow-y-auto">
+                  <div className="p-3 border-b border-gray-200 dark:border-gray-700">
+                    <h3 className="font-semibold text-gray-900 dark:text-white">
+                      Select AI Model
+                    </h3>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Choose a model for AI-powered responses
+                    </p>
+                  </div>
+                  <div className="p-2">
+                    {models.filter(m => m.is_available).length === 0 ? (
+                      <p className="text-sm text-gray-500 p-3 text-center">
+                        No models available. Download models first.
+                      </p>
+                    ) : (
+                      models.filter(m => m.is_available).map((model) => (
+                        <button
+                          key={model.id}
+                          onClick={() => handleSwitchModel(model.id)}
+                          disabled={modelSwitching}
+                          className={`w-full text-left p-3 rounded-lg mb-1 transition-colors ${
+                            model.is_loaded
+                              ? "bg-blue-50 dark:bg-blue-900/30 border-2 border-blue-500"
+                              : "hover:bg-gray-100 dark:hover:bg-gray-700 border-2 border-transparent"
+                          }`}
+                        >
+                          <div className="flex justify-between items-start">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-gray-900 dark:text-white">
+                                  {model.name}
+                                </span>
+                                {model.is_loaded && (
+                                  <span className="text-xs bg-blue-500 text-white px-2 py-0.5 rounded">
+                                    Active
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-gray-500 mt-1">
+                                {model.description}
+                              </p>
+                              <div className="flex items-center gap-3 mt-2 text-xs">
+                                <span className="flex items-center gap-1">
+                                  <HardDrive className="h-3 w-3" />
+                                  {model.size_mb}MB
+                                </span>
+                                <span className={`flex items-center gap-1 ${getSpeedColor(model.speed_rating)}`}>
+                                  <Zap className="h-3 w-3" />
+                                  Speed: {model.speed_rating}/10
+                                </span>
+                                <span className={`flex items-center gap-1 ${getQualityColor(model.quality_rating)}`}>
+                                  Quality: {model.quality_rating}/10
+                                </span>
+                              </div>
+                              <div className="flex gap-1 mt-2">
+                                {model.tags.slice(0, 3).map((tag) => (
+                                  <span
+                                    key={tag}
+                                    className="text-xs bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded"
+                                  >
+                                    {tag}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                  <div className="p-3 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 rounded-b-lg">
+                    <p className="text-xs text-gray-500">
+                      Models not listed? Run the download script to add more.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+
             <Button onClick={fetchCases} variant="outline">
               Refresh
             </Button>
@@ -393,7 +560,15 @@ export default function StaffPortal() {
 
                     {/* AI Assistant */}
                     <div className="border-t pt-6">
-                      <h3 className="font-semibold mb-4">AI Assistant</h3>
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 className="font-semibold">AI Assistant</h3>
+                        {currentModel && (
+                          <span className="text-xs text-gray-500 flex items-center gap-1">
+                            <Cpu className="h-3 w-3" />
+                            Using: {currentModel.name}
+                          </span>
+                        )}
+                      </div>
                       <div className="space-y-4">
                         <div className="flex gap-2">
                           <Input
@@ -408,7 +583,11 @@ export default function StaffPortal() {
                             onClick={handleAskQuestion}
                             disabled={loading || !askQuestion}
                           >
-                            Ask
+                            {loading ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              "Ask"
+                            )}
                           </Button>
                         </div>
 
