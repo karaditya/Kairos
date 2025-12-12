@@ -32,6 +32,25 @@ import re
 
 logger = logging.getLogger(__name__)
 
+# Path to LLM output log file (append mode)
+LLM_LOG_PATH = os.path.join(os.path.dirname(__file__), "backend.log")
+
+
+def log_llm_output(raw_output: str, context: str = ""):
+    """Log raw LLM output to backend.log in append mode."""
+    try:
+        with open(LLM_LOG_PATH, "a", encoding="utf-8") as f:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            f.write(f"\n{'=' * 60}\n")
+            f.write(f"[{timestamp}] RAW MODEL OUTPUT")
+            if context:
+                f.write(f" ({context})")
+            f.write(f"\n{'=' * 60}\n")
+            f.write(raw_output)
+            f.write(f"\n{'=' * 60}\n")
+    except Exception as e:
+        print(f"Warning: Could not write to LLM log: {e}")
+
 from model_registry import (
     SUPPORTED_MODELS,
     ModelConfig,
@@ -669,6 +688,10 @@ class MultiModelEngine:
         )
 
         summary = self._generate(summary_prompt, max_tokens=256, temperature=0.3)
+
+        # Log raw summary output to file (append mode)
+        log_llm_output(summary, context="Patient Summary Generation")
+
         key_flags = self._extract_key_flags(clinical_state)
 
         return summary, key_flags
@@ -710,12 +733,8 @@ class MultiModelEngine:
 
         raw_response = self._generate(prompt, max_tokens=768, temperature=0.3)
 
-        # Log full raw output for debugging
-        print("=" * 60)
-        print("RAW MODEL OUTPUT:")
-        print("=" * 60)
-        print(raw_response)
-        print("=" * 60)
+        # Log raw output to file (append mode)
+        log_llm_output(raw_response, context=f"Staff Q&A: {question[:50]}...")
 
         # Parse to separate reasoning from answer
         parsed = parse_reasoning_response(raw_response)

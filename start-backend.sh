@@ -48,6 +48,6 @@ fi
 # Start backend
 echo "Starting FastAPI backend on http://localhost:8000..."
 echo "GPU Acceleration: ${N_GPU_LAYERS:-0} layers (set N_GPU_LAYERS env var to change)"
+echo "LLM output will be appended to backend/backend.log"
 cd backend
-# python main.py
-python main.py 2>&1 | tee backend.log
+python main.py
