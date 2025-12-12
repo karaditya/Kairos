@@ -67,13 +67,13 @@ from model_registry import (
 
 def parse_reasoning_response(text: str) -> dict:
     """
-    Parse model response using a simple, robust approach.
+    Parse model response using tag-based extraction.
 
-    Design Philosophy:
-    - Work WITH the model's natural output (DeepSeek uses <think> tags)
-    - Don't expect perfect formatting from small models
-    - Extract reasoning, answer, and questions through smart heuristics
-    - Clean up for display in post-processing
+    Expected format (from prompt):
+    <answer>...</answer>
+    <questions>1. ... 2. ... 3. ...</questions>
+
+    Also handles <think>...</think> for reasoning.
 
     Returns:
         {
@@ -88,75 +88,14 @@ def parse_reasoning_response(text: str) -> dict:
 
     text = text.strip()
     reasoning = None
+    answer = ""
+    suggested_questions = []
     has_reasoning = False
 
     # =================================================================
-    # STEP 0: Strip hallucinated instructions at the start
+    # STEP 1: Extract <think>...</think> reasoning
     # =================================================================
 
-    # Common patterns where model echoes expected instructions
-    hallucination_patterns = [
-        r'^(?:Please\s+)?(?:ensure|make\s+sure|be\s+sure|note)\s+.*?\n+',
-        r'^(?:Also,?\s+)?(?:the\s+)?(?:answer|questions?|response)\s+should\s+be.*?\n+',
-        r'^(?:Here\s+(?:is|are)\s+)?(?:my|the)\s+(?:answer|response).*?:\s*\n*',
-        r'^(?:I\s+(?:will|would|can)\s+)?(?:help|assist|provide).*?\n+',
-        r'^(?:No\s+need\s+for|Use|Don\'t\s+use).*?(?:bullet|point|number).*?\n+',
-        r'^(?:Based\s+on|According\s+to)\s+the\s+(?:patient\s+)?(?:data|information|case).*?:\s*\n*',
-        r'^The\s+answer\s+should\s+be.*?\n+',
-        r'^(?:Okay|OK|Alright),?\s+(?:so\s+)?(?:let\'?s?|I\'?ll?).*?\n+',  # "Okay, so let's..."
-    ]
-    # Apply patterns repeatedly until no more matches (handles multiple instruction lines)
-    for _ in range(5):  # Max 5 iterations
-        original = text
-        for pattern in hallucination_patterns:
-            text = re.sub(pattern, '', text, flags=re.IGNORECASE)
-        text = text.strip()
-        if text == original:
-            break
-
-    # =================================================================
-    # STEP 0.5: Detect and truncate repetitive loops / hallucinations
-    # =================================================================
-
-    # Pattern 1: "But wait" loops (model getting stuck)
-    but_wait_count = text.lower().count("but wait")
-    if but_wait_count >= 3:
-        first_but_wait = text.lower().find("but wait")
-        if first_but_wait > 100:
-            text = text[:first_but_wait].strip()
-
-    # Pattern 2: Multiple choice hallucination (model thinks it's a quiz)
-    if re.search(r'(?:options are|correct answer is|A\)|B\)|C\))', text, re.IGNORECASE):
-        quiz_start = re.search(r'(?:The options are|The question is|The correct answer)', text, re.IGNORECASE)
-        if quiz_start and quiz_start.start() > 100:
-            text = text[:quiz_start.start()].strip()
-
-    # Pattern 3: Repeated sentences
-    sentences = re.split(r'[.!?]\s+', text)
-    if len(sentences) > 5:
-        seen = {}
-        cut_at = None
-        for i, sent in enumerate(sentences):
-            sent_clean = sent.strip().lower()
-            if len(sent_clean) > 30:
-                if sent_clean in seen:
-                    seen[sent_clean] += 1
-                    if seen[sent_clean] >= 2:
-                        first = text.lower().find(sent_clean)
-                        second = text.lower().find(sent_clean, first + len(sent_clean))
-                        if second > 0:
-                            cut_at = second
-                            break
-                else:
-                    seen[sent_clean] = 1
-        if cut_at:
-            text = text[:cut_at].strip()
-
-    # =================================================================
-    # STEP 1: Extract reasoning/thinking (model's internal thought process)
-    # =================================================================
-
-    # DeepSeek R1 native format: <think>...</think>
     think_match = re.search(r'<think>(.*?)</think>', text, re.DOTALL | re.IGNORECASE)
     if think_match:
         reasoning = think_match.group(1).strip()
@@ -171,112 +110,88 @@ def parse_reasoning_response(text: str) -> dict:
             text = text[close_match.end():].strip()
             has_reasoning = True
 
-    # Clean reasoning of any hallucinated instructions
-    if reasoning:
-        for pattern in hallucination_patterns:
-            reasoning = re.sub(pattern, '', reasoning, flags=re.IGNORECASE)
-        reasoning = reasoning.strip()
-
     # =================================================================
-    # STEP 2: Extract ANSWER section if present
+    # STEP 2: Extract <answer>...</answer>
     # =================================================================
 
-    answer_match = re.search(r'(?:^|\n)\s*ANSWER:\s*\n?(.*?)(?=\n\s*(?:FOLLOW-?UP|QUESTIONS?)|\Z)', text, re.DOTALL | re.IGNORECASE)
+    answer_match = re.search(r'<answer>(.*?)</answer>', text, re.DOTALL | re.IGNORECASE)
     if answer_match:
-        answer_text = answer_match.group(1).strip()
-        # Remove the ANSWER section from text for question extraction
-        text = text[answer_match.end():].strip()
-    else:
-        answer_text = None
+        answer = answer_match.group(1).strip()
+        text = text[:answer_match.start()] + text[answer_match.end():]
+        text = text.strip()
 
     # =================================================================
-    # STEP 3: Extract follow-up questions
+    # STEP 3: Extract <questions>...</questions>
     # =================================================================
 
-    suggested_questions = []
+    questions_match = re.search(r'<questions>(.*?)</questions>', text, re.DOTALL | re.IGNORECASE)
+    if questions_match:
+        questions_text = questions_match.group(1).strip()
+        # Extract numbered items from questions block
+        items = re.findall(r'(?:^|\n)\s*\d+[.\)]\s*(.+?)(?=\n\s*\d+[.\)]|$)', questions_text, re.DOTALL)
+        for item in items[:3]:
+            q = item.strip()
+            q = re.sub(r'\s+', ' ', q)
+            if len(q) > 10:
+                if not q.endswith('?'):
+                    q = q.rstrip('.,:;') + '?'
+                suggested_questions.append(q)
 
-    # Look for FOLLOW-UP QUESTIONS section marker
-    followup_match = re.search(r'(?:^|\n)\s*(?:FOLLOW-?UP\s+)?QUESTIONS?:?\s*\n?', text, re.IGNORECASE)
-    if followup_match:
-        questions_text = text[followup_match.end():]
-        if answer_text is None:
-            # Answer is everything before the questions section
-            answer_text = text[:followup_match.start()].strip()
-    else:
-        questions_text = text
+    # =================================================================
+    # STEP 4: Fallback - if no tags found, use heuristics
+    # =================================================================
 
-    # Extract questions - handle various formats:
-    # "1.", "1)", "Question 1:", "First question:", "**1.**", ordinal words
-    question_patterns = [
-        # Numbered: "1.", "1)", "Question 1:"
-        r'(?:^|\n)\s*(?:\*{1,2})?\s*(?:Question\s+)?\d+[.\):]\s*(?:\*{1,2})?\s*(.+?)(?=(?:\n\s*(?:\*{1,2})?\s*(?:Question\s+)?\d+[.\):])|(?:\n\s*(?:First|Second|Third|Fourth|Fifth)\s+question)|$)',
-        # Ordinal: "First question:", "Second question:"
-        r'(?:^|\n)\s*(?:First|Second|Third|Fourth|Fifth)\s+question[:\s]+(.+?)(?=(?:\n\s*(?:First|Second|Third|Fourth|Fifth)\s+question)|(?:\n\s*\d+[.\):])|$)',
-    ]
-
-    for pattern in question_patterns:
-        items = re.findall(pattern, questions_text, re.DOTALL | re.IGNORECASE)
-        if items:
-            for item in items[:5]:
-                q = item.strip()
-                # Remove markdown bold markers
-                q = re.sub(r'\*{1,2}([^*]+)\*{1,2}', r'\1', q)
-                # Clean up whitespace
-                q = re.sub(r'\s+', ' ', q)
-                # Remove trailing content that looks like another section
-                q = re.split(r'\n\s*(?:ANSWER|FOLLOW|QUESTION|RELEVANT|Next,?\s+I)', q, flags=re.IGNORECASE)[0].strip()
-
-                if len(q) > 10:
-                    if not q.endswith('?'):
-                        q = q.rstrip('.,:;') + '?'
-                    suggested_questions.append(q)
-            if suggested_questions:
+    if not answer and not suggested_questions:
+        # Strip hallucinated instructions at start
+        hallucination_patterns = [
+            r'^(?:Please\s+)?(?:ensure|make\s+sure|be\s+sure|note)\s+.*?\n+',
+            r'^(?:The\s+)?(?:answer|questions?|response)\s+should\s+be.*?\n+',
+            r'^(?:No\s+need\s+for|Use|Explain).*?\n+',
+            r'^(?:Okay|OK|Alright),?\s+(?:so\s+)?.*?\n+',
+        ]
+        for _ in range(5):
+            original = text
+            for pattern in hallucination_patterns:
+                text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+            text = text.strip()
+            if text == original:
                 break
 
-    # Deduplicate questions (keep first occurrence, remove near-duplicates)
-    if suggested_questions:
-        unique_questions = []
-        seen_normalized = set()
-        for q in suggested_questions:
-            # Normalize for comparison
-            normalized = re.sub(r'[^\w\s]', '', q.lower())
-            normalized = ' '.join(normalized.split())
-            # Check if we've seen something similar
-            is_duplicate = False
-            for seen in seen_normalized:
-                # Simple similarity check - if 80% of words overlap, it's a duplicate
-                q_words = set(normalized.split())
-                seen_words = set(seen.split())
-                if len(q_words & seen_words) > 0.8 * min(len(q_words), len(seen_words)):
-                    is_duplicate = True
+        # Try to find questions with ordinal or numbered format
+        question_patterns = [
+            r'(?:^|\n)\s*\d+[.\)]\s*(.+?)(?=\n\s*\d+[.\)]|$)',
+            r'(?:^|\n)\s*(?:First|Second|Third)\s+(?:question|thought)[:\s]+(.+?)(?=\n\s*(?:First|Second|Third)|$)',
+        ]
+        for pattern in question_patterns:
+            items = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+            if items:
+                for item in items[:3]:
+                    q = re.sub(r'\s+', ' ', item.strip())
+                    if len(q) > 10:
+                        if not q.endswith('?'):
+                            q = q.rstrip('.,:;') + '?'
+                        suggested_questions.append(q)
+                if suggested_questions:
                     break
-            if not is_duplicate:
-                unique_questions.append(q)
-                seen_normalized.add(normalized)
-        suggested_questions = unique_questions[:3]  # Keep only top 3
+
+        # Use remaining text as answer if we don't have one
+        if not answer:
+            # Remove the questions part from text
+            for q in suggested_questions:
+                text = text.replace(q.rstrip('?'), '')
+            answer = text.strip()
 
     # =================================================================
-    # STEP 4: Finalize answer
+    # STEP 5: Clean up answer text
     # =================================================================
 
-    if answer_text is None:
-        # If no ANSWER section found, use remaining text (minus questions)
-        if suggested_questions and followup_match:
-            answer_text = text[:followup_match.start()].strip() if followup_match else text.strip()
-        else:
-            answer_text = text.strip()
+    # Remove any remaining tag markers
+    answer = re.sub(r'</?(?:answer|questions|think)>', '', answer, flags=re.IGNORECASE)
 
-    # Clean up answer - remove section headers
-    header_patterns = [
-        r'^\s*\[?(?:REASONING|ANALYSIS|THINKING)\]?:?\s*',
-        r'^\s*\[?(?:ANSWER|RESPONSE|CONCLUSION)\]?:?\s*',
-        r'^\s*\[?FOLLOW-?UP.*?\]?:?\s*',
-        r'^\s*\*{1,2}(?:Answer|Response)\*{1,2}:?\s*',
-    ]
-    for pattern in header_patterns:
-        answer_text = re.sub(pattern, '', answer_text, flags=re.IGNORECASE | re.MULTILINE)
+    # Remove "Now, I should think about..." type transitions
+    answer = re.sub(r'\n*(?:Now,?\s+)?I\s+(?:should|need\s+to|will)\s+(?:think|suggest|provide).*$', '', answer, flags=re.IGNORECASE | re.DOTALL)
 
-    answer = answer_text.strip()
+    answer = answer.strip()
 
     # =================================================================
     # STEP 5: Final sanitization
@@ -417,14 +332,23 @@ UPDATED REASONING:"""
 # Staff Q&A Prompt (Structured for DeepSeek R1 / Reasoning Models)
 # =============================================================================
 
-STAFF_QA_PROMPT = """Medical triage assistant. Answer staff questions about patient cases.
+STAFF_QA_PROMPT = """You are a medical triage assistant. Answer the staff's question about this patient.
 
-PATIENT CASE:
 {case_data}
 
 QUESTION: {question}
 
-Provide a helpful answer citing the patient data, then suggest 3 follow-up questions."""
+Respond using EXACTLY this format with tags:
+
+<answer>
+Your answer here. Cite specific patient data.
+</answer>
+
+<questions>
+1. First follow-up question?
+2. Second follow-up question?
+3. Third follow-up question?
+</questions>"""
 
 
 # =============================================================================
@@ -676,7 +600,7 @@ class MultiModelEngine:
     def _generate(
         self,
         prompt: str,
-        max_tokens: int = 256,
+        max_tokens: int = 256*2,
         temperature: float = 0.3,
         stop: Optional[List[str]] = None,
         repeat_penalty: float = 1.15
