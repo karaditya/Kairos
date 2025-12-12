@@ -91,20 +91,42 @@ def parse_reasoning_response(text: str) -> dict:
     has_reasoning = False
 
     # =================================================================
-    # STEP 0: Detect and truncate repetitive loops / hallucinations
+    # STEP 0: Strip hallucinated instructions at the start
+    # =================================================================
+
+    # Common patterns where model echoes expected instructions
+    hallucination_patterns = [
+        r'^(?:Please\s+)?(?:ensure|make\s+sure|be\s+sure|note)\s+.*?\n+',
+        r'^(?:Also,?\s+)?(?:the\s+)?(?:answer|questions?|response)\s+should\s+be.*?\n+',
+        r'^(?:Here\s+(?:is|are)\s+)?(?:my|the)\s+(?:answer|response).*?:\s*\n*',
+        r'^(?:I\s+(?:will|would|can)\s+)?(?:help|assist|provide).*?\n+',
+        r'^(?:No\s+need\s+for|Use|Don\'t\s+use).*?(?:bullet|point|number).*?\n+',
+        r'^(?:Based\s+on|According\s+to)\s+the\s+(?:patient\s+)?(?:data|information|case).*?:\s*\n*',
+        r'^The\s+answer\s+should\s+be.*?\n+',
+        r'^(?:Okay|OK|Alright),?\s+(?:so\s+)?(?:let\'?s?|I\'?ll?).*?\n+',  # "Okay, so let's..."
+    ]
+    # Apply patterns repeatedly until no more matches (handles multiple instruction lines)
+    for _ in range(5):  # Max 5 iterations
+        original = text
+        for pattern in hallucination_patterns:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+        text = text.strip()
+        if text == original:
+            break
+
+    # =================================================================
+    # STEP 0.5: Detect and truncate repetitive loops / hallucinations
     # =================================================================
 
     # Pattern 1: "But wait" loops (model getting stuck)
     but_wait_count = text.lower().count("but wait")
     if but_wait_count >= 3:
-        # Find the first "but wait" and cut there
         first_but_wait = text.lower().find("but wait")
-        if first_but_wait > 100:  # Keep at least some content
+        if first_but_wait > 100:
             text = text[:first_but_wait].strip()
 
     # Pattern 2: Multiple choice hallucination (model thinks it's a quiz)
     if re.search(r'(?:options are|correct answer is|A\)|B\)|C\))', text, re.IGNORECASE):
-        # Try to find content before the quiz hallucination
         quiz_start = re.search(r'(?:The options are|The question is|The correct answer)', text, re.IGNORECASE)
         if quiz_start and quiz_start.start() > 100:
             text = text[:quiz_start.start()].strip()
@@ -120,7 +142,6 @@ def parse_reasoning_response(text: str) -> dict:
                 if sent_clean in seen:
                     seen[sent_clean] += 1
                     if seen[sent_clean] >= 2:
-                        # Find this sentence in original text and cut before second occurrence
                         first = text.lower().find(sent_clean)
                         second = text.lower().find(sent_clean, first + len(sent_clean))
                         if second > 0:
@@ -150,19 +171,23 @@ def parse_reasoning_response(text: str) -> dict:
             text = text[close_match.end():].strip()
             has_reasoning = True
 
+    # Clean reasoning of any hallucinated instructions
+    if reasoning:
+        for pattern in hallucination_patterns:
+            reasoning = re.sub(pattern, '', reasoning, flags=re.IGNORECASE)
+        reasoning = reasoning.strip()
+
     # =================================================================
-    # STEP 2: Clean up any format markers/headers the model might output
+    # STEP 2: Extract ANSWER section if present
     # =================================================================
 
-    # Remove common section headers (model might still use these)
-    header_patterns = [
-        r'^\s*\[?(?:REASONING|ANALYSIS|THINKING)\]?:?\s*',
-        r'^\s*\[?(?:ANSWER|RESPONSE|CONCLUSION)\]?:?\s*',
-        r'^\s*\[?FOLLOW-?UP.*?\]?:?\s*',
-    ]
-    for pattern in header_patterns:
-        text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.MULTILINE)
-
+    answer_match = re.search(r'(?:^|\n)\s*ANSWER:\s*\n?(.*?)(?=\n\s*(?:FOLLOW-?UP|QUESTIONS?)|\Z)', text, re.DOTALL | re.IGNORECASE)
+    if answer_match:
+        answer_text = answer_match.group(1).strip()
+        # Remove the ANSWER section from text for question extraction
+        text = text[answer_match.end():].strip()
+    else:
+        answer_text = None
 
     # =================================================================
     # STEP 3: Extract follow-up questions
@@ -170,34 +195,88 @@ def parse_reasoning_response(text: str) -> dict:
 
     suggested_questions = []
 
-    # Look for numbered list (1. 2. 3.) which typically contains questions
-    # Find where the list starts
-    list_start = re.search(r'\n\s*1[.\)]\s*', text)
-    if list_start:
-        list_text = text[list_start.start():]
-        main_text = text[:list_start.start()].strip()
+    # Look for FOLLOW-UP QUESTIONS section marker
+    followup_match = re.search(r'(?:^|\n)\s*(?:FOLLOW-?UP\s+)?QUESTIONS?:?\s*\n?', text, re.IGNORECASE)
+    if followup_match:
+        questions_text = text[followup_match.end():]
+        if answer_text is None:
+            # Answer is everything before the questions section
+            answer_text = text[:followup_match.start()].strip()
+    else:
+        questions_text = text
 
-        # Extract numbered items
-        items = re.findall(r'(?:^|\n)\s*\d+[.\)]\s*(.+?)(?=\n\s*\d+[.\)]|\Z)', list_text, re.DOTALL)
+    # Extract questions - handle various formats:
+    # "1.", "1)", "Question 1:", "First question:", "**1.**", ordinal words
+    question_patterns = [
+        # Numbered: "1.", "1)", "Question 1:"
+        r'(?:^|\n)\s*(?:\*{1,2})?\s*(?:Question\s+)?\d+[.\):]\s*(?:\*{1,2})?\s*(.+?)(?=(?:\n\s*(?:\*{1,2})?\s*(?:Question\s+)?\d+[.\):])|(?:\n\s*(?:First|Second|Third|Fourth|Fifth)\s+question)|$)',
+        # Ordinal: "First question:", "Second question:"
+        r'(?:^|\n)\s*(?:First|Second|Third|Fourth|Fifth)\s+question[:\s]+(.+?)(?=(?:\n\s*(?:First|Second|Third|Fourth|Fifth)\s+question)|(?:\n\s*\d+[.\):])|$)',
+    ]
 
-        for item in items[:5]:  # Max 5 questions
-            q = item.strip()
-            # Clean up the question
-            q = re.sub(r'\s+', ' ', q)
-            if len(q) > 10:  # Skip very short items
-                # Ensure it ends with ?
-                if not q.endswith('?'):
-                    q = q.rstrip('.,:;') + '?'
-                suggested_questions.append(q)
+    for pattern in question_patterns:
+        items = re.findall(pattern, questions_text, re.DOTALL | re.IGNORECASE)
+        if items:
+            for item in items[:5]:
+                q = item.strip()
+                # Remove markdown bold markers
+                q = re.sub(r'\*{1,2}([^*]+)\*{1,2}', r'\1', q)
+                # Clean up whitespace
+                q = re.sub(r'\s+', ' ', q)
+                # Remove trailing content that looks like another section
+                q = re.split(r'\n\s*(?:ANSWER|FOLLOW|QUESTION|RELEVANT|Next,?\s+I)', q, flags=re.IGNORECASE)[0].strip()
 
-        if suggested_questions:
-            text = main_text
+                if len(q) > 10:
+                    if not q.endswith('?'):
+                        q = q.rstrip('.,:;') + '?'
+                    suggested_questions.append(q)
+            if suggested_questions:
+                break
+
+    # Deduplicate questions (keep first occurrence, remove near-duplicates)
+    if suggested_questions:
+        unique_questions = []
+        seen_normalized = set()
+        for q in suggested_questions:
+            # Normalize for comparison
+            normalized = re.sub(r'[^\w\s]', '', q.lower())
+            normalized = ' '.join(normalized.split())
+            # Check if we've seen something similar
+            is_duplicate = False
+            for seen in seen_normalized:
+                # Simple similarity check - if 80% of words overlap, it's a duplicate
+                q_words = set(normalized.split())
+                seen_words = set(seen.split())
+                if len(q_words & seen_words) > 0.8 * min(len(q_words), len(seen_words)):
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                unique_questions.append(q)
+                seen_normalized.add(normalized)
+        suggested_questions = unique_questions[:3]  # Keep only top 3
 
     # =================================================================
-    # STEP 4: Clean up the final answer (preserve markdown!)
+    # STEP 4: Finalize answer
     # =================================================================
 
-    answer = text.strip()
+    if answer_text is None:
+        # If no ANSWER section found, use remaining text (minus questions)
+        if suggested_questions and followup_match:
+            answer_text = text[:followup_match.start()].strip() if followup_match else text.strip()
+        else:
+            answer_text = text.strip()
+
+    # Clean up answer - remove section headers
+    header_patterns = [
+        r'^\s*\[?(?:REASONING|ANALYSIS|THINKING)\]?:?\s*',
+        r'^\s*\[?(?:ANSWER|RESPONSE|CONCLUSION)\]?:?\s*',
+        r'^\s*\[?FOLLOW-?UP.*?\]?:?\s*',
+        r'^\s*\*{1,2}(?:Answer|Response)\*{1,2}:?\s*',
+    ]
+    for pattern in header_patterns:
+        answer_text = re.sub(pattern, '', answer_text, flags=re.IGNORECASE | re.MULTILINE)
+
+    answer = answer_text.strip()
 
     # =================================================================
     # STEP 5: Final sanitization
@@ -212,7 +291,7 @@ def parse_reasoning_response(text: str) -> dict:
 
 
 def _sanitize_text(text: str) -> str:
-    """Clean up text for display."""
+    """Clean up text for display with proper paragraph formatting."""
     if not text:
         return text
 
@@ -226,10 +305,34 @@ def _sanitize_text(text: str) -> str:
     for old, new in replacements.items():
         text = text.replace(old, new)
 
-    # Normalize whitespace
-    text = re.sub(r'\n{3,}', '\n\n', text)
+    # Normalize multiple spaces
     text = re.sub(r' {2,}', ' ', text)
-    text = re.sub(r'^\s+', '', text, flags=re.MULTILINE)
+
+    # Ensure proper paragraph breaks (markdown needs double newlines)
+    # First normalize all newlines
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    # Ensure paragraphs are properly separated
+    # Single newlines between paragraphs become double newlines
+    lines = text.split('\n')
+    result_lines = []
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if line:
+            result_lines.append(line)
+            # Add blank line after if next line exists and current line ends a sentence
+            if i < len(lines) - 1 and line and line[-1] in '.!?':
+                next_line = lines[i + 1].strip() if i + 1 < len(lines) else ''
+                # If next line starts a new thought (capital letter, not a continuation)
+                if next_line and next_line[0].isupper() and not next_line.startswith(('However', 'But', 'And', 'So', 'Also', 'Additionally')):
+                    result_lines.append('')  # Add blank line for paragraph break
+        elif result_lines and result_lines[-1] != '':
+            result_lines.append('')  # Preserve intentional blank lines
+
+    text = '\n'.join(result_lines)
+
+    # Clean up excessive blank lines
+    text = re.sub(r'\n{3,}', '\n\n', text)
 
     return text.strip()
 
@@ -311,14 +414,17 @@ UPDATED REASONING:"""
 
 
 # =============================================================================
-# Simple Prompt for Small Models
+# Staff Q&A Prompt (Structured for DeepSeek R1 / Reasoning Models)
 # =============================================================================
 
-STAFF_QA_PROMPT = """Patient: {case_data}
+STAFF_QA_PROMPT = """Medical triage assistant. Answer staff questions about patient cases.
 
-Question: {question}
+PATIENT CASE:
+{case_data}
 
-Answer the question, then list 3 follow-up questions to ask the patient."""
+QUESTION: {question}
+
+Provide a helpful answer citing the patient data, then suggest 3 follow-up questions."""
 
 
 # =============================================================================
@@ -572,7 +678,8 @@ class MultiModelEngine:
         prompt: str,
         max_tokens: int = 256,
         temperature: float = 0.3,
-        stop: Optional[List[str]] = None
+        stop: Optional[List[str]] = None,
+        repeat_penalty: float = 1.15
     ) -> str:
         """
         Generate text using the loaded model.
@@ -582,6 +689,7 @@ class MultiModelEngine:
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature
             stop: Stop sequences
+            repeat_penalty: Penalty for repeating tokens (1.0 = no penalty, >1.0 = discourage repetition)
 
         Returns:
             Generated text
@@ -600,16 +708,45 @@ class MultiModelEngine:
                     temperature=temperature,
                     stop=stop,
                     echo=False,
+                    repeat_penalty=repeat_penalty,
                 )
 
                 self._current_model.inference_count += 1
                 self._total_inferences += 1
 
-                return response["choices"][0]["text"].strip()
+                # Post-process to catch any remaining repetition
+                text = response["choices"][0]["text"].strip()
+                text = self._truncate_repetition(text)
+                return text
 
             except Exception as e:
                 print(f"Generation error: {e}")
                 return self._fallback_generate(prompt)
+
+    def _truncate_repetition(self, text: str) -> str:
+        """Truncate text at the point where it starts repeating."""
+        if not text or len(text) < 100:
+            return text
+
+        # Split into sentences
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        if len(sentences) < 3:
+            return text
+
+        # Find first repeated sentence and cut there
+        seen = {}
+        for i, sent in enumerate(sentences):
+            # Normalize for comparison
+            normalized = ' '.join(sent.lower().split())
+            if len(normalized) < 20:
+                continue
+
+            if normalized in seen:
+                # Found repetition - keep only up to first occurrence
+                return ' '.join(sentences[:seen[normalized] + 1])
+            seen[normalized] = i
+
+        return text
 
     def _fallback_generate(self, prompt: str) -> str:
         """Fallback generation when model not available."""
@@ -731,7 +868,7 @@ class MultiModelEngine:
             question=question
         )
 
-        raw_response = self._generate(prompt, max_tokens=768, temperature=0.3)
+        raw_response = self._generate(prompt, max_tokens=512, temperature=0.5, repeat_penalty=1.2)
 
         # Log raw output to file (append mode)
         log_llm_output(raw_response, context=f"Staff Q&A: {question[:50]}...")
