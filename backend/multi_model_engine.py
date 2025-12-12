@@ -65,6 +65,22 @@ from model_registry import (
 # Response Parsing (Chain-of-Thought Models)
 # =============================================================================
 
+def _clean_output(text: str) -> str:
+    """Remove instruction bleed-through and clean text generally."""
+    if not text:
+        return ""
+    text = text.strip()
+    # Remove bracketed placeholders [like this]
+    text = re.sub(r'\[.*?\]', '', text)
+    # Remove stray XML-like tags
+    text = re.sub(r'<[^>]+>', '', text)
+    # Remove instruction-like prefixes
+    text = re.sub(r'^(?:Please|Provide|List|Write|Your|The)\s+(?:your\s+)?(?:answer|response|question).*?(?:here|below)?[.:]?\s*', '', text, flags=re.IGNORECASE)
+    # Normalize whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
 def parse_reasoning_response(text: str) -> dict:
     """
     Parse model response using tag-based extraction.
@@ -116,7 +132,7 @@ def parse_reasoning_response(text: str) -> dict:
 
     answer_match = re.search(r'<answer>(.*?)</answer>', text, re.DOTALL | re.IGNORECASE)
     if answer_match:
-        answer = answer_match.group(1).strip()
+        answer = _clean_output(answer_match.group(1))
         text = text[:answer_match.start()] + text[answer_match.end():]
         text = text.strip()
 
@@ -129,12 +145,9 @@ def parse_reasoning_response(text: str) -> dict:
         questions_text = questions_match.group(1).strip()
         # Extract numbered items from questions block
         items = re.findall(r'(?:^|\n)\s*\d+[.\)]\s*(.+?)(?=\n\s*\d+[.\)]|$)', questions_text, re.DOTALL)
-        for item in items[:3]:
-            q = item.strip()
-            q = re.sub(r'\s+', ' ', q)
-            if len(q) > 10:
-                if not q.endswith('?'):
-                    q = q.rstrip('.,:;') + '?'
+        for item in items:
+            q = _clean_output(item)
+            if len(q) > 15 and '?' in q:  # Must be substantial and have a question mark
                 suggested_questions.append(q)
 
     # =================================================================
@@ -332,22 +345,16 @@ UPDATED REASONING:"""
 # Staff Q&A Prompt (Structured for DeepSeek R1 / Reasoning Models)
 # =============================================================================
 
-STAFF_QA_PROMPT = """You are a medical triage assistant. Answer the staff's question about this patient.
+STAFF_QA_PROMPT = """Medical triage assistant. Answer in the same language as the question.
 
 {case_data}
 
 QUESTION: {question}
 
-Respond using EXACTLY this format with tags:
-
 <answer>
-Your answer here. Cite specific patient data.
 </answer>
 
 <questions>
-1. First follow-up question?
-2. Second follow-up question?
-3. Third follow-up question?
 </questions>"""
 
 
