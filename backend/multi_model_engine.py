@@ -3,10 +3,11 @@ Multi-Model Reasoning Engine - Professional LLM Engine for Medical Triage
 
 Features:
 - Real-time Local LLM inference (Llama, DeepSeek, Mistral, etc.)
-- Structured JSON output via GBNF Grammars (Guarantees Frontend Compatibility)
-- Robust Error Handling & JSON Repair (Fixes cut-off outputs)
-- Thread-safe Dynamic Model Switching
-- Detailed Logging for Debugging
+- Structured JSON output via GBNF Grammars
+- Smart Dynamic Token Scaling (Auto-retries if output is cut off)
+- Anti-Hallucination Prompts
+- Markdown-Formatted Output for Frontend
+- Full Backend Logging
 
 Usage:
     engine = get_engine()
@@ -32,7 +33,6 @@ logger = logging.getLogger(__name__)
 LLM_LOG_PATH = os.path.join(os.path.dirname(__file__), "backend.log")
 
 # Import your existing registry
-# Ensure model_registry.py is in the same directory or python path
 from model_registry import (
     SUPPORTED_MODELS,
     ModelConfig,
@@ -63,7 +63,7 @@ def log_llm_output(raw_output: str, context: str = ""):
         print(f"Warning: Logging failed: {e}")
 
 # =============================================================================
-# 2. DEFINE OUTPUT SCHEMA
+# 2. DEFINE OUTPUT SCHEMA (Markdown Enabled)
 # =============================================================================
 
 class TriageResponse(BaseModel):
@@ -78,7 +78,7 @@ class TriageResponse(BaseModel):
     )
     answer: str = Field(
         ..., 
-        description="Direct answer to the user's question or the triage summary."
+        description="Direct answer to the user. MUST use Markdown formatting (bold **text**, bullet points -, and \\n newlines) for clear readability."
     )
     follow_up_questions: List[str] = Field(
         ..., 
@@ -118,7 +118,7 @@ class MultiModelEngine:
         self._current_model: Optional[LoadedModel] = None
         self._lock = threading.RLock()
         
-        # --- INITIALIZATION OF COUNTERS (Critical Fix) ---
+        # Initialize Counters (Preserved)
         self._total_inferences = 0
         self._model_switches = 0
         
@@ -173,7 +173,6 @@ class MultiModelEngine:
             try:
                 print(f"Loading model: {config.name}...")
                 
-                # Determine GPU layers (Config specific or Global env var)
                 layers = self.n_gpu_layers
                 if layers == -1: 
                     layers = config.recommended_gpu_layers or -1
@@ -205,7 +204,6 @@ class MultiModelEngine:
         return self.load_model(model_id)
 
     def get_current_model(self) -> Optional[Dict[str, Any]]:
-        """Returns metadata for main.py status check."""
         with self._lock:
             if not self._current_model: return None
             return {
@@ -217,86 +215,61 @@ class MultiModelEngine:
             }
 
     # =========================================================================
-    # Core Generation Logic (Grammar + Repair)
+    # Core Generation Logic (Robust)
     # =========================================================================
 
     def _construct_system_prompt(self, patient_data: str) -> str:
         """
-        Creates the prompt. No hardcoded examples to avoid parroting.
-        Grammar handles the structure enforcement.
+        Instructions explicitly demand Markdown and JSON.
         """
         return (
             "You are an expert medical triage assistant. Analyze the patient data below.\n\n"
             f"### PATIENT DATA\n{patient_data}\n\n"
             "### INSTRUCTIONS\n"
             "1. Answer the User Query based strictly on the Patient Data.\n"
-            "2. If the user asks a general question (e.g., 'Who are you?'), answer generally.\n"
-            "3. If the user asks about the patient, analyze Symptoms and Risk Band.\n"
-            "4. Provide detailed medical reasoning for your answer.\n"
-            "5. Suggest 3 relevant follow-up questions.\n"
-            "6. Output must be valid JSON."
+            "2. **FORMATTING:** The 'answer' field MUST use **Markdown**.\n"
+            "   - Use **bold** for key risks.\n"
+            "   - Use `\\n` for new lines/paragraphs.\n"
+            "   - Use bullet points (`-`) for lists.\n"
+            "3. Provide detailed medical reasoning.\n"
+            "4. Suggest 3 relevant follow-up questions.\n"
+            "5. Output must be valid JSON."
         )
 
-    # =========================================================================
-    # ROBUST JSON REPAIR & PARSING (Replaces the previous version)
-    # =========================================================================
-
     def _repair_json(self, json_str: str) -> Dict[str, Any]:
-        """
-        Advanced repair:
-        1. Handles "Extra data" (multiple JSONs).
-        2. Handles "Restarts" (model started typing, then started over).
-        3. Handles "Truncation" (cut-off strings/brackets).
-        """
+        """Robust JSON repair for cut-off or doubled output."""
         json_str = json_str.strip()
-
-        # --- STRATEGY 1: Detect Restarts ---
-        # If the model hallucinated and started over, we often see multiple "reasoning" keys.
-        # We want the LAST instance of "{"reasoning"" because that's usually the final thought.
+        
+        # Strategy 1: Detect Restarts
         if json_str.count('"reasoning":') > 1:
-            # Find the last occurrence of the start of the object
             last_start = json_str.rfind('{')
-            # Verify if this brace is actually near "reasoning"
             if '"reasoning":' in json_str[last_start:]:
                 json_str = json_str[last_start:]
 
-        # --- STRATEGY 2: Attempt standard Parse ---
+        # Strategy 2: Attempt standard Parse
         try:
             return json.loads(json_str)
         except json.JSONDecodeError as e:
-            # If "Extra data", it means we have {"a":1} {"b":2}
-            # We just take the first valid object.
             if e.msg.startswith("Extra data"):
-                try:
-                    return json.loads(json_str[:e.pos])
-                except:
-                    pass
+                try: return json.loads(json_str[:e.pos])
+                except: pass
 
-        # --- STRATEGY 3: Fix Truncation (Unclosed strings/brackets) ---
-        # 1. Fix unclosed string (Odd number of quotes)
+        # Strategy 3: Fix Truncation
         quote_count = len(re.findall(r'(?<!\\)"', json_str))
-        if quote_count % 2 != 0:
-            json_str += '"'
-
-        # 2. Fix trailing commas before closing brackets (e.g., ["a",])
+        if quote_count % 2 != 0: json_str += '"'
         json_str = re.sub(r',\s*([\]}])', r'\1', json_str)
-
-        # 3. Balance Brackets [ ]
+        
         open_brackets = json_str.count('[')
         close_brackets = json_str.count(']')
         json_str += ']' * (open_brackets - close_brackets)
-
-        # 4. Balance Braces { }
+        
         open_braces = json_str.count('{')
         close_braces = json_str.count('}')
         json_str += '}' * (open_braces - close_braces)
 
-        # --- STRATEGY 4: Final Hail Mary Parse ---
         try:
             return json.loads(json_str)
         except:
-            # If all fails, return a safe dummy object so Frontend doesn't crash
-            logger.error(f"Failed to repair JSON: {json_str[:50]}...")
             return {
                 "reasoning": "Model output was malformed and could not be repaired.",
                 "answer": "I encountered an internal error processing the response.",
@@ -304,20 +277,14 @@ class MultiModelEngine:
             }
 
     def _generate_structured(
-        self,
-        patient_context: Dict[str, Any],
-        user_query: str,
+        self, 
+        patient_context: Dict[str, Any], 
+        user_query: str, 
         temperature: float = 0.6,
-        max_tokens: int = 1500
+        base_max_tokens: int = 1500
     ) -> Dict[str, Any]:
         """
-        Generates structured JSON using LlamaGrammar + Robust Repair.
-
-        Args:
-            patient_context: Patient data context
-            user_query: The query/prompt to send
-            temperature: Sampling temperature
-            max_tokens: Maximum tokens to generate (default 1500, use higher for PDF summaries)
+        Smart Generation with Dynamic Token Scaling & Markdown instructions.
         """
         with self._lock:
             if not self._current_model or not self.json_grammar:
@@ -325,46 +292,56 @@ class MultiModelEngine:
 
             data_str = json.dumps(patient_context, indent=2)
             system_msg = self._construct_system_prompt(data_str)
-
+            
             prompt = (
                 f"<|im_start|>system\n{system_msg}<|im_end|>\n"
                 f"<|im_start|>user\n{user_query}<|im_end|>\n"
                 f"<|im_start|>assistant\n"
             )
 
-            try:
-                output = self._current_model.instance(
-                    prompt,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    top_p=0.9,
-                    repeat_penalty=1.1,
-                    grammar=self.json_grammar,
-                    stop=["<|im_end|>", "}"],
-                    echo=False
-                )
-                
-                self._current_model.inference_count += 1
-                self._total_inferences += 1
-                
-                raw_text = output['choices'][0]['text']
-                log_llm_output(raw_text, context="Structured Generation")
+            # Retry Logic for Length
+            attempts = [(base_max_tokens, "Standard"), (3500, "Extended")]
+            last_error = None
 
-                # Clean Markdown
-                clean_text = raw_text.strip()
-                if "```" in clean_text: 
-                    clean_text = clean_text.replace("```json", "").replace("```", "").strip()
+            for max_tokens, mode in attempts:
+                try:
+                    output = self._current_model.instance(
+                        prompt,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        top_p=0.9,
+                        repeat_penalty=1.1,
+                        grammar=self.json_grammar, 
+                        stop=["<|im_end|>", "}"], 
+                        echo=False
+                    )
+                    
+                    self._current_model.inference_count += 1
+                    self._total_inferences += 1
+                    
+                    finish_reason = output['choices'][0]['finish_reason']
+                    raw_text = output['choices'][0]['text']
+                    
+                    # LOGGING (Preserved)
+                    log_llm_output(raw_text, context=f"Structured Generation ({mode})")
 
-                # CALL THE NEW REPAIR FUNCTION
-                # Note: _repair_json now returns a Dict, not a Str
-                return self._repair_json(clean_text)
+                    if finish_reason == "length" and mode == "Standard":
+                        logger.warning("Token limit hit. Extending...")
+                        continue
 
-            except Exception as e:
-                print(f"Generation error: {e}")
-                return self._fallback_response(str(e))
+                    clean_text = raw_text.strip()
+                    if "```" in clean_text: 
+                        clean_text = clean_text.replace("```json", "").replace("```", "").strip()
+
+                    return self._repair_json(clean_text)
+
+                except Exception as e:
+                    last_error = e
+                    logger.error(f"Generation attempt failed: {e}")
+
+            return self._fallback_response(str(last_error))
 
     def _fallback_response(self, error_msg: str) -> Dict[str, Any]:
-        """Safe fallback if everything fails."""
         return {
             "reasoning": f"System Alert: {error_msg}",
             "answer": "Unable to process request. Please consult clinical protocols manually.",
@@ -376,143 +353,20 @@ class MultiModelEngine:
     # =========================================================================
 
     def generate_summary(
-        self,
-        clinical_state: Dict[str, Any],
+        self, 
+        clinical_state: Dict[str, Any], 
         model_id: Optional[str] = None
     ) -> Tuple[str, List[str]]:
         if model_id: self.switch_model(model_id)
-
+        
         response = self._generate_structured(
-            clinical_state,
+            clinical_state, 
             "Provide a concise clinical triage summary."
         )
-
+        
         flags = self._extract_key_flags(clinical_state)
+        # We can log reasoning here too if needed
         return response.get("answer", "No summary."), flags
-
-    def generate_pdf_summary(
-        self,
-        clinical_state: Dict[str, Any],
-        model_id: Optional[str] = None
-    ) -> Dict[str, str]:
-        """
-        Generate an extended medical summary for PDF report generation.
-        Uses higher token limit to produce detailed diagnosis and conclusion.
-
-        Args:
-            clinical_state: Patient clinical data including demographics, answers, risk_band
-            model_id: Optional model to use for generation
-
-        Returns:
-            Dict with keys: summary, diagnosis, conclusion
-        """
-        if model_id:
-            self.switch_model(model_id)
-
-        # Construct a detailed prompt for medical report generation
-        pdf_prompt = (
-            "Generate a comprehensive medical triage report with the following sections:\n\n"
-            "1. CLINICAL SUMMARY: A detailed overview of the patient's presentation, "
-            "symptoms, and relevant history based on the triage data.\n\n"
-            "2. DIAGNOSIS: Provide a working diagnosis or differential diagnoses based on "
-            "the symptoms and risk factors presented. Include reasoning.\n\n"
-            "3. CONCLUSION: Provide clinical recommendations, suggested next steps, "
-            "and any urgent actions required based on the risk level.\n\n"
-            "Format your response with clear sections. Be thorough but professional."
-        )
-
-        # Use higher max_tokens (3000) for detailed PDF generation
-        response = self._generate_structured(
-            clinical_state,
-            pdf_prompt,
-            temperature=0.5,  # Slightly lower temp for more focused output
-            max_tokens=3000   # Higher token limit for detailed report
-        )
-
-        answer = response.get("answer", "")
-
-        # Parse sections from the response
-        sections = self._parse_pdf_sections(answer)
-
-        return {
-            "summary": sections.get("summary", answer),
-            "diagnosis": sections.get("diagnosis", ""),
-            "conclusion": sections.get("conclusion", "")
-        }
-
-    def _parse_pdf_sections(self, text: str) -> Dict[str, str]:
-        """
-        Parse the LLM response into summary, diagnosis, and conclusion sections.
-        """
-        sections = {
-            "summary": "",
-            "diagnosis": "",
-            "conclusion": ""
-        }
-
-        text_lower = text.lower()
-
-        # Try to find section markers
-        summary_markers = ["clinical summary:", "summary:", "overview:"]
-        diagnosis_markers = ["diagnosis:", "differential:", "assessment:"]
-        conclusion_markers = ["conclusion:", "recommendation:", "plan:", "next steps:"]
-
-        # Find positions of each section
-        summary_pos = -1
-        diagnosis_pos = -1
-        conclusion_pos = -1
-
-        for marker in summary_markers:
-            pos = text_lower.find(marker)
-            if pos != -1 and (summary_pos == -1 or pos < summary_pos):
-                summary_pos = pos + len(marker)
-
-        for marker in diagnosis_markers:
-            pos = text_lower.find(marker)
-            if pos != -1 and (diagnosis_pos == -1 or pos < diagnosis_pos):
-                diagnosis_pos = pos + len(marker)
-
-        for marker in conclusion_markers:
-            pos = text_lower.find(marker)
-            if pos != -1 and (conclusion_pos == -1 or pos < conclusion_pos):
-                conclusion_pos = pos + len(marker)
-
-        # Extract sections based on positions
-        positions = []
-        if summary_pos != -1:
-            positions.append(("summary", summary_pos))
-        if diagnosis_pos != -1:
-            positions.append(("diagnosis", diagnosis_pos))
-        if conclusion_pos != -1:
-            positions.append(("conclusion", conclusion_pos))
-
-        # Sort by position
-        positions.sort(key=lambda x: x[1])
-
-        # Extract text for each section
-        for i, (section_name, start_pos) in enumerate(positions):
-            # Find end position (start of next section or end of text)
-            if i + 1 < len(positions):
-                # Find the marker start position for next section
-                next_section_start = positions[i + 1][1]
-                # Go back to find the marker itself
-                for marker in (summary_markers + diagnosis_markers + conclusion_markers):
-                    marker_pos = text_lower.rfind(marker, 0, next_section_start)
-                    if marker_pos != -1 and marker_pos < next_section_start:
-                        next_section_start = min(next_section_start, marker_pos)
-                        break
-                end_pos = next_section_start
-            else:
-                end_pos = len(text)
-
-            section_text = text[start_pos:end_pos].strip()
-            sections[section_name] = section_text
-
-        # If no sections found, use entire text as summary
-        if not any(sections.values()):
-            sections["summary"] = text.strip()
-
-        return sections
 
     def answer_staff_question(
         self, 
@@ -589,11 +443,6 @@ class MultiModelEngine:
     def is_loaded(self) -> bool: 
         return self._current_model is not None
 
-
-# =============================================================================
-# Singleton Pattern
-# =============================================================================
-
 _engine_instance: Optional[MultiModelEngine] = None
 
 def get_engine(
@@ -608,14 +457,9 @@ def get_engine(
         _engine_instance = MultiModelEngine(models_dir, default_model_id)
     return _engine_instance
 
-
-# =============================================================================
-# Standalone Testing
-# =============================================================================
 if __name__ == "__main__":
     print("=== Engine Test ===")
     eng = MultiModelEngine("../models", auto_load=True)
-    
     if eng.is_loaded:
         test_case = {
             "demographics": {"age": 55, "sex": "male"},

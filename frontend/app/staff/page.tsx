@@ -319,7 +319,7 @@ export default function StaffPortal() {
               Review and manage patient triage cases
             </p>
           </div>
-          <div className="flex gap-2 items-center">
+          <div className="flex gap-2 items-center mr-14">
             {/* Model Selector */}
             <div className="relative">
               <Button
