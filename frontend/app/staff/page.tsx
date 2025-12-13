@@ -23,6 +23,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { GenerateSummaryButton } from "@/components/ui/generate-summary-button";
+import { AnimatedDownloadButton } from "@/components/ui/animated-download-button";
 import { api, type CaseResponse, type ModelInfo, type CurrentModel } from "@/lib/api";
 import Link from "next/link";
 
@@ -56,6 +58,11 @@ export default function StaffPortal() {
   const [selectedModelId, setSelectedModelId] = useState<string>("");
   const [showModelSelector, setShowModelSelector] = useState(false);
   const [modelSwitching, setModelSwitching] = useState(false);
+
+  // PDF generation state
+  const [pdfGenerating, setPdfGenerating] = useState(false);
+  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null);
+  const [showDownloadButton, setShowDownloadButton] = useState(false);
 
   const handleAuth = async () => {
     if (!pin) {
@@ -172,6 +179,38 @@ export default function StaffPortal() {
       setError("Failed to update case status");
     }
   };
+
+  // PDF Generation handlers
+  const handleGeneratePDF = async () => {
+    if (!selectedCase) return;
+
+    setPdfGenerating(true);
+    setError("");
+    setPdfBlob(null);
+    setShowDownloadButton(false);
+
+    try {
+      const blob = await api.generateSummaryPDF(selectedCase.session_id);
+      setPdfBlob(blob);
+      setShowDownloadButton(true);
+    } catch (err) {
+      setError("Failed to generate PDF. Please try again.");
+    } finally {
+      setPdfGenerating(false);
+    }
+  };
+
+  const handleDownloadPDF = () => {
+    if (!pdfBlob || !selectedCase) return;
+    const filename = `triage_report_${selectedCase.ticket_id}.pdf`;
+    api.downloadBlob(pdfBlob, filename);
+  };
+
+  // Reset PDF state when case changes
+  React.useEffect(() => {
+    setPdfBlob(null);
+    setShowDownloadButton(false);
+  }, [selectedCase?.id]);
 
   const filteredCases = cases.filter((c) => {
     const matchesFilter =
@@ -575,7 +614,33 @@ export default function StaffPortal() {
                     {/* AI Assistant */}
                     <div className="border-t pt-6">
                       <div className="flex items-center justify-between mb-4">
-                        <h3 className="font-semibold">AI Assistant</h3>
+                        <div className="flex items-center gap-4">
+                          <h3 className="font-semibold">AI Assistant</h3>
+                          {/* Generate Summary / Download PDF Buttons */}
+                          <div className="flex items-center gap-2">
+                            <motion.div
+                              animate={{
+                                opacity: showDownloadButton ? 0 : 1,
+                                width: showDownloadButton ? 0 : "auto",
+                                marginRight: showDownloadButton ? 0 : 8,
+                              }}
+                              transition={{ duration: 0.3 }}
+                              className="overflow-hidden"
+                            >
+                              <GenerateSummaryButton
+                                onClick={handleGeneratePDF}
+                                isLoading={pdfGenerating}
+                                disabled={pdfGenerating}
+                              />
+                            </motion.div>
+                            {showDownloadButton && (
+                              <AnimatedDownloadButton
+                                onClick={handleDownloadPDF}
+                                filename={`triage_report_${selectedCase.ticket_id}.pdf`}
+                              />
+                            )}
+                          </div>
+                        </div>
                         {currentModel && (
                           <span className="text-xs text-gray-500 flex items-center gap-1">
                             <Cpu className="h-3 w-3" />

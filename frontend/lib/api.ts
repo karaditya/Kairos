@@ -261,6 +261,29 @@ export const api = {
     return response.json();
   },
 
+  async generateSummaryPDF(sessionId: string): Promise<Blob> {
+    const response = await fetch(
+      `${API_BASE_URL}/session/${sessionId}/summary/pdf`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }
+    );
+    if (!response.ok) throw new Error("Failed to generate PDF");
+    return response.blob();
+  },
+
+  downloadBlob(blob: Blob, filename: string): void {
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  },
+
   async askQuestionWithModel(
     caseId: string,
     question: string,

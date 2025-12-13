@@ -304,13 +304,20 @@ class MultiModelEngine:
             }
 
     def _generate_structured(
-        self, 
-        patient_context: Dict[str, Any], 
-        user_query: str, 
-        temperature: float = 0.6
+        self,
+        patient_context: Dict[str, Any],
+        user_query: str,
+        temperature: float = 0.6,
+        max_tokens: int = 1500
     ) -> Dict[str, Any]:
         """
         Generates structured JSON using LlamaGrammar + Robust Repair.
+
+        Args:
+            patient_context: Patient data context
+            user_query: The query/prompt to send
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate (default 1500, use higher for PDF summaries)
         """
         with self._lock:
             if not self._current_model or not self.json_grammar:
@@ -318,7 +325,7 @@ class MultiModelEngine:
 
             data_str = json.dumps(patient_context, indent=2)
             system_msg = self._construct_system_prompt(data_str)
-            
+
             prompt = (
                 f"<|im_start|>system\n{system_msg}<|im_end|>\n"
                 f"<|im_start|>user\n{user_query}<|im_end|>\n"
@@ -328,12 +335,12 @@ class MultiModelEngine:
             try:
                 output = self._current_model.instance(
                     prompt,
-                    max_tokens=1500,
+                    max_tokens=max_tokens,
                     temperature=temperature,
                     top_p=0.9,
-                    repeat_penalty=1.1, 
-                    grammar=self.json_grammar, 
-                    stop=["<|im_end|>", "}"], 
+                    repeat_penalty=1.1,
+                    grammar=self.json_grammar,
+                    stop=["<|im_end|>", "}"],
                     echo=False
                 )
                 
@@ -369,19 +376,143 @@ class MultiModelEngine:
     # =========================================================================
 
     def generate_summary(
-        self, 
-        clinical_state: Dict[str, Any], 
+        self,
+        clinical_state: Dict[str, Any],
         model_id: Optional[str] = None
     ) -> Tuple[str, List[str]]:
         if model_id: self.switch_model(model_id)
-        
+
         response = self._generate_structured(
-            clinical_state, 
+            clinical_state,
             "Provide a concise clinical triage summary."
         )
-        
+
         flags = self._extract_key_flags(clinical_state)
         return response.get("answer", "No summary."), flags
+
+    def generate_pdf_summary(
+        self,
+        clinical_state: Dict[str, Any],
+        model_id: Optional[str] = None
+    ) -> Dict[str, str]:
+        """
+        Generate an extended medical summary for PDF report generation.
+        Uses higher token limit to produce detailed diagnosis and conclusion.
+
+        Args:
+            clinical_state: Patient clinical data including demographics, answers, risk_band
+            model_id: Optional model to use for generation
+
+        Returns:
+            Dict with keys: summary, diagnosis, conclusion
+        """
+        if model_id:
+            self.switch_model(model_id)
+
+        # Construct a detailed prompt for medical report generation
+        pdf_prompt = (
+            "Generate a comprehensive medical triage report with the following sections:\n\n"
+            "1. CLINICAL SUMMARY: A detailed overview of the patient's presentation, "
+            "symptoms, and relevant history based on the triage data.\n\n"
+            "2. DIAGNOSIS: Provide a working diagnosis or differential diagnoses based on "
+            "the symptoms and risk factors presented. Include reasoning.\n\n"
+            "3. CONCLUSION: Provide clinical recommendations, suggested next steps, "
+            "and any urgent actions required based on the risk level.\n\n"
+            "Format your response with clear sections. Be thorough but professional."
+        )
+
+        # Use higher max_tokens (3000) for detailed PDF generation
+        response = self._generate_structured(
+            clinical_state,
+            pdf_prompt,
+            temperature=0.5,  # Slightly lower temp for more focused output
+            max_tokens=3000   # Higher token limit for detailed report
+        )
+
+        answer = response.get("answer", "")
+
+        # Parse sections from the response
+        sections = self._parse_pdf_sections(answer)
+
+        return {
+            "summary": sections.get("summary", answer),
+            "diagnosis": sections.get("diagnosis", ""),
+            "conclusion": sections.get("conclusion", "")
+        }
+
+    def _parse_pdf_sections(self, text: str) -> Dict[str, str]:
+        """
+        Parse the LLM response into summary, diagnosis, and conclusion sections.
+        """
+        sections = {
+            "summary": "",
+            "diagnosis": "",
+            "conclusion": ""
+        }
+
+        text_lower = text.lower()
+
+        # Try to find section markers
+        summary_markers = ["clinical summary:", "summary:", "overview:"]
+        diagnosis_markers = ["diagnosis:", "differential:", "assessment:"]
+        conclusion_markers = ["conclusion:", "recommendation:", "plan:", "next steps:"]
+
+        # Find positions of each section
+        summary_pos = -1
+        diagnosis_pos = -1
+        conclusion_pos = -1
+
+        for marker in summary_markers:
+            pos = text_lower.find(marker)
+            if pos != -1 and (summary_pos == -1 or pos < summary_pos):
+                summary_pos = pos + len(marker)
+
+        for marker in diagnosis_markers:
+            pos = text_lower.find(marker)
+            if pos != -1 and (diagnosis_pos == -1 or pos < diagnosis_pos):
+                diagnosis_pos = pos + len(marker)
+
+        for marker in conclusion_markers:
+            pos = text_lower.find(marker)
+            if pos != -1 and (conclusion_pos == -1 or pos < conclusion_pos):
+                conclusion_pos = pos + len(marker)
+
+        # Extract sections based on positions
+        positions = []
+        if summary_pos != -1:
+            positions.append(("summary", summary_pos))
+        if diagnosis_pos != -1:
+            positions.append(("diagnosis", diagnosis_pos))
+        if conclusion_pos != -1:
+            positions.append(("conclusion", conclusion_pos))
+
+        # Sort by position
+        positions.sort(key=lambda x: x[1])
+
+        # Extract text for each section
+        for i, (section_name, start_pos) in enumerate(positions):
+            # Find end position (start of next section or end of text)
+            if i + 1 < len(positions):
+                # Find the marker start position for next section
+                next_section_start = positions[i + 1][1]
+                # Go back to find the marker itself
+                for marker in (summary_markers + diagnosis_markers + conclusion_markers):
+                    marker_pos = text_lower.rfind(marker, 0, next_section_start)
+                    if marker_pos != -1 and marker_pos < next_section_start:
+                        next_section_start = min(next_section_start, marker_pos)
+                        break
+                end_pos = next_section_start
+            else:
+                end_pos = len(text)
+
+            section_text = text[start_pos:end_pos].strip()
+            sections[section_name] = section_text
+
+        # If no sections found, use entire text as summary
+        if not any(sections.values()):
+            sections["summary"] = text.strip()
+
+        return sections
 
     def answer_staff_question(
         self, 

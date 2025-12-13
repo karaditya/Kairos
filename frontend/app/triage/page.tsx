@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, ArrowRight, CheckCircle, AlertCircle } from "lucide-react";
+import { ArrowLeft, ArrowRight, CheckCircle, AlertCircle, FileText, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -34,6 +34,9 @@ export default function TriagePage() {
 
   // Summary
   const [summary, setSummary] = useState<SummaryResponse | null>(null);
+
+  // PDF generation
+  const [pdfLoading, setPdfLoading] = useState(false);
 
   // Initialize session on mount
   useEffect(() => {
@@ -131,6 +134,23 @@ export default function TriagePage() {
       setError("Failed to submit answer");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleGeneratePDF = async () => {
+    if (!sessionId) return;
+
+    setPdfLoading(true);
+    setError("");
+
+    try {
+      const pdfBlob = await api.generateSummaryPDF(sessionId);
+      const filename = `triage_report_${summary?.ticket_id || sessionId}.pdf`;
+      api.downloadBlob(pdfBlob, filename);
+    } catch (err) {
+      setError("Failed to generate PDF. Please try again.");
+    } finally {
+      setPdfLoading(false);
     }
   };
 
@@ -487,13 +507,32 @@ export default function TriagePage() {
                   </p>
                 </div>
 
-                <div className="flex gap-4">
-                  <Button onClick={() => window.print()} variant="outline" className="flex-1">
-                    Print Ticket
+                <div className="flex flex-col gap-3">
+                  <Button
+                    onClick={handleGeneratePDF}
+                    disabled={pdfLoading}
+                    className="w-full bg-blue-600 hover:bg-blue-700"
+                  >
+                    {pdfLoading ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Generating PDF...
+                      </>
+                    ) : (
+                      <>
+                        <FileText className="mr-2 h-4 w-4" />
+                        Generate Summary PDF
+                      </>
+                    )}
                   </Button>
-                  <Link href="/" className="flex-1">
-                    <Button className="w-full">Return Home</Button>
-                  </Link>
+                  <div className="flex gap-4">
+                    <Button onClick={() => window.print()} variant="outline" className="flex-1">
+                      Print Ticket
+                    </Button>
+                    <Link href="/" className="flex-1">
+                      <Button className="w-full">Return Home</Button>
+                    </Link>
+                  </div>
                 </div>
               </CardContent>
             </Card>

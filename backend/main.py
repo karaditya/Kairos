@@ -21,9 +21,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from database import Database, Session, Case
+from pdf_generator import generate_medical_report_pdf
 from triage_engine import TriageEngine, RiskEngine
 from multi_model_engine import MultiModelEngine, get_engine
 from model_registry import get_all_models, get_model_config, model_to_dict
@@ -399,6 +401,70 @@ async def get_summary(session_id: str):
         disclaimer="This tool does not provide medical diagnosis or treatment. A healthcare professional will review your case."
     )
 
+
+@app.post("/session/{session_id}/summary/pdf")
+async def generate_summary_pdf(session_id: str):
+    """Generate a PDF medical report for the completed triage session."""
+    session = db.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if session.status != "complete":
+        raise HTTPException(status_code=400, detail="Triage not complete")
+
+    # Get risk data
+    risk_band = session.answers.get("_risk_band", "amber")
+    triggered_rules = session.answers.get("_triggered_rules", [])
+
+    # Generate ticket ID
+    ticket_id = generate_ticket_id(session_id)
+
+    # Build clinical state for LLM
+    clinical_state = {
+        "demographics": session.demographics,
+        "chief_complaint": session.answers.get("chief_complaint", "unknown"),
+        "answers": {k: v for k, v in session.answers.items() if not k.startswith("_")},
+        "risk_band": risk_band,
+        "triggered_rules": triggered_rules
+    }
+
+    # Generate extended summary with diagnosis and conclusion using higher token limit
+    pdf_sections = reasoning_engine.generate_pdf_summary(clinical_state)
+
+    # Extract key flags
+    key_flags = reasoning_engine._extract_key_flags(clinical_state)
+
+    # Waiting instruction based on risk
+    waiting_instructions = {
+        "red": get_text("wait_red", session.language),
+        "amber": get_text("wait_amber", session.language),
+        "green": get_text("wait_green", session.language)
+    }
+
+    # Generate PDF
+    pdf_bytes = generate_medical_report_pdf(
+        ticket_id=ticket_id,
+        risk_band=risk_band,
+        demographics=session.demographics,
+        summary=pdf_sections["summary"],
+        diagnosis=pdf_sections["diagnosis"],
+        conclusion=pdf_sections["conclusion"],
+        key_flags=key_flags,
+        triggered_rules=[{"rule": r["id"], "description": r["description"]} for r in triggered_rules],
+        answers={k: v for k, v in session.answers.items() if not k.startswith("_")},
+        waiting_instruction=waiting_instructions.get(risk_band, waiting_instructions["amber"])
+    )
+
+    # Return PDF as downloadable file
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=triage_report_{ticket_id}.pdf"
+        }
+    )
+
+
 # =============================================================================
 # Staff Endpoints
 # =============================================================================
@@ -425,6 +491,7 @@ async def list_cases(status: Optional[str] = None, _: bool = Depends(verify_staf
     return CaseListResponse(cases=[
         {
             "id": c.id,
+            "session_id": c.session_id,
             "ticket_id": c.ticket_id,
             "created_at": c.created_at.isoformat(),
             "risk_band": c.risk_band,
@@ -446,6 +513,7 @@ async def get_case(case_id: str, _: bool = Depends(verify_staff_pin)):
     
     return {
         "id": case.id,
+        "session_id": case.session_id,
         "ticket_id": case.ticket_id,
         "created_at": case.created_at.isoformat(),
         "risk_band": case.risk_band,
