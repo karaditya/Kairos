@@ -1,40 +1,1085 @@
+# """
+# Multi-Model Reasoning Engine - Professional LLM Engine for Medical Triage
+
+# Supports multiple offline quantized models with:
+# - Dynamic model switching at runtime
+# - TRM-style iterative reasoning
+# - Automatic fallback on errors
+# - Memory-efficient model management
+# - Thread-safe model loading
+
+# Supported model families:
+# - Llama (Meta)
+# - Gemma (Google)
+# - DeepSeek
+# - Phi (Microsoft)
+# - Qwen (Alibaba)
+# - SmolLM (HuggingFace)
+# - MedLlama (Medical specialized)
+
+# CRITICAL: The engine CANNOT override deterministic risk bands.
+# """
+
+# import os
+# import gc
+# import threading
+# import logging
+# from typing import Dict, List, Any, Tuple, Optional
+# from dataclasses import dataclass
+# from datetime import datetime
+
+# import re
+# import json
+
+# logger = logging.getLogger(__name__)
+
+# # Path to LLM output log file (append mode)
+# LLM_LOG_PATH = os.path.join(os.path.dirname(__file__), "backend.log")
+
+
+# def log_llm_output(raw_output: str, context: str = ""):
+#     """Log raw LLM output to backend.log in append mode."""
+#     try:
+#         with open(LLM_LOG_PATH, "a", encoding="utf-8") as f:
+#             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+#             f.write(f"\n{'=' * 60}\n")
+#             f.write(f"[{timestamp}] RAW MODEL OUTPUT")
+#             if context:
+#                 f.write(f" ({context})")
+#             f.write(f"\n{'=' * 60}\n")
+#             f.write(raw_output)
+#             f.write(f"\n{'=' * 60}\n")
+#     except Exception as e:
+#         print(f"Warning: Could not write to LLM log: {e}")
+
+# from model_registry import (
+#     SUPPORTED_MODELS,
+#     ModelConfig,
+#     get_model_config,
+#     get_all_models,
+#     model_to_dict,
+#     DEFAULT_MODEL_ID,
+# )
+
+
+# # =============================================================================
+# # Response Parsing (Chain-of-Thought Models)
+# # =============================================================================
+
+# def _clean_output(text: str) -> str:
+#     """Remove instruction bleed-through and clean text generally."""
+#     if not text:
+#         return ""
+#     text = text.strip()
+#     # Remove bracketed placeholders [like this]
+#     text = re.sub(r'\[.*?\]', '', text)
+#     # Remove stray XML-like tags
+#     text = re.sub(r'<[^>]+>', '', text)
+#     # Remove instruction-like prefixes
+#     text = re.sub(r'^(?:Please|Provide|List|Write|Your|The)\s+(?:your\s+)?(?:answer|response|question).*?(?:here|below)?[.:]?\s*', '', text, flags=re.IGNORECASE)
+#     # Normalize spaces (but preserve newlines for markdown)
+#     text = re.sub(r'[ \t]+', ' ', text)  # Only collapse spaces/tabs, not newlines
+#     text = re.sub(r'\n{3,}', '\n\n', text)  # Max 2 newlines
+#     return text.strip()
+
+
+# def parse_reasoning_response(text: str) -> dict:
+#     """
+#     Parse model response in markdown format.
+
+#     Expected format:
+#     ## Answer
+#     The answer text here...
+
+#     ## Follow-up Questions
+#     1. First question?
+#     2. Second question?
+
+#     Also handles <think>...</think> for chain-of-thought reasoning.
+
+#     Returns:
+#         {
+#             "reasoning": str or None,
+#             "answer": str,
+#             "suggested_questions": list[str],
+#             "has_reasoning": bool
+#         }
+#     """
+#     if not text:
+#         return {"reasoning": None, "answer": "", "suggested_questions": [], "has_reasoning": False}
+
+#     text = text.strip()
+#     reasoning = None
+#     answer = ""
+#     suggested_questions = []
+#     has_reasoning = False
+
+#     # =================================================================
+#     # STEP 1: Extract <think>...</think> reasoning (DeepSeek R1 style)
+#     # =================================================================
+
+#     think_match = re.search(r'<think>(.*?)</think>', text, re.DOTALL | re.IGNORECASE)
+#     if think_match:
+#         reasoning = think_match.group(1).strip()
+#         text = text[:think_match.start()] + text[think_match.end():]
+#         text = text.strip()
+#         has_reasoning = True
+#     else:
+#         # Handle malformed: content followed by </think> without opening tag
+#         close_match = re.search(r'^(.*?)</think>', text, re.DOTALL | re.IGNORECASE)
+#         if close_match:
+#             reasoning = close_match.group(1).strip()
+#             text = text[close_match.end():].strip()
+#             has_reasoning = True
+
+#     # =================================================================
+#     # STEP 2: Extract markdown sections
+#     # =================================================================
+
+#     # Try markdown format: ## Answer ... ## Follow-up Questions
+#     answer_match = re.search(
+#         r'##\s*Answer\s*\n(.*?)(?=##\s*Follow-up|##\s*Questions|$)',
+#         text, re.DOTALL | re.IGNORECASE
+#     )
+#     if answer_match:
+#         answer = answer_match.group(1).strip()
+
+#     questions_match = re.search(
+#         r'##\s*(?:Follow-up\s*)?Questions\s*\n(.*?)(?=##|$)',
+#         text, re.DOTALL | re.IGNORECASE
+#     )
+#     if questions_match:
+#         questions_text = questions_match.group(1).strip()
+#         # Extract numbered items: "1.", "2.", etc.
+#         items = re.findall(r'^\s*\d+[.\)]\s*(.+?)$', questions_text, re.MULTILINE)
+#         for item in items:
+#             q = item.strip()
+#             if len(q) > 10:  # Must be substantial
+#                 suggested_questions.append(q)
+
+#     # =================================================================
+#     # STEP 3: Fallback - try legacy formats if markdown didn't work
+#     # =================================================================
+
+#     if not answer:
+#         # Try XML format: <answer>...</answer>
+#         xml_answer = re.search(r'<answer>(.*?)</answer>', text, re.DOTALL | re.IGNORECASE)
+#         if xml_answer:
+#             answer = xml_answer.group(1).strip()
+
+#     if not suggested_questions:
+#         # Try XML format: <questions>...</questions>
+#         xml_questions = re.search(r'<questions>(.*?)</questions>', text, re.DOTALL | re.IGNORECASE)
+#         if xml_questions:
+#             questions_text = xml_questions.group(1).strip()
+#             items = re.findall(r'^\s*\d+[.\)]\s*(.+?)$', questions_text, re.MULTILINE)
+#             if not items:
+#                 # Try line-by-line for unnumbered
+#                 for line in questions_text.split('\n'):
+#                     line = line.strip()
+#                     if line and '?' in line and len(line) > 10:
+#                         line = re.sub(r'^[-•*]\s*', '', line)
+#                         suggested_questions.append(line)
+#             else:
+#                 for item in items:
+#                     q = item.strip()
+#                     if len(q) > 10:
+#                         suggested_questions.append(q)
+
+#         # Try JSON format: {"questions": [...]}
+#         if not suggested_questions:
+#             json_match = re.search(r'\{["\']questions["\']\s*:\s*\[([^\]]+)\]', text, re.DOTALL)
+#             if json_match:
+#                 try:
+#                     json_str = '{"questions": [' + json_match.group(1) + ']}'
+#                     parsed = json.loads(json_str)
+#                     for q in parsed.get("questions", []):
+#                         if isinstance(q, str) and len(q) > 10:
+#                             suggested_questions.append(q.strip())
+#                 except json.JSONDecodeError:
+#                     pass
+
+#     # =================================================================
+#     # STEP 4: Final fallback - use remaining text as answer
+#     # =================================================================
+
+#     if not answer:
+#         # Remove any format markers and use remaining text
+#         cleaned = re.sub(r'<[^>]+>', '', text)  # Remove XML tags
+#         cleaned = re.sub(r'\{["\']questions["\'].*?\}', '', cleaned, flags=re.DOTALL)  # Remove JSON
+#         cleaned = re.sub(r'##.*?\n', '', cleaned)  # Remove markdown headers
+#         answer = cleaned.strip()
+
+#     # =================================================================
+#     # STEP 5: Final sanitization
+#     # =================================================================
+
+#     return {
+#         "reasoning": _sanitize_text(reasoning) if reasoning else None,
+#         "answer": _sanitize_text(answer),
+#         "suggested_questions": [_sanitize_text(q) for q in suggested_questions],
+#         "has_reasoning": has_reasoning
+#     }
+
+
+# def _sanitize_text(text: str) -> str:
+#     """Clean up text for display."""
+#     if not text:
+#         return text
+#     # Normalize whitespace and clean up
+#     text = re.sub(r' {2,}', ' ', text)
+#     text = re.sub(r'\n{3,}', '\n\n', text)
+#     return text.strip()
+
+
+# # =============================================================================
+# # LLM Backend
+# # =============================================================================
+
+# try:
+#     from llama_cpp import Llama
+#     LLAMA_AVAILABLE = True
+# except ImportError:
+#     LLAMA_AVAILABLE = False
+#     print("Warning: llama-cpp-python not installed. Using fallback mode.")
+
+
+# # =============================================================================
+# # System Prompts (Model-Agnostic)
+# # =============================================================================
+
+# SYSTEM_PROMPT = """You are a medical triage assistant. You do NOT diagnose or prescribe.
+
+# Your role is ONLY to:
+# 1. Summarize patient-reported symptoms and data
+# 2. Explain why certain risk flags were triggered
+# 3. Suggest follow-up questions based on clinical protocols
+# 4. Help staff understand the triage logic
+
+# CRITICAL RULES:
+# - NEVER provide medical diagnosis
+# - NEVER recommend treatments or medications
+# - NEVER override the risk band assigned by the system
+# - ALWAYS remind users that a healthcare professional must review all cases
+# - Cite specific data points when explaining decisions
+
+# The risk band (red/amber/green) is determined by deterministic rules, not by you."""
+
+
+# SUMMARY_PROMPT_TEMPLATE = """Based on the following patient data, provide a brief clinical summary.
+
+# PATIENT DATA:
+# - Age: {age}
+# - Sex: {sex}
+# - Pregnant: {pregnant}
+# - Chief Complaint: {chief_complaint}
+
+# REPORTED SYMPTOMS:
+# {symptoms}
+
+# RISK ASSESSMENT:
+# - Risk Band: {risk_band}
+# - Triggered Rules: {triggered_rules}
+
+# TASK: Write a 2-4 sentence summary for the receiving healthcare provider. Include:
+# 1. Brief patient description
+# 2. Main presenting concerns
+# 3. Key risk factors identified
+
+# Do NOT diagnose. Do NOT recommend treatment. Just summarize the data.
+
+# SUMMARY:"""
+
+
+# REASONING_PROMPT_TEMPLATE = """You are refining your understanding of this case.
+
+# CURRENT REASONING STATE:
+# {z}
+
+# PATIENT DATA:
+# {patient_data}
+
+# CURRENT SUMMARY DRAFT:
+# {y}
+
+# Update your reasoning. What patterns do you notice? What's most important for the clinician to know?
+# Keep your reasoning notes brief (2-3 sentences).
+
+# UPDATED REASONING:"""
+
+
+# # =============================================================================
+# # Staff Q&A Prompt (Markdown Format)
+# # =============================================================================
+
+# STAFF_QA_PROMPT = """You are a medical triage assistant. Answer in the same language as the question.
+
+# {case_data}
+
+# QUESTION: {question}
+
+# Respond using EXACTLY this markdown format:
+
+# ## Answer
+# Write your answer here. Use markdown formatting (bullets, bold, etc.) as needed.
+
+# ## Follow-up Questions
+# 1. First follow-up question?
+# 2. Second follow-up question?
+# 3. Third follow-up question?
+
+# IMPORTANT: Always include both sections. List 2-5 relevant follow-up questions."""
+
+
+# # =============================================================================
+# # Model Instance Data
+# # =============================================================================
+
+# @dataclass
+# class LoadedModel:
+#     """Represents a loaded model instance."""
+#     model_id: str
+#     config: ModelConfig
+#     instance: Any  # Llama instance
+#     loaded_at: datetime
+#     inference_count: int = 0
+
+
+# # =============================================================================
+# # Multi-Model Reasoning Engine
+# # =============================================================================
+
+# class MultiModelEngine:
+#     """
+#     Professional multi-model reasoning engine with dynamic model switching.
+
+#     Features:
+#     - Load/unload models dynamically
+#     - TRM-style iterative reasoning
+#     - Thread-safe operations
+#     - Automatic memory management
+#     - Fallback on errors
+#     """
+
+#     def __init__(
+#         self,
+#         models_dir: str,
+#         default_model_id: str = DEFAULT_MODEL_ID,
+#         n_iterations: int = 3,
+#         auto_load: bool = True
+#     ):
+#         """
+#         Initialize the multi-model engine.
+
+#         Args:
+#             models_dir: Directory containing GGUF model files
+#             default_model_id: Model to load by default
+#             n_iterations: Number of TRM reasoning iterations
+#             auto_load: Whether to auto-load default model on init
+#         """
+#         self.models_dir = models_dir
+#         self.default_model_id = default_model_id
+#         self.n_iterations = n_iterations
+
+#         # Current loaded model
+#         self._current_model: Optional[LoadedModel] = None
+#         self._lock = threading.RLock()
+
+#         # GPU configuration
+#         self.n_gpu_layers = int(os.environ.get("N_GPU_LAYERS", "0"))
+#         self.n_threads = int(os.environ.get("N_THREADS", "4"))
+
+#         # Statistics
+#         self._total_inferences = 0
+#         self._model_switches = 0
+
+#         if auto_load:
+#             self._try_load_default_model()
+
+#     # =========================================================================
+#     # Model Management
+#     # =========================================================================
+
+#     def _try_load_default_model(self):
+#         """Attempt to load the default model."""
+#         # Try default model first
+#         if self._model_exists(self.default_model_id):
+#             self.load_model(self.default_model_id)
+#             return
+
+#         # Try any available model
+#         for model_id in SUPPORTED_MODELS:
+#             if self._model_exists(model_id):
+#                 print(f"Default model not found. Loading {model_id} instead.")
+#                 self.load_model(model_id)
+#                 return
+
+#         print("No models found. Running in fallback mode.")
+
+#     def _model_exists(self, model_id: str) -> bool:
+#         """Check if model file exists."""
+#         config = get_model_config(model_id)
+#         if not config:
+#             return False
+#         path = os.path.join(self.models_dir, config.filename)
+#         return os.path.exists(path)
+
+#     def _get_model_path(self, model_id: str) -> Optional[str]:
+#         """Get full path to model file."""
+#         config = get_model_config(model_id)
+#         if not config:
+#             return None
+#         return os.path.join(self.models_dir, config.filename)
+
+#     def load_model(self, model_id: str) -> bool:
+#         """
+#         Load a specific model, unloading current if needed.
+
+#         Args:
+#             model_id: ID of model to load
+
+#         Returns:
+#             True if successful, False otherwise
+#         """
+#         if not LLAMA_AVAILABLE:
+#             print("llama-cpp-python not available")
+#             return False
+
+#         config = get_model_config(model_id)
+#         if not config:
+#             print(f"Unknown model: {model_id}")
+#             return False
+
+#         model_path = self._get_model_path(model_id)
+#         if not model_path or not os.path.exists(model_path):
+#             print(f"Model file not found: {model_path}")
+#             return False
+
+#         with self._lock:
+#             # Unload current model if different
+#             if self._current_model and self._current_model.model_id != model_id:
+#                 self.unload_model()
+#             elif self._current_model and self._current_model.model_id == model_id:
+#                 print(f"Model {model_id} already loaded")
+#                 return True
+
+#             try:
+#                 print(f"Loading model: {config.name} ({model_id})...")
+
+#                 # Determine GPU layers
+#                 gpu_layers = self.n_gpu_layers
+#                 if gpu_layers == -1:
+#                     gpu_layers = config.recommended_gpu_layers or 0
+
+#                 # Determine threads
+#                 threads = max(self.n_threads, config.recommended_threads)
+
+#                 instance = Llama(
+#                     model_path=model_path,
+#                     n_ctx=config.context_length,
+#                     n_threads=threads,
+#                     n_gpu_layers=gpu_layers,
+#                     verbose=False,
+#                 )
+
+#                 self._current_model = LoadedModel(
+#                     model_id=model_id,
+#                     config=config,
+#                     instance=instance,
+#                     loaded_at=datetime.now(),
+#                 )
+
+#                 self._model_switches += 1
+#                 print(f"Model loaded: {config.name}")
+#                 print(f"  Context: {config.context_length} tokens")
+#                 print(f"  GPU layers: {gpu_layers}")
+#                 print(f"  Threads: {threads}")
+
+#                 return True
+
+#             except Exception as e:
+#                 import traceback
+#                 print(f"Failed to load model {model_id}: {e}")
+#                 traceback.print_exc()
+#                 return False
+
+#     def unload_model(self):
+#         """Unload current model to free memory."""
+#         with self._lock:
+#             if self._current_model:
+#                 model_name = self._current_model.config.name
+#                 del self._current_model.instance
+#                 self._current_model = None
+#                 gc.collect()
+#                 print(f"Unloaded model: {model_name}")
+
+#     def switch_model(self, model_id: str) -> bool:
+#         """
+#         Switch to a different model.
+
+#         Args:
+#             model_id: ID of model to switch to
+
+#         Returns:
+#             True if successful
+#         """
+#         return self.load_model(model_id)
+
+#     # =========================================================================
+#     # Model Information
+#     # =========================================================================
+
+#     def get_current_model(self) -> Optional[Dict]:
+#         """Get information about currently loaded model."""
+#         with self._lock:
+#             if not self._current_model:
+#                 return None
+#             return {
+#                 "model_id": self._current_model.model_id,
+#                 "name": self._current_model.config.name,
+#                 "family": self._current_model.config.family,
+#                 "loaded_at": self._current_model.loaded_at.isoformat(),
+#                 "inference_count": self._current_model.inference_count,
+#                 "is_loaded": True,
+#             }
+
+#     def get_available_models(self) -> List[Dict]:
+#         """Get list of all available models with availability status."""
+#         models = []
+#         for config in get_all_models():
+#             model_dict = model_to_dict(config)
+#             model_dict["is_available"] = self._model_exists(config.id)
+#             model_dict["is_loaded"] = (
+#                 self._current_model is not None and
+#                 self._current_model.model_id == config.id
+#             )
+#             models.append(model_dict)
+#         return models
+
+#     def get_engine_stats(self) -> Dict:
+#         """Get engine statistics."""
+#         return {
+#             "llama_available": LLAMA_AVAILABLE,
+#             "models_dir": self.models_dir,
+#             "n_gpu_layers": self.n_gpu_layers,
+#             "n_threads": self.n_threads,
+#             "total_inferences": self._total_inferences,
+#             "model_switches": self._model_switches,
+#             "current_model": self.get_current_model(),
+#         }
+
+#     @property
+#     def is_loaded(self) -> bool:
+#         """Check if any model is loaded."""
+#         return self._current_model is not None
+
+#     # =========================================================================
+#     # Text Generation
+#     # =========================================================================
+
+#     def _generate(
+#         self,
+#         prompt: str,
+#         max_tokens: int = 256*2,
+#         temperature: float = 0.3,
+#         stop: Optional[List[str]] = None,
+#         repeat_penalty: float = 1.15
+#     ) -> str:
+#         """
+#         Generate text using the loaded model.
+
+#         Args:
+#             prompt: Input prompt
+#             max_tokens: Maximum tokens to generate
+#             temperature: Sampling temperature
+#             stop: Stop sequences
+#             repeat_penalty: Penalty for repeating tokens (1.0 = no penalty, >1.0 = discourage repetition)
+
+#         Returns:
+#             Generated text
+#         """
+#         if stop is None:
+#             stop = ["</s>", "\n\n\n", "PATIENT DATA:", "TASK:"]
+
+#         with self._lock:
+#             if not self._current_model:
+#                 return self._fallback_generate(prompt)
+
+#             try:
+#                 response = self._current_model.instance(
+#                     prompt,
+#                     max_tokens=max_tokens,
+#                     temperature=temperature,
+#                     stop=stop,
+#                     echo=False,
+#                     repeat_penalty=repeat_penalty,
+#                 )
+
+#                 self._current_model.inference_count += 1
+#                 self._total_inferences += 1
+
+#                 # Post-process to catch any remaining repetition
+#                 text = response["choices"][0]["text"].strip()
+#                 text = self._truncate_repetition(text)
+#                 return text
+
+#             except Exception as e:
+#                 print(f"Generation error: {e}")
+#                 return self._fallback_generate(prompt)
+
+#     def _truncate_repetition(self, text: str) -> str:
+#         """Truncate text at the point where it starts repeating."""
+#         if not text or len(text) < 100:
+#             return text
+
+#         # Split into sentences
+#         sentences = re.split(r'(?<=[.!?])\s+', text)
+#         if len(sentences) < 3:
+#             return text
+
+#         # Find first repeated sentence and cut there
+#         seen = {}
+#         for i, sent in enumerate(sentences):
+#             # Normalize for comparison
+#             normalized = ' '.join(sent.lower().split())
+#             if len(normalized) < 20:
+#                 continue
+
+#             if normalized in seen:
+#                 # Found repetition - keep only up to first occurrence
+#                 return ' '.join(sentences[:seen[normalized] + 1])
+#             seen[normalized] = i
+
+#         return text
+
+#     def _fallback_generate(self, prompt: str) -> str:
+#         """Fallback generation when model not available."""
+#         if "SUMMARY:" in prompt:
+#             return "Patient presents with reported symptoms requiring clinical evaluation. Risk assessment completed per protocol. Healthcare provider review recommended."
+#         elif "REASONING:" in prompt:
+#             return "Reviewing symptom patterns and risk factors. Key data points identified for clinical handoff."
+#         elif "RESPONSE:" in prompt:
+#             return "Based on the patient data provided, I can help explain the triage logic. Please note that clinical decisions must be made by a qualified healthcare provider."
+#         else:
+#             return "Information processed. Healthcare provider review required for clinical decisions."
+
+#     # =========================================================================
+#     # TRM-Style Reasoning
+#     # =========================================================================
+
+#     def generate_summary(
+#         self,
+#         clinical_state: Dict[str, Any],
+#         model_id: Optional[str] = None
+#     ) -> Tuple[str, List[str]]:
+#         """
+#         Generate patient summary using TRM-style iterative reasoning.
+
+#         Args:
+#             clinical_state: Patient clinical data
+#             model_id: Optional model to use (switches if different)
+
+#         Returns:
+#             (summary_text, list_of_key_flags)
+#         """
+#         # Switch model if requested
+#         if model_id and model_id != (self._current_model.model_id if self._current_model else None):
+#             if not self.switch_model(model_id):
+#                 print(f"Failed to switch to {model_id}, using current model")
+
+#         # Initialize TRM states
+#         z = ""  # Latent reasoning state
+#         y = ""  # Output draft
+
+#         # Format patient data
+#         patient_data = self._format_patient_data(clinical_state)
+
+#         # === TRM Reasoning Loop ===
+#         for iteration in range(self.n_iterations):
+#             reasoning_prompt = REASONING_PROMPT_TEMPLATE.format(
+#                 z=z if z else "Initial analysis.",
+#                 patient_data=patient_data,
+#                 y=y if y else "No draft yet."
+#             )
+#             z = self._generate(reasoning_prompt, max_tokens=128, temperature=0.3)
+
+#         # === Final Summary Generation ===
+#         demographics = clinical_state.get("demographics", {})
+#         answers = clinical_state.get("answers", {})
+
+#         # Format symptoms
+#         symptoms_list = []
+#         for key, value in answers.items():
+#             if not key.startswith("_") and key not in ["chief_complaint", "chief_complaint_text"]:
+#                 symptoms_list.append(f"- {key}: {value}")
+#         symptoms_text = "\n".join(symptoms_list) if symptoms_list else "No specific symptoms recorded"
+
+#         # Format triggered rules
+#         triggered = clinical_state.get("triggered_rules", [])
+#         rules_text = ", ".join([r.get("description", r.get("id", "Unknown")) for r in triggered]) if triggered else "None"
+
+#         summary_prompt = SUMMARY_PROMPT_TEMPLATE.format(
+#             age=demographics.get("age", "Unknown"),
+#             sex=demographics.get("sex", "Unknown"),
+#             pregnant=demographics.get("pregnant", "N/A"),
+#             chief_complaint=clinical_state.get("chief_complaint", "Unknown"),
+#             symptoms=symptoms_text,
+#             risk_band=clinical_state.get("risk_band", "Unknown").upper(),
+#             triggered_rules=rules_text
+#         )
+
+#         summary = self._generate(summary_prompt, max_tokens=256, temperature=0.3)
+
+#         # Log raw summary output to file (append mode)
+#         log_llm_output(summary, context="Patient Summary Generation")
+
+#         key_flags = self._extract_key_flags(clinical_state)
+
+#         return summary, key_flags
+
+#     def answer_staff_question(
+#         self,
+#         question: str,
+#         clinical_state: Dict[str, Any],
+#         model_id: Optional[str] = None
+#     ) -> Dict[str, Any]:
+#         """
+#         Answer a staff question about a case.
+
+#         Args:
+#             question: Staff member's question
+#             clinical_state: Full case data
+#             model_id: Optional model to use
+
+#         Returns:
+#             {
+#                 "answer": str,           # Clean final answer
+#                 "reasoning": str | None, # Chain-of-thought (if available)
+#                 "has_reasoning": bool,   # Whether CoT was present
+#                 "cited_data": list,      # Referenced data points
+#                 "model_used": str        # Model that generated response
+#             }
+#         """
+#         # Switch model if requested
+#         if model_id and model_id != (self._current_model.model_id if self._current_model else None):
+#             if not self.switch_model(model_id):
+#                 print(f"Failed to switch to {model_id}, using current model")
+
+#         case_text = self._format_case_for_staff(clinical_state)
+
+#         prompt = STAFF_QA_PROMPT.format(
+#             case_data=case_text,
+#             question=question
+#         )
+
+#         raw_response = self._generate(prompt, max_tokens=512, temperature=0.5, repeat_penalty=1.2)
+
+#         # Log raw output to file (append mode)
+#         log_llm_output(raw_response, context=f"Staff Q&A: {question[:50]}...")
+
+#         # Parse to separate reasoning from answer
+#         parsed = parse_reasoning_response(raw_response)
+
+#         cited_data = self._extract_citations(parsed["answer"], clinical_state)
+
+#         return {
+#             "answer": parsed["answer"],
+#             "reasoning": parsed["reasoning"],
+#             "has_reasoning": parsed["has_reasoning"],
+#             "suggested_questions": parsed["suggested_questions"],
+#             "cited_data": cited_data,
+#             "model_used": self._current_model.config.name if self._current_model else "Fallback"
+#         }
+
+#     # =========================================================================
+#     # Data Formatting Helpers
+#     # =========================================================================
+
+#     def _format_patient_data(self, clinical_state: Dict[str, Any]) -> str:
+#         """Format clinical state as readable text."""
+#         lines = []
+
+#         demo = clinical_state.get("demographics", {})
+#         lines.append(f"Patient: {demo.get('age', '?')} y/o {demo.get('sex', '?')}")
+#         if demo.get("pregnant"):
+#             lines.append("Currently pregnant")
+
+#         lines.append(f"Chief complaint: {clinical_state.get('chief_complaint', 'Unknown')}")
+#         lines.append(f"Risk band: {clinical_state.get('risk_band', 'Unknown').upper()}")
+
+#         answers = clinical_state.get("answers", {})
+#         if answers:
+#             lines.append("Responses:")
+#             for k, v in answers.items():
+#                 if not k.startswith("_"):
+#                     lines.append(f"  - {k}: {v}")
+
+#         return "\n".join(lines)
+
+#     def _format_case_for_staff(self, clinical_state: Dict[str, Any]) -> str:
+#         """Format case data for staff view."""
+#         lines = []
+
+#         demo = clinical_state.get("demographics", {})
+#         lines.append("=== PATIENT DEMOGRAPHICS ===")
+#         lines.append(f"Age: {demo.get('age', 'Unknown')}")
+#         lines.append(f"Sex: {demo.get('sex', 'Unknown')}")
+#         lines.append(f"Pregnant: {demo.get('pregnant', 'N/A')}")
+
+#         lines.append("\n=== CHIEF COMPLAINT ===")
+#         lines.append(clinical_state.get("chief_complaint", "Unknown"))
+
+#         lines.append("\n=== PATIENT RESPONSES ===")
+#         for key, value in clinical_state.get("answers", {}).items():
+#             if not key.startswith("_"):
+#                 lines.append(f"{key}: {value}")
+
+#         lines.append("\n=== RISK ASSESSMENT ===")
+#         lines.append(f"Risk Band: {clinical_state.get('risk_band', 'Unknown').upper()}")
+
+#         lines.append("\nTriggered Rules:")
+#         for rule in clinical_state.get("triggered_rules", []):
+#             lines.append(f"- [{rule.get('band', '?').upper()}] {rule.get('description', 'Unknown rule')}")
+
+#         if clinical_state.get("summary"):
+#             lines.append("\n=== AUTO-GENERATED SUMMARY ===")
+#             lines.append(clinical_state["summary"])
+
+#         return "\n".join(lines)
+
+#     def _extract_key_flags(self, clinical_state: Dict[str, Any]) -> List[str]:
+#         """Extract key clinical flags from the data."""
+#         flags = []
+
+#         demo = clinical_state.get("demographics", {})
+#         answers = clinical_state.get("answers", {})
+
+#         # Age flags
+#         age = demo.get("age", 0)
+#         if age < 2:
+#             flags.append("Infant patient (under 2 years)")
+#         elif age > 65:
+#             flags.append("Elderly patient (over 65 years)")
+
+#         # Pregnancy flag
+#         if demo.get("pregnant"):
+#             flags.append("Patient is pregnant")
+
+#         # Check answers for concerning patterns
+#         for key, value in answers.items():
+#             key_lower = key.lower()
+
+#             if "fever" in key_lower or "temperature" in key_lower:
+#                 if isinstance(value, (int, float)) and value > 39.5:
+#                     flags.append(f"High fever ({value}C)")
+#                 elif isinstance(value, (int, float)) and value > 38:
+#                     flags.append(f"Fever present ({value}C)")
+
+#             if "pain" in key_lower and "severity" in key_lower:
+#                 if isinstance(value, (int, float)) and value >= 8:
+#                     flags.append("Severe pain reported")
+
+#             if "breathing" in key_lower or "breath" in key_lower:
+#                 if value in [True, "yes", "Yes"]:
+#                     flags.append("Breathing difficulty reported")
+
+#             if "chest" in key_lower and "pain" in key_lower:
+#                 if value in [True, "yes", "Yes"]:
+#                     flags.append("Chest pain reported")
+
+#             if "duration" in key_lower or "days" in key_lower:
+#                 if isinstance(value, (int, float)) and value > 7:
+#                     flags.append(f"Prolonged symptoms ({value} days)")
+
+#         # Add triggered rule flags
+#         for rule in clinical_state.get("triggered_rules", []):
+#             if rule.get("band") == "red":
+#                 flags.append(f"RED FLAG: {rule.get('description', 'Red flag rule triggered')}")
+
+#         return flags
+
+#     def _extract_citations(self, answer: str, clinical_state: Dict[str, Any]) -> List[str]:
+#         """Extract data points cited in the answer."""
+#         citations = []
+#         answer_lower = answer.lower()
+
+#         demo = clinical_state.get("demographics", {})
+#         if str(demo.get("age", "")) in answer:
+#             citations.append(f"Age: {demo.get('age')}")
+
+#         for key, value in clinical_state.get("answers", {}).items():
+#             if str(value).lower() in answer_lower or key.lower() in answer_lower:
+#                 citations.append(f"{key}: {value}")
+
+#         for rule in clinical_state.get("triggered_rules", []):
+#             desc = rule.get("description", "")
+#             if desc.lower() in answer_lower:
+#                 citations.append(f"Rule: {desc}")
+
+#         return citations[:5]
+
+
+# # =============================================================================
+# # Singleton Instance Factory
+# # =============================================================================
+
+# _engine_instance: Optional[MultiModelEngine] = None
+
+
+# def get_engine(
+#     models_dir: str = "../models",
+#     default_model_id: str = DEFAULT_MODEL_ID,
+#     reinitialize: bool = False
+# ) -> MultiModelEngine:
+#     """
+#     Get or create the multi-model engine singleton.
+
+#     Args:
+#         models_dir: Directory containing model files
+#         default_model_id: Default model to load
+#         reinitialize: Force re-initialization
+
+#     Returns:
+#         MultiModelEngine instance
+#     """
+#     global _engine_instance
+
+#     if _engine_instance is None or reinitialize:
+#         _engine_instance = MultiModelEngine(
+#             models_dir=models_dir,
+#             default_model_id=default_model_id,
+#         )
+
+#     return _engine_instance
+
+
+# # =============================================================================
+# # Standalone Testing
+# # =============================================================================
+
+# if __name__ == "__main__":
+#     print("=== Multi-Model Engine Test ===\n")
+
+#     engine = MultiModelEngine("../models", auto_load=True)
+
+#     print("\n--- Available Models ---")
+#     for model in engine.get_available_models():
+#         status = "LOADED" if model["is_loaded"] else ("available" if model["is_available"] else "not downloaded")
+#         print(f"  {model['id']}: {model['name']} [{status}]")
+
+#     print("\n--- Engine Stats ---")
+#     stats = engine.get_engine_stats()
+#     for k, v in stats.items():
+#         print(f"  {k}: {v}")
+
+#     if engine.is_loaded:
+#         print("\n--- Test Summary Generation ---")
+#         test_case = {
+#             "demographics": {"age": 45, "sex": "male", "pregnant": None},
+#             "chief_complaint": "chest_discomfort",
+#             "answers": {
+#                 "chest_pain": True,
+#                 "pain_severity": 7,
+#                 "shortness_of_breath": True,
+#                 "pain_radiating": "left arm",
+#                 "duration_hours": 2
+#             },
+#             "risk_band": "red",
+#             "triggered_rules": [
+#                 {"id": "chest_pain_sob", "description": "Chest pain with shortness of breath", "band": "red"}
+#             ]
+#         }
+
+#         summary, flags = engine.generate_summary(test_case)
+#         print(f"\nSummary:\n{summary}")
+#         print(f"\nKey Flags:\n{flags}")
+
+
 """
 Multi-Model Reasoning Engine - Professional LLM Engine for Medical Triage
 
 Supports multiple offline quantized models with:
 - Dynamic model switching at runtime
-- TRM-style iterative reasoning
+- Structured JSON output via GBNF Grammars (Guarantees Blue/Green/Purple format)
 - Automatic fallback on errors
 - Memory-efficient model management
 - Thread-safe model loading
 
 Supported model families:
 - Llama (Meta)
-- Gemma (Google)
-- DeepSeek
-- Phi (Microsoft)
-- Qwen (Alibaba)
-- SmolLM (HuggingFace)
-- MedLlama (Medical specialized)
-
-CRITICAL: The engine CANNOT override deterministic risk bands.
+- DeepSeek (including R1 Distill)
+- Mistral / Mixtral
+- Qwen
+- Gemma
 """
 
 import os
 import gc
 import threading
 import logging
+import json
 from typing import Dict, List, Any, Tuple, Optional
 from dataclasses import dataclass
 from datetime import datetime
 
-import re
+# Pydantic is used to define the strict schema for the model's output
+from pydantic import BaseModel, Field, ConfigDict
 
 logger = logging.getLogger(__name__)
 
 # Path to LLM output log file (append mode)
 LLM_LOG_PATH = os.path.join(os.path.dirname(__file__), "backend.log")
 
+# Import your existing registry
+from model_registry import (
+    SUPPORTED_MODELS,
+    ModelConfig,
+    get_model_config,
+    get_all_models,
+    model_to_dict,
+    DEFAULT_MODEL_ID,
+)
+
+# =============================================================================
+# 1. DEFINE OUTPUT SCHEMA (The Contract with Frontend)
+# =============================================================================
+
+class TriageResponse(BaseModel):
+    """
+    Strict structure for the medical triage response.
+    Maps directly to frontend UI sections:
+    - reasoning -> Blue Section (DeepDive/Thinking)
+    - answer -> Green Section (Main Conclusion)
+    - follow_up_questions -> Purple Section (Next Steps)
+    """
+    # Silences the 'model_' namespace conflict warning
+    model_config = ConfigDict(protected_namespaces=())
+
+    reasoning: str = Field(
+        ..., 
+        description="Detailed clinical reasoning. Analyze symptoms, risk factors, and vital signs step-by-step."
+    )
+    answer: str = Field(
+        ..., 
+        description="The final direct answer to the user's query or the clinical summary for the patient."
+    )
+    follow_up_questions: List[str] = Field(
+        ..., 
+        description="A list of 3-5 specific, relevant follow-up questions to ask the patient.",
+        min_items=1,
+        max_items=5
+    )
+
+# =============================================================================
+# LLM Backend Setup
+# =============================================================================
+
+try:
+    from llama_cpp import Llama, LlamaGrammar
+    LLAMA_AVAILABLE = True
+except ImportError:
+    LLAMA_AVAILABLE = False
+    print("CRITICAL WARNING: llama-cpp-python not installed. Engine will run in fallback mode.")
 
 def log_llm_output(raw_output: str, context: str = ""):
     """Log raw LLM output to backend.log in append mode."""
@@ -51,244 +1096,6 @@ def log_llm_output(raw_output: str, context: str = ""):
     except Exception as e:
         print(f"Warning: Could not write to LLM log: {e}")
 
-from model_registry import (
-    SUPPORTED_MODELS,
-    ModelConfig,
-    get_model_config,
-    get_all_models,
-    model_to_dict,
-    DEFAULT_MODEL_ID,
-)
-
-
-# =============================================================================
-# Response Parsing (Chain-of-Thought Models)
-# =============================================================================
-
-def _clean_output(text: str) -> str:
-    """Remove instruction bleed-through and clean text generally."""
-    if not text:
-        return ""
-    text = text.strip()
-    # Remove bracketed placeholders [like this]
-    text = re.sub(r'\[.*?\]', '', text)
-    # Remove stray XML-like tags
-    text = re.sub(r'<[^>]+>', '', text)
-    # Remove instruction-like prefixes
-    text = re.sub(r'^(?:Please|Provide|List|Write|Your|The)\s+(?:your\s+)?(?:answer|response|question).*?(?:here|below)?[.:]?\s*', '', text, flags=re.IGNORECASE)
-    # Normalize spaces (but preserve newlines for markdown)
-    text = re.sub(r'[ \t]+', ' ', text)  # Only collapse spaces/tabs, not newlines
-    text = re.sub(r'\n{3,}', '\n\n', text)  # Max 2 newlines
-    return text.strip()
-
-
-def parse_reasoning_response(text: str) -> dict:
-    """
-    Parse model response using tag-based extraction.
-
-    Expected format (from prompt):
-    <answer>...</answer>
-    <questions>1. ... 2. ... 3. ...</questions>
-
-    Also handles <think>...</think> for reasoning.
-
-    Returns:
-        {
-            "reasoning": str or None,
-            "answer": str,
-            "suggested_questions": list[str],
-            "has_reasoning": bool
-        }
-    """
-    if not text:
-        return {"reasoning": None, "answer": "", "suggested_questions": [], "has_reasoning": False}
-
-    text = text.strip()
-    reasoning = None
-    answer = ""
-    suggested_questions = []
-    has_reasoning = False
-
-    # =================================================================
-    # STEP 1: Extract <think>...</think> reasoning
-    # =================================================================
-
-    think_match = re.search(r'<think>(.*?)</think>', text, re.DOTALL | re.IGNORECASE)
-    if think_match:
-        reasoning = think_match.group(1).strip()
-        text = text[:think_match.start()] + text[think_match.end():]
-        text = text.strip()
-        has_reasoning = True
-    else:
-        # Handle malformed: content followed by </think> without opening tag
-        close_match = re.search(r'^(.*?)</think>', text, re.DOTALL | re.IGNORECASE)
-        if close_match:
-            reasoning = close_match.group(1).strip()
-            text = text[close_match.end():].strip()
-            has_reasoning = True
-
-    # =================================================================
-    # STEP 2: Extract <answer>...</answer>
-    # =================================================================
-
-    answer_match = re.search(r'<answer>(.*?)</answer>', text, re.DOTALL | re.IGNORECASE)
-    if answer_match:
-        answer = _clean_output(answer_match.group(1))
-        text = text[:answer_match.start()] + text[answer_match.end():]
-        text = text.strip()
-
-    # =================================================================
-    # STEP 3: Extract <questions>...</questions>
-    # =================================================================
-
-    questions_match = re.search(r'<questions>(.*?)</questions>', text, re.DOTALL | re.IGNORECASE)
-    if questions_match:
-        questions_text = questions_match.group(1).strip()
-
-        # Try numbered format first: "1.", "2)", etc.
-        items = re.findall(r'(?:^|\n)\s*\d+[.\)]\s*(.+?)(?=\n\s*\d+[.\)]|$)', questions_text, re.DOTALL)
-
-        # If no numbered items found, try line-by-line (unnumbered questions)
-        if not items:
-            lines = questions_text.split('\n')
-            for line in lines:
-                line = line.strip()
-                # Skip empty lines or lines that are just tags/markers
-                if line and '?' in line and len(line) > 15:
-                    # Remove any leading bullets or dashes
-                    line = re.sub(r'^[-•*]\s*', '', line)
-                    items.append(line)
-
-        for item in items:
-            q = _clean_output(item)
-            if len(q) > 15 and '?' in q:  # Must be substantial and have a question mark
-                suggested_questions.append(q)
-
-    # =================================================================
-    # STEP 4: Fallback - use remaining text as answer if no tags found
-    # =================================================================
-
-    if not answer and text:
-        answer = _clean_output(text)
-
-    # Clean any remaining tags from answer
-    answer = re.sub(r'<[^>]+>', '', answer).strip()
-
-    # =================================================================
-    # STEP 5: Final sanitization
-    # =================================================================
-
-    return {
-        "reasoning": _sanitize_text(reasoning) if reasoning else None,
-        "answer": _sanitize_text(answer),
-        "suggested_questions": [_sanitize_text(q) for q in suggested_questions],
-        "has_reasoning": has_reasoning
-    }
-
-
-def _sanitize_text(text: str) -> str:
-    """Clean up text for display."""
-    if not text:
-        return text
-    # Normalize whitespace and clean up
-    text = re.sub(r' {2,}', ' ', text)
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    return text.strip()
-
-
-# =============================================================================
-# LLM Backend
-# =============================================================================
-
-try:
-    from llama_cpp import Llama
-    LLAMA_AVAILABLE = True
-except ImportError:
-    LLAMA_AVAILABLE = False
-    print("Warning: llama-cpp-python not installed. Using fallback mode.")
-
-
-# =============================================================================
-# System Prompts (Model-Agnostic)
-# =============================================================================
-
-SYSTEM_PROMPT = """You are a medical triage assistant. You do NOT diagnose or prescribe.
-
-Your role is ONLY to:
-1. Summarize patient-reported symptoms and data
-2. Explain why certain risk flags were triggered
-3. Suggest follow-up questions based on clinical protocols
-4. Help staff understand the triage logic
-
-CRITICAL RULES:
-- NEVER provide medical diagnosis
-- NEVER recommend treatments or medications
-- NEVER override the risk band assigned by the system
-- ALWAYS remind users that a healthcare professional must review all cases
-- Cite specific data points when explaining decisions
-
-The risk band (red/amber/green) is determined by deterministic rules, not by you."""
-
-
-SUMMARY_PROMPT_TEMPLATE = """Based on the following patient data, provide a brief clinical summary.
-
-PATIENT DATA:
-- Age: {age}
-- Sex: {sex}
-- Pregnant: {pregnant}
-- Chief Complaint: {chief_complaint}
-
-REPORTED SYMPTOMS:
-{symptoms}
-
-RISK ASSESSMENT:
-- Risk Band: {risk_band}
-- Triggered Rules: {triggered_rules}
-
-TASK: Write a 2-4 sentence summary for the receiving healthcare provider. Include:
-1. Brief patient description
-2. Main presenting concerns
-3. Key risk factors identified
-
-Do NOT diagnose. Do NOT recommend treatment. Just summarize the data.
-
-SUMMARY:"""
-
-
-REASONING_PROMPT_TEMPLATE = """You are refining your understanding of this case.
-
-CURRENT REASONING STATE:
-{z}
-
-PATIENT DATA:
-{patient_data}
-
-CURRENT SUMMARY DRAFT:
-{y}
-
-Update your reasoning. What patterns do you notice? What's most important for the clinician to know?
-Keep your reasoning notes brief (2-3 sentences).
-
-UPDATED REASONING:"""
-
-
-# =============================================================================
-# Staff Q&A Prompt (Structured for DeepSeek R1 / Reasoning Models)
-# =============================================================================
-
-STAFF_QA_PROMPT = """Medical triage assistant. Answer in the same language as the question.
-
-{case_data}
-
-QUESTION: {question}
-
-<answer>
-</answer>
-
-<questions>
-</questions>"""
-
-
 # =============================================================================
 # Model Instance Data
 # =============================================================================
@@ -302,54 +1109,47 @@ class LoadedModel:
     loaded_at: datetime
     inference_count: int = 0
 
-
 # =============================================================================
 # Multi-Model Reasoning Engine
 # =============================================================================
 
 class MultiModelEngine:
     """
-    Professional multi-model reasoning engine with dynamic model switching.
-
-    Features:
-    - Load/unload models dynamically
-    - TRM-style iterative reasoning
-    - Thread-safe operations
-    - Automatic memory management
-    - Fallback on errors
+    Professional multi-model reasoning engine.
+    Enforces structured JSON output for consistent frontend rendering.
     """
 
     def __init__(
         self,
         models_dir: str,
         default_model_id: str = DEFAULT_MODEL_ID,
-        n_iterations: int = 3,
         auto_load: bool = True
     ):
-        """
-        Initialize the multi-model engine.
-
-        Args:
-            models_dir: Directory containing GGUF model files
-            default_model_id: Model to load by default
-            n_iterations: Number of TRM reasoning iterations
-            auto_load: Whether to auto-load default model on init
-        """
         self.models_dir = models_dir
         self.default_model_id = default_model_id
-        self.n_iterations = n_iterations
 
-        # Current loaded model
+        # Threading & State
         self._current_model: Optional[LoadedModel] = None
         self._lock = threading.RLock()
 
-        # GPU configuration
-        self.n_gpu_layers = int(os.environ.get("N_GPU_LAYERS", "0"))
+        # Config
+        self.n_gpu_layers = int(os.environ.get("N_GPU_LAYERS", "-1")) 
         self.n_threads = int(os.environ.get("N_THREADS", "4"))
 
-        # Statistics
+        # Stats
         self._total_inferences = 0
         self._model_switches = 0
+
+        # Compile Grammar (The "Magic" for Structured Output)
+        self.json_grammar = None
+        if LLAMA_AVAILABLE:
+            try:
+                # Forces the model to generate tokens matching TriageResponse schema
+                schema = TriageResponse.model_json_schema()
+                self.json_grammar = LlamaGrammar.from_json_schema(json.dumps(schema))
+                print("GBNF Grammar compiled successfully.")
+            except Exception as e:
+                print(f"Failed to compile grammar: {e}")
 
         if auto_load:
             self._try_load_default_model()
@@ -359,270 +1159,187 @@ class MultiModelEngine:
     # =========================================================================
 
     def _try_load_default_model(self):
-        """Attempt to load the default model."""
-        # Try default model first
         if self._model_exists(self.default_model_id):
             self.load_model(self.default_model_id)
             return
-
-        # Try any available model
+        
+        # Fallback to first available
         for model_id in SUPPORTED_MODELS:
             if self._model_exists(model_id):
-                print(f"Default model not found. Loading {model_id} instead.")
+                print(f"Default not found. Loading {model_id}...")
                 self.load_model(model_id)
                 return
-
-        print("No models found. Running in fallback mode.")
+        print("No models found. Engine running in fallback mode.")
 
     def _model_exists(self, model_id: str) -> bool:
-        """Check if model file exists."""
         config = get_model_config(model_id)
-        if not config:
-            return False
-        path = os.path.join(self.models_dir, config.filename)
-        return os.path.exists(path)
-
-    def _get_model_path(self, model_id: str) -> Optional[str]:
-        """Get full path to model file."""
-        config = get_model_config(model_id)
-        if not config:
-            return None
-        return os.path.join(self.models_dir, config.filename)
+        if not config: return False
+        return os.path.exists(os.path.join(self.models_dir, config.filename))
 
     def load_model(self, model_id: str) -> bool:
-        """
-        Load a specific model, unloading current if needed.
-
-        Args:
-            model_id: ID of model to load
-
-        Returns:
-            True if successful, False otherwise
-        """
-        if not LLAMA_AVAILABLE:
-            print("llama-cpp-python not available")
-            return False
+        """Load a specific model, unloading current if needed."""
+        if not LLAMA_AVAILABLE: return False
 
         config = get_model_config(model_id)
         if not config:
-            print(f"Unknown model: {model_id}")
+            print(f"Config not found for {model_id}")
             return False
-
-        model_path = self._get_model_path(model_id)
-        if not model_path or not os.path.exists(model_path):
-            print(f"Model file not found: {model_path}")
-            return False
+            
+        path = os.path.join(self.models_dir, config.filename)
 
         with self._lock:
-            # Unload current model if different
-            if self._current_model and self._current_model.model_id != model_id:
-                self.unload_model()
-            elif self._current_model and self._current_model.model_id == model_id:
-                print(f"Model {model_id} already loaded")
-                return True
+            if self._current_model and self._current_model.model_id == model_id:
+                return True # Already loaded
+
+            self.unload_model()
 
             try:
-                print(f"Loading model: {config.name} ({model_id})...")
-
-                # Determine GPU layers
+                print(f"Loading model: {config.name}...")
+                
+                # Intelligent parameter selection
                 gpu_layers = self.n_gpu_layers
-                if gpu_layers == -1:
-                    gpu_layers = config.recommended_gpu_layers or 0
-
-                # Determine threads
-                threads = max(self.n_threads, config.recommended_threads)
-
+                if gpu_layers == -1: gpu_layers = config.recommended_gpu_layers or -1
+                
                 instance = Llama(
-                    model_path=model_path,
+                    model_path=path,
                     n_ctx=config.context_length,
-                    n_threads=threads,
+                    n_threads=self.n_threads,
                     n_gpu_layers=gpu_layers,
-                    verbose=False,
+                    verbose=False
                 )
 
                 self._current_model = LoadedModel(
                     model_id=model_id,
                     config=config,
                     instance=instance,
-                    loaded_at=datetime.now(),
+                    loaded_at=datetime.now()
                 )
-
                 self._model_switches += 1
-                print(f"Model loaded: {config.name}")
-                print(f"  Context: {config.context_length} tokens")
-                print(f"  GPU layers: {gpu_layers}")
-                print(f"  Threads: {threads}")
-
                 return True
-
             except Exception as e:
-                import traceback
-                print(f"Failed to load model {model_id}: {e}")
-                traceback.print_exc()
+                print(f"Failed to load {model_id}: {e}")
                 return False
 
     def unload_model(self):
-        """Unload current model to free memory."""
+        """Unload current model and free VRAM."""
         with self._lock:
             if self._current_model:
-                model_name = self._current_model.config.name
-                del self._current_model.instance
+                try:
+                    del self._current_model.instance
+                    gc.collect()
+                except Exception as e:
+                    print(f"Error unloading model: {e}")
                 self._current_model = None
-                gc.collect()
-                print(f"Unloaded model: {model_name}")
 
     def switch_model(self, model_id: str) -> bool:
-        """
-        Switch to a different model.
-
-        Args:
-            model_id: ID of model to switch to
-
-        Returns:
-            True if successful
-        """
         return self.load_model(model_id)
 
     # =========================================================================
-    # Model Information
+    # Status Method (FIXED: Returns 'model_id' key)
     # =========================================================================
 
-    def get_current_model(self) -> Optional[Dict]:
-        """Get information about currently loaded model."""
+    def get_current_model(self) -> Optional[Dict[str, Any]]:
+        """
+        Retrieves metadata for the currently loaded model.
+        Required by main.py for status checks.
+        """
         with self._lock:
             if not self._current_model:
                 return None
+            
             return {
-                "model_id": self._current_model.model_id,
+                "model_id": self._current_model.model_id, # <--- FIXED KEY NAME
+                "id": self._current_model.model_id,       # Kept for backward compat
                 "name": self._current_model.config.name,
-                "family": self._current_model.config.family,
                 "loaded_at": self._current_model.loaded_at.isoformat(),
-                "inference_count": self._current_model.inference_count,
-                "is_loaded": True,
+                "inference_count": self._current_model.inference_count
             }
 
-    def get_available_models(self) -> List[Dict]:
-        """Get list of all available models with availability status."""
-        models = []
-        for config in get_all_models():
-            model_dict = model_to_dict(config)
-            model_dict["is_available"] = self._model_exists(config.id)
-            model_dict["is_loaded"] = (
-                self._current_model is not None and
-                self._current_model.model_id == config.id
-            )
-            models.append(model_dict)
-        return models
-
-    def get_engine_stats(self) -> Dict:
-        """Get engine statistics."""
-        return {
-            "llama_available": LLAMA_AVAILABLE,
-            "models_dir": self.models_dir,
-            "n_gpu_layers": self.n_gpu_layers,
-            "n_threads": self.n_threads,
-            "total_inferences": self._total_inferences,
-            "model_switches": self._model_switches,
-            "current_model": self.get_current_model(),
-        }
-
-    @property
-    def is_loaded(self) -> bool:
-        """Check if any model is loaded."""
-        return self._current_model is not None
-
     # =========================================================================
-    # Text Generation
+    # Core Generation Logic (OPTIMIZED)
     # =========================================================================
 
-    def _generate(
-        self,
-        prompt: str,
-        max_tokens: int = 256*2,
-        temperature: float = 0.3,
-        stop: Optional[List[str]] = None,
-        repeat_penalty: float = 1.15
-    ) -> str:
+    def _construct_system_prompt(self, patient_data: str) -> str:
+        """Create a prompt optimized for JSON output."""
+        return (
+            "You are an expert medical triage assistant. You must analyze the patient data "
+            "and output a structured JSON response.\n\n"
+            "PATIENT DATA:\n"
+            f"{patient_data}\n\n"
+            "INSTRUCTIONS:\n"
+            "1. REASONING: Analyze symptoms, vitals, and risk factors step-by-step. "
+            "Explain WHY the risk band is appropriate.\n"
+            "2. ANSWER: Provide a clear, professional summary for the healthcare provider.\n"
+            "3. FOLLOW-UP: List 3-5 specific questions to narrow down the diagnosis.\n\n"
+            "You must output valid JSON matching this structure:\n"
+            "{ \"reasoning\": \"string\", \"answer\": \"string\", \"follow_up_questions\": [\"string\"] }"
+        )
+
+    def _generate_structured(
+        self, 
+        patient_context: Dict[str, Any], 
+        user_query: str,
+        temperature: float = 0.2
+    ) -> Dict[str, Any]:
         """
-        Generate text using the loaded model.
-
-        Args:
-            prompt: Input prompt
-            max_tokens: Maximum tokens to generate
-            temperature: Sampling temperature
-            stop: Stop sequences
-            repeat_penalty: Penalty for repeating tokens (1.0 = no penalty, >1.0 = discourage repetition)
-
-        Returns:
-            Generated text
+        Generates a response strictly formatted for the frontend.
         """
-        if stop is None:
-            stop = ["</s>", "\n\n\n", "PATIENT DATA:", "TASK:"]
-
         with self._lock:
-            if not self._current_model:
-                return self._fallback_generate(prompt)
+            if not self._current_model or not self.json_grammar:
+                return self._fallback_response("Model or Grammar not loaded.")
+
+            # Prepare Context
+            data_str = json.dumps(patient_context, indent=2)
+            system_msg = self._construct_system_prompt(data_str)
+            
+            # Format Prompt (ChatML style)
+            prompt = (
+                f"<|im_start|>system\n{system_msg}<|im_end|>\n"
+                f"<|im_start|>user\n{user_query}<|im_end|>\n"
+                f"<|im_start|>assistant\n"
+            )
 
             try:
-                response = self._current_model.instance(
+                # === THE KEY OPTIMIZATION ===
+                output = self._current_model.instance(
                     prompt,
-                    max_tokens=max_tokens,
+                    max_tokens=2048,
                     temperature=temperature,
-                    stop=stop,
-                    echo=False,
-                    repeat_penalty=repeat_penalty,
+                    grammar=self.json_grammar, # Enforces schema
+                    stop=["<|im_end|>", "}"],  # Ensure we stop after JSON
+                    echo=False
                 )
 
                 self._current_model.inference_count += 1
                 self._total_inferences += 1
+                
+                raw_text = output['choices'][0]['text']
+                log_llm_output(raw_text, context="Structured Generation")
 
-                # Post-process to catch any remaining repetition
-                text = response["choices"][0]["text"].strip()
-                text = self._truncate_repetition(text)
-                return text
+                # Ensure JSON validity (fix cut-offs)
+                if not raw_text.strip().endswith("}"):
+                    raw_text = raw_text.strip() + "}"
 
+                parsed = json.loads(raw_text)
+                return parsed
+
+            except json.JSONDecodeError:
+                print("Error: Model generated invalid JSON despite grammar.")
+                return self._fallback_response("Error parsing model output.")
             except Exception as e:
                 print(f"Generation error: {e}")
-                return self._fallback_generate(prompt)
+                return self._fallback_response(f"System error: {str(e)}")
 
-    def _truncate_repetition(self, text: str) -> str:
-        """Truncate text at the point where it starts repeating."""
-        if not text or len(text) < 100:
-            return text
-
-        # Split into sentences
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        if len(sentences) < 3:
-            return text
-
-        # Find first repeated sentence and cut there
-        seen = {}
-        for i, sent in enumerate(sentences):
-            # Normalize for comparison
-            normalized = ' '.join(sent.lower().split())
-            if len(normalized) < 20:
-                continue
-
-            if normalized in seen:
-                # Found repetition - keep only up to first occurrence
-                return ' '.join(sentences[:seen[normalized] + 1])
-            seen[normalized] = i
-
-        return text
-
-    def _fallback_generate(self, prompt: str) -> str:
-        """Fallback generation when model not available."""
-        if "SUMMARY:" in prompt:
-            return "Patient presents with reported symptoms requiring clinical evaluation. Risk assessment completed per protocol. Healthcare provider review recommended."
-        elif "REASONING:" in prompt:
-            return "Reviewing symptom patterns and risk factors. Key data points identified for clinical handoff."
-        elif "RESPONSE:" in prompt:
-            return "Based on the patient data provided, I can help explain the triage logic. Please note that clinical decisions must be made by a qualified healthcare provider."
-        else:
-            return "Information processed. Healthcare provider review required for clinical decisions."
+    def _fallback_response(self, error_msg: str) -> Dict[str, Any]:
+        """Return a safe fallback dictionary matching the schema."""
+        return {
+            "reasoning": f"Could not generate reasoning. ({error_msg})",
+            "answer": "System is currently unavailable or encountered an error. Please refer to manual protocols.",
+            "follow_up_questions": ["Is the patient stable?", "Have you consulted a supervisor?"]
+        }
 
     # =========================================================================
-    # TRM-Style Reasoning
+    # Public Methods (API)
     # =========================================================================
 
     def generate_summary(
@@ -631,69 +1348,26 @@ class MultiModelEngine:
         model_id: Optional[str] = None
     ) -> Tuple[str, List[str]]:
         """
-        Generate patient summary using TRM-style iterative reasoning.
-
-        Args:
-            clinical_state: Patient clinical data
-            model_id: Optional model to use (switches if different)
-
-        Returns:
-            (summary_text, list_of_key_flags)
+        Generates the initial patient summary.
+        Refactored to use Structured Generation for better quality.
         """
-        # Switch model if requested
-        if model_id and model_id != (self._current_model.model_id if self._current_model else None):
-            if not self.switch_model(model_id):
-                print(f"Failed to switch to {model_id}, using current model")
+        if model_id: self.switch_model(model_id)
 
-        # Initialize TRM states
-        z = ""  # Latent reasoning state
-        y = ""  # Output draft
-
-        # Format patient data
-        patient_data = self._format_patient_data(clinical_state)
-
-        # === TRM Reasoning Loop ===
-        for iteration in range(self.n_iterations):
-            reasoning_prompt = REASONING_PROMPT_TEMPLATE.format(
-                z=z if z else "Initial analysis.",
-                patient_data=patient_data,
-                y=y if y else "No draft yet."
-            )
-            z = self._generate(reasoning_prompt, max_tokens=128, temperature=0.3)
-
-        # === Final Summary Generation ===
-        demographics = clinical_state.get("demographics", {})
-        answers = clinical_state.get("answers", {})
-
-        # Format symptoms
-        symptoms_list = []
-        for key, value in answers.items():
-            if not key.startswith("_") and key not in ["chief_complaint", "chief_complaint_text"]:
-                symptoms_list.append(f"- {key}: {value}")
-        symptoms_text = "\n".join(symptoms_list) if symptoms_list else "No specific symptoms recorded"
-
-        # Format triggered rules
-        triggered = clinical_state.get("triggered_rules", [])
-        rules_text = ", ".join([r.get("description", r.get("id", "Unknown")) for r in triggered]) if triggered else "None"
-
-        summary_prompt = SUMMARY_PROMPT_TEMPLATE.format(
-            age=demographics.get("age", "Unknown"),
-            sex=demographics.get("sex", "Unknown"),
-            pregnant=demographics.get("pregnant", "N/A"),
-            chief_complaint=clinical_state.get("chief_complaint", "Unknown"),
-            symptoms=symptoms_text,
-            risk_band=clinical_state.get("risk_band", "Unknown").upper(),
-            triggered_rules=rules_text
+        response = self._generate_structured(
+            clinical_state, 
+            user_query="Generate a clinical triage summary based on the provided data."
         )
 
-        summary = self._generate(summary_prompt, max_tokens=256, temperature=0.3)
-
-        # Log raw summary output to file (append mode)
-        log_llm_output(summary, context="Patient Summary Generation")
-
-        key_flags = self._extract_key_flags(clinical_state)
-
-        return summary, key_flags
+        # Map structured fields to legacy return format
+        summary = response.get("answer", "No summary generated.")
+        
+        # Extract flags deterministically
+        flags = self._extract_key_flags(clinical_state)
+        
+        # Log reasoning
+        log_llm_output(response.get("reasoning", ""), context="Hidden Reasoning Layer")
+        
+        return summary, flags
 
     def answer_staff_question(
         self,
@@ -702,252 +1376,148 @@ class MultiModelEngine:
         model_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Answer a staff question about a case.
-
-        Args:
-            question: Staff member's question
-            clinical_state: Full case data
-            model_id: Optional model to use
-
-        Returns:
-            {
-                "answer": str,           # Clean final answer
-                "reasoning": str | None, # Chain-of-thought (if available)
-                "has_reasoning": bool,   # Whether CoT was present
-                "cited_data": list,      # Referenced data points
-                "model_used": str        # Model that generated response
-            }
+        Answers specific questions from the medical staff.
+        Returns the dictionary exactly as needed by the Frontend.
         """
-        # Switch model if requested
-        if model_id and model_id != (self._current_model.model_id if self._current_model else None):
-            if not self.switch_model(model_id):
-                print(f"Failed to switch to {model_id}, using current model")
+        if model_id: self.switch_model(model_id)
 
-        case_text = self._format_case_for_staff(clinical_state)
-
-        prompt = STAFF_QA_PROMPT.format(
-            case_data=case_text,
-            question=question
+        # 1. Generate Structured Response
+        structured_output = self._generate_structured(
+            clinical_state,
+            user_query=question
         )
 
-        raw_response = self._generate(prompt, max_tokens=512, temperature=0.5, repeat_penalty=1.2)
+        # 2. Extract deterministic citations
+        cited_data = self._extract_citations(structured_output["answer"], clinical_state)
 
-        # Log raw output to file (append mode)
-        log_llm_output(raw_response, context=f"Staff Q&A: {question[:50]}...")
-
-        # Parse to separate reasoning from answer
-        parsed = parse_reasoning_response(raw_response)
-
-        cited_data = self._extract_citations(parsed["answer"], clinical_state)
-
+        # 3. Return combined object
         return {
-            "answer": parsed["answer"],
-            "reasoning": parsed["reasoning"],
-            "has_reasoning": parsed["has_reasoning"],
-            "suggested_questions": parsed["suggested_questions"],
+            "answer": structured_output["answer"],
+            "reasoning": structured_output["reasoning"],
+            "suggested_questions": structured_output["follow_up_questions"],
+            "has_reasoning": True,
             "cited_data": cited_data,
             "model_used": self._current_model.config.name if self._current_model else "Fallback"
         }
 
     # =========================================================================
-    # Data Formatting Helpers
+    # Helpers
     # =========================================================================
 
-    def _format_patient_data(self, clinical_state: Dict[str, Any]) -> str:
-        """Format clinical state as readable text."""
-        lines = []
-
-        demo = clinical_state.get("demographics", {})
-        lines.append(f"Patient: {demo.get('age', '?')} y/o {demo.get('sex', '?')}")
-        if demo.get("pregnant"):
-            lines.append("Currently pregnant")
-
-        lines.append(f"Chief complaint: {clinical_state.get('chief_complaint', 'Unknown')}")
-        lines.append(f"Risk band: {clinical_state.get('risk_band', 'Unknown').upper()}")
-
-        answers = clinical_state.get("answers", {})
-        if answers:
-            lines.append("Responses:")
-            for k, v in answers.items():
-                if not k.startswith("_"):
-                    lines.append(f"  - {k}: {v}")
-
-        return "\n".join(lines)
-
-    def _format_case_for_staff(self, clinical_state: Dict[str, Any]) -> str:
-        """Format case data for staff view."""
-        lines = []
-
-        demo = clinical_state.get("demographics", {})
-        lines.append("=== PATIENT DEMOGRAPHICS ===")
-        lines.append(f"Age: {demo.get('age', 'Unknown')}")
-        lines.append(f"Sex: {demo.get('sex', 'Unknown')}")
-        lines.append(f"Pregnant: {demo.get('pregnant', 'N/A')}")
-
-        lines.append("\n=== CHIEF COMPLAINT ===")
-        lines.append(clinical_state.get("chief_complaint", "Unknown"))
-
-        lines.append("\n=== PATIENT RESPONSES ===")
-        for key, value in clinical_state.get("answers", {}).items():
-            if not key.startswith("_"):
-                lines.append(f"{key}: {value}")
-
-        lines.append("\n=== RISK ASSESSMENT ===")
-        lines.append(f"Risk Band: {clinical_state.get('risk_band', 'Unknown').upper()}")
-
-        lines.append("\nTriggered Rules:")
-        for rule in clinical_state.get("triggered_rules", []):
-            lines.append(f"- [{rule.get('band', '?').upper()}] {rule.get('description', 'Unknown rule')}")
-
-        if clinical_state.get("summary"):
-            lines.append("\n=== AUTO-GENERATED SUMMARY ===")
-            lines.append(clinical_state["summary"])
-
-        return "\n".join(lines)
-
     def _extract_key_flags(self, clinical_state: Dict[str, Any]) -> List[str]:
-        """Extract key clinical flags from the data."""
+        """Extract key clinical flags (Deterministic logic)."""
         flags = []
-
         demo = clinical_state.get("demographics", {})
         answers = clinical_state.get("answers", {})
 
-        # Age flags
+        # Age logic
         age = demo.get("age", 0)
-        if age < 2:
-            flags.append("Infant patient (under 2 years)")
-        elif age > 65:
-            flags.append("Elderly patient (over 65 years)")
+        if age < 2: flags.append("Infant (< 2y)")
+        elif age > 65: flags.append("Elderly (> 65y)")
+        if demo.get("pregnant"): flags.append("Pregnant")
 
-        # Pregnancy flag
-        if demo.get("pregnant"):
-            flags.append("Patient is pregnant")
-
-        # Check answers for concerning patterns
-        for key, value in answers.items():
-            key_lower = key.lower()
-
-            if "fever" in key_lower or "temperature" in key_lower:
-                if isinstance(value, (int, float)) and value > 39.5:
-                    flags.append(f"High fever ({value}C)")
-                elif isinstance(value, (int, float)) and value > 38:
-                    flags.append(f"Fever present ({value}C)")
-
-            if "pain" in key_lower and "severity" in key_lower:
-                if isinstance(value, (int, float)) and value >= 8:
-                    flags.append("Severe pain reported")
-
-            if "breathing" in key_lower or "breath" in key_lower:
-                if value in [True, "yes", "Yes"]:
-                    flags.append("Breathing difficulty reported")
-
-            if "chest" in key_lower and "pain" in key_lower:
-                if value in [True, "yes", "Yes"]:
-                    flags.append("Chest pain reported")
-
-            if "duration" in key_lower or "days" in key_lower:
-                if isinstance(value, (int, float)) and value > 7:
-                    flags.append(f"Prolonged symptoms ({value} days)")
-
-        # Add triggered rule flags
+        # Vital/Symptom logic
+        for k, v in answers.items():
+            if "fever" in k.lower() and isinstance(v, (int, float)) and v > 38:
+                flags.append(f"Fever ({v})")
+            if "pain" in k.lower() and isinstance(v, (int, float)) and v >= 8:
+                flags.append("Severe Pain")
+        
+        # Rule logic
         for rule in clinical_state.get("triggered_rules", []):
             if rule.get("band") == "red":
-                flags.append(f"RED FLAG: {rule.get('description', 'Red flag rule triggered')}")
-
+                flags.append(f"RED FLAG: {rule.get('description')}")
+        
         return flags
 
-    def _extract_citations(self, answer: str, clinical_state: Dict[str, Any]) -> List[str]:
-        """Extract data points cited in the answer."""
+    def _extract_citations(self, text: str, data: Dict[str, Any]) -> List[str]:
+        """Find which data points were mentioned in the text."""
         citations = []
-        answer_lower = answer.lower()
-
-        demo = clinical_state.get("demographics", {})
-        if str(demo.get("age", "")) in answer:
-            citations.append(f"Age: {demo.get('age')}")
-
-        for key, value in clinical_state.get("answers", {}).items():
-            if str(value).lower() in answer_lower or key.lower() in answer_lower:
-                citations.append(f"{key}: {value}")
-
-        for rule in clinical_state.get("triggered_rules", []):
-            desc = rule.get("description", "")
-            if desc.lower() in answer_lower:
-                citations.append(f"Rule: {desc}")
-
+        text_lower = text.lower()
+        
+        for k, v in data.get("answers", {}).items():
+            if str(v).lower() in text_lower:
+                citations.append(f"{k}: {v}")
+        
+        for rule in data.get("triggered_rules", []):
+            if rule.get("description", "").lower() in text_lower:
+                citations.append(f"Rule: {rule.get('description')}")
+                
         return citations[:5]
+
+    # =========================================================================
+    # Info Methods
+    # =========================================================================
+
+    def get_available_models(self) -> List[Dict]:
+        """Get list of models."""
+        models = []
+        for config in get_all_models():
+            m = model_to_dict(config)
+            m["is_available"] = self._model_exists(config.id)
+            m["is_loaded"] = (self._current_model and self._current_model.model_id == config.id)
+            models.append(m)
+        return models
+
+    def get_engine_stats(self) -> Dict:
+        return {
+            "llama_available": LLAMA_AVAILABLE,
+            "current_model": self._current_model.config.name if self._current_model else None,
+            "total_inferences": self._total_inferences,
+            "grammar_active": self.json_grammar is not None
+        }
+    
+    @property
+    def is_loaded(self) -> bool:
+        return self._current_model is not None
 
 
 # =============================================================================
-# Singleton Instance Factory
+# Singleton Pattern
 # =============================================================================
 
 _engine_instance: Optional[MultiModelEngine] = None
 
-
 def get_engine(
-    models_dir: str = "../models",
+    models_dir: str = "../models", 
     default_model_id: str = DEFAULT_MODEL_ID,
     reinitialize: bool = False
 ) -> MultiModelEngine:
-    """
-    Get or create the multi-model engine singleton.
-
-    Args:
-        models_dir: Directory containing model files
-        default_model_id: Default model to load
-        reinitialize: Force re-initialization
-
-    Returns:
-        MultiModelEngine instance
-    """
     global _engine_instance
-
     if _engine_instance is None or reinitialize:
-        _engine_instance = MultiModelEngine(
-            models_dir=models_dir,
-            default_model_id=default_model_id,
-        )
-
+        if _engine_instance and reinitialize:
+            # Cleanup old instance if strictly needed
+            _engine_instance.unload_model()
+            
+        _engine_instance = MultiModelEngine(models_dir, default_model_id)
+        
     return _engine_instance
 
 
 # =============================================================================
-# Standalone Testing
+# Standalone Test
 # =============================================================================
 
 if __name__ == "__main__":
-    print("=== Multi-Model Engine Test ===\n")
-
-    engine = MultiModelEngine("../models", auto_load=True)
-
-    print("\n--- Available Models ---")
-    for model in engine.get_available_models():
-        status = "LOADED" if model["is_loaded"] else ("available" if model["is_available"] else "not downloaded")
-        print(f"  {model['id']}: {model['name']} [{status}]")
-
-    print("\n--- Engine Stats ---")
-    stats = engine.get_engine_stats()
-    for k, v in stats.items():
-        print(f"  {k}: {v}")
+    TEST_MODELS_DIR = "../models" 
+    
+    print("=== Multi-Model Engine (Structured) Test ===\n")
+    engine = MultiModelEngine(TEST_MODELS_DIR, auto_load=True)
 
     if engine.is_loaded:
-        print("\n--- Test Summary Generation ---")
         test_case = {
-            "demographics": {"age": 45, "sex": "male", "pregnant": None},
-            "chief_complaint": "chest_discomfort",
-            "answers": {
-                "chest_pain": True,
-                "pain_severity": 7,
-                "shortness_of_breath": True,
-                "pain_radiating": "left arm",
-                "duration_hours": 2
-            },
-            "risk_band": "red",
-            "triggered_rules": [
-                {"id": "chest_pain_sob", "description": "Chest pain with shortness of breath", "band": "red"}
-            ]
+            "demographics": {"age": 50, "sex": "male"},
+            "chief_complaint": "chest_pain",
+            "answers": {"pain_severity": 8, "history": "hypertension"},
+            "risk_band": "red"
         }
 
-        summary, flags = engine.generate_summary(test_case)
-        print(f"\nSummary:\n{summary}")
-        print(f"\nKey Flags:\n{flags}")
+        print("\n--- Testing Staff Q&A (Structured) ---")
+        result = engine.answer_staff_question(
+            "What implies the high risk here?", 
+            test_case
+        )
+        
+        print(f"\n[BLUE SECTION - REASONING]\n{result['reasoning']}")
+        print(f"\n[GREEN SECTION - ANSWER]\n{result['answer']}")
+        print(f"\n[PURPLE SECTION - FOLLOW UP]\n{json.dumps(result['suggested_questions'], indent=2)}")
