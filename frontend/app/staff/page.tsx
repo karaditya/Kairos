@@ -308,8 +308,8 @@ export default function StaffPortal() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 py-8 px-4">
-      <div className="max-w-7xl mx-auto">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 py-8 px-6">
+      <div className="max-w-[1800px] mx-auto">
         <div className="flex justify-between items-center mb-8">
           <div>
             <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
@@ -447,7 +447,7 @@ export default function StaffPortal() {
         )}
 
         {/* 3-Column Layout: Cases | Details | AI Assistant */}
-        <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr_1fr] gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr_1fr] gap-6">
           {/* Left Column - Case List (Narrower) */}
           <div className="space-y-4">
             <Card className="h-fit lg:h-[calc(100vh-180px)] flex flex-col">
@@ -666,7 +666,7 @@ export default function StaffPortal() {
                       )}
                     </div>
                     {/* Generate Summary / Download PDF Buttons */}
-                    <div className="flex items-center gap-2 mt-3">
+                    <div className="flex items-center gap-2 mt-4 mb-2">
                       <motion.div
                         animate={{
                           opacity: showDownloadButton ? 0 : 1,
@@ -689,7 +689,7 @@ export default function StaffPortal() {
                       )}
                     </div>
                   </CardHeader>
-                  <CardContent className="space-y-4 flex-1 overflow-y-auto">
+                  <CardContent className="space-y-4 flex-1 overflow-y-auto pt-4">
                     {/* Ask Question */}
                     <div className="flex gap-2">
                       <Input
