@@ -446,46 +446,58 @@ export default function StaffPortal() {
           </Card>
         )}
 
-        <div className="grid md:grid-cols-3 gap-6">
-          {/* Case List */}
-          <div className="md:col-span-1 space-y-4">
-            <Card>
-              <CardHeader>
-                <h2 className="text-xl font-semibold">Cases</h2>
+        {/* 3-Column Layout: Cases | Details | AI Assistant */}
+        <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr_1fr] gap-4">
+          {/* Left Column - Case List (Narrower) */}
+          <div className="space-y-4">
+            <Card className="h-fit lg:h-[calc(100vh-180px)] flex flex-col">
+              <CardHeader className="pb-3">
+                <h2 className="text-lg font-semibold">Cases</h2>
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent className="space-y-3 flex-1 overflow-hidden flex flex-col">
                 {/* Search */}
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
                   <Input
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search by ticket ID..."
-                    className="pl-10"
+                    placeholder="Search..."
+                    className="pl-9 h-9 text-sm"
                   />
                 </div>
 
-                {/* Filters */}
-                <div className="flex gap-2 flex-wrap">
-                  {["all", "red", "amber", "green", "pending", "reviewed"].map(
-                    (f) => (
-                      <Button
-                        key={f}
-                        size="sm"
-                        onClick={() => setFilter(f)}
-                        variant={filter === f ? "default" : "outline"}
-                        className="capitalize"
-                      >
-                        {f}
-                      </Button>
-                    )
-                  )}
+                {/* Filters - Compact */}
+                <div className="flex gap-1 flex-wrap">
+                  {["all", "red", "amber", "green"].map((f) => (
+                    <Button
+                      key={f}
+                      size="sm"
+                      onClick={() => setFilter(f)}
+                      variant={filter === f ? "default" : "outline"}
+                      className="capitalize h-7 px-2 text-xs"
+                    >
+                      {f}
+                    </Button>
+                  ))}
+                </div>
+                <div className="flex gap-1 flex-wrap">
+                  {["pending", "reviewed"].map((f) => (
+                    <Button
+                      key={f}
+                      size="sm"
+                      onClick={() => setFilter(f)}
+                      variant={filter === f ? "default" : "outline"}
+                      className="capitalize h-7 px-2 text-xs"
+                    >
+                      {f}
+                    </Button>
+                  ))}
                 </div>
 
-                {/* Case List */}
-                <div className="space-y-2 max-h-[600px] overflow-y-auto">
+                {/* Case List - Scrollable */}
+                <div className="space-y-2 flex-1 overflow-y-auto pr-1">
                   {filteredCases.length === 0 ? (
-                    <p className="text-gray-500 text-center py-4">
+                    <p className="text-gray-500 text-center py-4 text-sm">
                       No cases found
                     </p>
                   ) : (
@@ -493,26 +505,21 @@ export default function StaffPortal() {
                       <Button
                         key={c.id}
                         onClick={() => setSelectedCase(c)}
-                        variant={
-                          selectedCase?.id === c.id ? "default" : "outline"
-                        }
-                        className="w-full justify-start h-auto py-3 flex flex-col items-start"
+                        variant={selectedCase?.id === c.id ? "default" : "outline"}
+                        className="w-full justify-start h-auto py-2 px-3 flex flex-col items-start text-left"
                       >
-                        <div className="flex items-center justify-between w-full mb-1">
-                          <span className="font-semibold">{c.ticket_id}</span>
-                          <div className="flex items-center gap-2">
+                        <div className="flex items-center justify-between w-full mb-0.5">
+                          <span className="font-medium text-sm truncate">{c.ticket_id}</span>
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
                             {getStatusIcon(c.status)}
                             <div
-                              className="w-3 h-3 rounded-full"
+                              className="w-2.5 h-2.5 rounded-full"
                               style={{ backgroundColor: getRiskColor(c.risk_band) }}
                             />
                           </div>
                         </div>
-                        <span className="text-xs text-gray-500">
-                          Age: {c.demographics?.age || "N/A"} | Sex: {c.demographics?.sex || "N/A"}
-                        </span>
-                        <span className="text-xs text-gray-500">
-                          {new Date(c.created_at).toLocaleString()}
+                        <span className="text-xs text-gray-500 truncate w-full">
+                          {c.demographics?.age || "?"} y/o {c.demographics?.sex || ""}
                         </span>
                       </Button>
                     ))
@@ -522,54 +529,52 @@ export default function StaffPortal() {
             </Card>
           </div>
 
-          {/* Case Details */}
-          <div className="md:col-span-2">
-            {selectedCase ? (
+          {/* Center + Right Columns */}
+          {selectedCase ? (
+            <>
+              {/* Center Column - Patient Details */}
               <motion.div
-                key={selectedCase.id}
-                initial={{ opacity: 0, x: 20 }}
-                animate={{ opacity: 1, x: 0 }}
+                key={`details-${selectedCase.id}`}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="space-y-4"
               >
-                <Card>
-                  <CardHeader>
+                <Card className="h-fit lg:h-[calc(100vh-180px)] flex flex-col overflow-hidden">
+                  <CardHeader className="pb-3">
                     <div className="flex items-center justify-between">
                       <div>
-                        <h2 className="text-2xl font-semibold">
-                          Case Details: {selectedCase.ticket_id}
+                        <h2 className="text-lg font-semibold">
+                          {selectedCase.ticket_id}
                         </h2>
-                        <p className="text-gray-600 dark:text-gray-400">
+                        <p className="text-xs text-gray-500">
                           {new Date(selectedCase.created_at).toLocaleString()}
                         </p>
                       </div>
                       <div
-                        className="px-4 py-2 rounded-full text-white font-semibold uppercase"
-                        style={{
-                          backgroundColor: getRiskColor(selectedCase.risk_band),
-                        }}
+                        className="px-3 py-1 rounded-full text-white text-sm font-semibold uppercase"
+                        style={{ backgroundColor: getRiskColor(selectedCase.risk_band) }}
                       >
                         {selectedCase.risk_band}
                       </div>
                     </div>
                   </CardHeader>
-                  <CardContent className="space-y-6">
+                  <CardContent className="space-y-4 flex-1 overflow-y-auto">
                     {/* Demographics */}
                     <div>
-                      <h3 className="font-semibold mb-2">Demographics</h3>
-                      <div className="bg-gray-50 dark:bg-gray-800 p-3 rounded">
+                      <h3 className="font-semibold text-sm mb-2">Demographics</h3>
+                      <div className="bg-gray-50 dark:bg-gray-800 p-3 rounded text-sm">
                         <p>Age: {selectedCase.demographics?.age || "N/A"}</p>
                         <p className="capitalize">Sex: {selectedCase.demographics?.sex || "N/A"}</p>
                         {selectedCase.demographics?.pregnant !== undefined && (
-                          <p>
-                            Pregnant: {selectedCase.demographics.pregnant ? "Yes" : "No"}
-                          </p>
+                          <p>Pregnant: {selectedCase.demographics.pregnant ? "Yes" : "No"}</p>
                         )}
                       </div>
                     </div>
 
                     {/* Summary */}
                     <div>
-                      <h3 className="font-semibold mb-2">Clinical Summary</h3>
-                      <p className="text-gray-700 dark:text-gray-300">
+                      <h3 className="font-semibold text-sm mb-2">Clinical Summary</h3>
+                      <p className="text-sm text-gray-700 dark:text-gray-300">
                         {selectedCase.summary}
                       </p>
                     </div>
@@ -577,13 +582,10 @@ export default function StaffPortal() {
                     {/* Key Flags */}
                     {selectedCase.key_flags && selectedCase.key_flags.length > 0 && (
                       <div>
-                        <h3 className="font-semibold mb-2">Key Flags</h3>
-                        <ul className="list-disc list-inside space-y-1">
+                        <h3 className="font-semibold text-sm mb-2">Key Flags</h3>
+                        <ul className="list-disc list-inside space-y-0.5 text-sm">
                           {selectedCase.key_flags.map((flag, index) => (
-                            <li
-                              key={index}
-                              className="text-gray-700 dark:text-gray-300"
-                            >
+                            <li key={index} className="text-gray-700 dark:text-gray-300">
                               {flag}
                             </li>
                           ))}
@@ -594,15 +596,15 @@ export default function StaffPortal() {
                     {/* Triggered Rules */}
                     {selectedCase.triggered_rules && selectedCase.triggered_rules.length > 0 && (
                       <div>
-                        <h3 className="font-semibold mb-2">Triggered Rules</h3>
+                        <h3 className="font-semibold text-sm mb-2">Triggered Rules</h3>
                         <div className="space-y-2">
                           {selectedCase.triggered_rules.map((rule: any, index: number) => (
                             <div
                               key={index}
-                              className="bg-red-50 dark:bg-red-900/20 p-3 rounded border border-red-200 dark:border-red-800"
+                              className="bg-red-50 dark:bg-red-900/20 p-2 rounded border border-red-200 dark:border-red-800"
                             >
-                              <p className="font-medium">{rule.id}</p>
-                              <p className="text-sm text-gray-600 dark:text-gray-400">
+                              <p className="font-medium text-sm">{rule.id}</p>
+                              <p className="text-xs text-gray-600 dark:text-gray-400">
                                 {rule.description}
                               </p>
                             </div>
@@ -611,174 +613,24 @@ export default function StaffPortal() {
                       </div>
                     )}
 
-                    {/* AI Assistant */}
-                    <div className="border-t pt-6">
-                      <div className="flex items-center justify-between mb-4">
-                        <div className="flex items-center gap-4">
-                          <h3 className="font-semibold">AI Assistant</h3>
-                          {/* Generate Summary / Download PDF Buttons */}
-                          <div className="flex items-center gap-2">
-                            <motion.div
-                              animate={{
-                                opacity: showDownloadButton ? 0 : 1,
-                                width: showDownloadButton ? 0 : "auto",
-                                marginRight: showDownloadButton ? 0 : 8,
-                              }}
-                              transition={{ duration: 0.3 }}
-                              className="overflow-hidden"
-                            >
-                              <GenerateSummaryButton
-                                onClick={handleGeneratePDF}
-                                isLoading={pdfGenerating}
-                                disabled={pdfGenerating}
-                              />
-                            </motion.div>
-                            {showDownloadButton && (
-                              <AnimatedDownloadButton
-                                onClick={handleDownloadPDF}
-                                filename={`triage_report_${selectedCase.ticket_id}.pdf`}
-                              />
-                            )}
-                          </div>
-                        </div>
-                        {currentModel && (
-                          <span className="text-xs text-gray-500 flex items-center gap-1">
-                            <Cpu className="h-3 w-3" />
-                            Using: {currentModel.name}
-                          </span>
-                        )}
-                      </div>
-                      <div className="space-y-4">
-                        <div className="flex gap-2">
-                          <Input
-                            value={askQuestion}
-                            onChange={(e) => setAskQuestion(e.target.value)}
-                            placeholder="Ask a question about this case..."
-                            onKeyPress={(e) =>
-                              e.key === "Enter" && handleAskQuestion()
-                            }
-                          />
-                          <Button
-                            onClick={handleAskQuestion}
-                            disabled={loading || !askQuestion}
-                          >
-                            {loading ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              "Ask"
-                            )}
-                          </Button>
-                        </div>
-
-                        {answer && (
-                          <div className="space-y-3">
-                            {/* Main Answer - only show if there's content */}
-                            {answer.answer && answer.answer.trim() && (
-                              <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border border-blue-200 dark:border-blue-800">
-                                <div className="flex items-start gap-3">
-                                  <MessageSquare className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
-                                  <div className="flex-1">
-                                    <h4 className="text-sm font-semibold text-blue-700 dark:text-blue-300 mb-2">
-                                      Answer
-                                    </h4>
-                                    <div className="text-gray-800 dark:text-gray-200 leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0">
-                                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                        {answer.answer}
-                                      </ReactMarkdown>
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-                            )}
-
-                            {/* Suggested Follow-up Questions */}
-                            {answer.suggested_questions && answer.suggested_questions.length > 0 && (
-                              <div className="bg-green-50 dark:bg-green-900/20 p-4 rounded-lg border border-green-200 dark:border-green-800">
-                                <h4 className="text-sm font-semibold text-green-700 dark:text-green-300 mb-3 flex items-center gap-2">
-                                  <AlertCircle className="h-4 w-4" />
-                                  Suggested Follow-up Questions
-                                </h4>
-                                <ul className="space-y-2">
-                                  {answer.suggested_questions.map((q, idx) => (
-                                    <li
-                                      key={idx}
-                                      className="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300"
-                                    >
-                                      <span className="flex-shrink-0 w-5 h-5 rounded-full bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-200 text-xs flex items-center justify-center font-medium">
-                                        {idx + 1}
-                                      </span>
-                                      <span>{q}</span>
-                                    </li>
-                                  ))}
-                                </ul>
-                              </div>
-                            )}
-
-                            {/* Chain of Thought (Collapsible) */}
-                            {answer.reasoning && answer.reasoning.trim().length > 0 && (
-                              <div className="border border-purple-200 dark:border-purple-800 rounded-lg overflow-hidden">
-                                <button
-                                  onClick={() => setShowReasoning(!showReasoning)}
-                                  className="w-full flex items-center gap-2 p-3 bg-purple-50 dark:bg-purple-900/20 hover:bg-purple-100 dark:hover:bg-purple-900/30 transition-colors"
-                                >
-                                  {showReasoning ? (
-                                    <ChevronDown className="h-4 w-4 text-purple-600" />
-                                  ) : (
-                                    <ChevronRight className="h-4 w-4 text-purple-600" />
-                                  )}
-                                  <Brain className="h-4 w-4 text-purple-600" />
-                                  <span className="text-sm font-medium text-purple-700 dark:text-purple-300">
-                                    View AI Reasoning Process
-                                  </span>
-                                  <span className="text-xs text-purple-500 ml-auto">
-                                    Chain-of-Thought
-                                  </span>
-                                </button>
-                                {showReasoning && (
-                                  <div className="p-4 bg-purple-50/50 dark:bg-purple-900/10 border-t border-purple-200 dark:border-purple-800">
-                                    <div className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-2">
-                                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                        {answer.reasoning}
-                                      </ReactMarkdown>
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-
-                            {/* Model & Disclaimer */}
-                            <div className="flex items-center justify-between text-xs text-gray-500 pt-2 border-t border-gray-200 dark:border-gray-700">
-                              <span className="flex items-center gap-1">
-                                <Cpu className="h-3 w-3" />
-                                {answer.model_used}
-                              </span>
-                              <span className="text-right max-w-[60%]">{answer.disclaimer}</span>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
                     {/* Status Update */}
-                    <div className="border-t pt-6">
-                      <h3 className="font-semibold mb-4">Update Status</h3>
+                    <div className="border-t pt-4">
+                      <h3 className="font-semibold text-sm mb-3">Update Status</h3>
                       <div className="flex gap-2">
                         <Button
-                          onClick={() =>
-                            handleUpdateStatus(selectedCase.id, "reviewed")
-                          }
+                          onClick={() => handleUpdateStatus(selectedCase.id, "reviewed")}
                           variant="outline"
+                          size="sm"
                           className="flex-1"
                           disabled={selectedCase.status === "reviewed"}
                         >
-                          <CheckCircle className="mr-2 h-4 w-4" />
-                          Mark as Reviewed
+                          <CheckCircle className="mr-1.5 h-3.5 w-3.5" />
+                          Reviewed
                         </Button>
                         <Button
-                          onClick={() =>
-                            handleUpdateStatus(selectedCase.id, "discharged")
-                          }
+                          onClick={() => handleUpdateStatus(selectedCase.id, "discharged")}
                           variant="outline"
+                          size="sm"
                           className="flex-1"
                         >
                           Discharge
@@ -788,16 +640,180 @@ export default function StaffPortal() {
                   </CardContent>
                 </Card>
               </motion.div>
-            ) : (
-              <Card>
+
+              {/* Right Column - AI Assistant */}
+              <motion.div
+                key={`ai-${selectedCase.id}`}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.1 }}
+                className="space-y-4"
+              >
+                <Card className="h-fit lg:h-[calc(100vh-180px)] flex flex-col overflow-hidden">
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <h2 className="text-lg font-semibold flex items-center gap-2">
+                          <Brain className="h-5 w-5 text-purple-600" />
+                          AI Assistant
+                        </h2>
+                      </div>
+                      {currentModel && (
+                        <span className="text-xs text-gray-500 flex items-center gap-1">
+                          <Cpu className="h-3 w-3" />
+                          {currentModel.name}
+                        </span>
+                      )}
+                    </div>
+                    {/* Generate Summary / Download PDF Buttons */}
+                    <div className="flex items-center gap-2 mt-3">
+                      <motion.div
+                        animate={{
+                          opacity: showDownloadButton ? 0 : 1,
+                          width: showDownloadButton ? 0 : "auto",
+                        }}
+                        transition={{ duration: 0.3 }}
+                        className="overflow-hidden"
+                      >
+                        <GenerateSummaryButton
+                          onClick={handleGeneratePDF}
+                          isLoading={pdfGenerating}
+                          disabled={pdfGenerating}
+                        />
+                      </motion.div>
+                      {showDownloadButton && (
+                        <AnimatedDownloadButton
+                          onClick={handleDownloadPDF}
+                          filename={`triage_report_${selectedCase.ticket_id}.pdf`}
+                        />
+                      )}
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-4 flex-1 overflow-y-auto">
+                    {/* Ask Question */}
+                    <div className="flex gap-2">
+                      <Input
+                        value={askQuestion}
+                        onChange={(e) => setAskQuestion(e.target.value)}
+                        placeholder="Ask about this case..."
+                        className="h-9 text-sm"
+                        onKeyDown={(e) => e.key === "Enter" && handleAskQuestion()}
+                      />
+                      <Button
+                        onClick={handleAskQuestion}
+                        disabled={loading || !askQuestion}
+                        size="sm"
+                        className="px-3"
+                      >
+                        {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Ask"}
+                      </Button>
+                    </div>
+
+                    {/* AI Response */}
+                    {answer && (
+                      <div className="space-y-3">
+                        {/* Main Answer */}
+                        {answer.answer && answer.answer.trim() && (
+                          <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded-lg border border-blue-200 dark:border-blue-800">
+                            <div className="flex items-start gap-2">
+                              <MessageSquare className="h-4 w-4 text-blue-600 mt-0.5 flex-shrink-0" />
+                              <div className="flex-1">
+                                <h4 className="text-xs font-semibold text-blue-700 dark:text-blue-300 mb-1">
+                                  Answer
+                                </h4>
+                                <div className="text-sm text-gray-800 dark:text-gray-200 leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5">
+                                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                    {answer.answer}
+                                  </ReactMarkdown>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Suggested Follow-up Questions */}
+                        {answer.suggested_questions && answer.suggested_questions.length > 0 && (
+                          <div className="bg-green-50 dark:bg-green-900/20 p-3 rounded-lg border border-green-200 dark:border-green-800">
+                            <h4 className="text-xs font-semibold text-green-700 dark:text-green-300 mb-2 flex items-center gap-1">
+                              <AlertCircle className="h-3.5 w-3.5" />
+                              Follow-up Questions
+                            </h4>
+                            <ul className="space-y-1.5">
+                              {answer.suggested_questions.map((q, idx) => (
+                                <li
+                                  key={idx}
+                                  className="flex items-start gap-2 text-xs text-gray-700 dark:text-gray-300"
+                                >
+                                  <span className="flex-shrink-0 w-4 h-4 rounded-full bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-200 text-xs flex items-center justify-center font-medium">
+                                    {idx + 1}
+                                  </span>
+                                  <span>{q}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        {/* Chain of Thought (Collapsible) */}
+                        {answer.reasoning && answer.reasoning.trim().length > 0 && (
+                          <div className="border border-purple-200 dark:border-purple-800 rounded-lg overflow-hidden">
+                            <button
+                              onClick={() => setShowReasoning(!showReasoning)}
+                              className="w-full flex items-center gap-2 p-2 bg-purple-50 dark:bg-purple-900/20 hover:bg-purple-100 dark:hover:bg-purple-900/30 transition-colors"
+                            >
+                              {showReasoning ? (
+                                <ChevronDown className="h-3.5 w-3.5 text-purple-600" />
+                              ) : (
+                                <ChevronRight className="h-3.5 w-3.5 text-purple-600" />
+                              )}
+                              <Brain className="h-3.5 w-3.5 text-purple-600" />
+                              <span className="text-xs font-medium text-purple-700 dark:text-purple-300">
+                                AI Reasoning
+                              </span>
+                            </button>
+                            {showReasoning && (
+                              <div className="p-3 bg-purple-50/50 dark:bg-purple-900/10 border-t border-purple-200 dark:border-purple-800">
+                                <div className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed prose prose-sm dark:prose-invert max-w-none">
+                                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                    {answer.reasoning}
+                                  </ReactMarkdown>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Model & Disclaimer */}
+                        <div className="flex items-center justify-between text-xs text-gray-500 pt-2 border-t border-gray-200 dark:border-gray-700">
+                          <span className="flex items-center gap-1">
+                            <Cpu className="h-3 w-3" />
+                            {answer.model_used}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </motion.div>
+            </>
+          ) : (
+            /* No Case Selected - Spanning center and right */
+            <div className="lg:col-span-2">
+              <Card className="h-fit lg:h-[calc(100vh-180px)] flex items-center justify-center">
                 <CardContent className="py-12 text-center">
-                  <p className="text-gray-500">
+                  <div className="text-gray-400 mb-4">
+                    <Search className="h-12 w-12 mx-auto opacity-50" />
+                  </div>
+                  <p className="text-gray-500 text-lg font-medium">
                     Select a case from the list to view details
+                  </p>
+                  <p className="text-gray-400 text-sm mt-2">
+                    {filteredCases.length} case{filteredCases.length !== 1 ? "s" : ""} available
                   </p>
                 </CardContent>
               </Card>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
