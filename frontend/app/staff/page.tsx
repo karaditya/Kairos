@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   Lock,
   Search,
@@ -606,22 +607,24 @@ export default function StaffPortal() {
 
                         {answer && (
                           <div className="space-y-3">
-                            {/* Main Answer */}
-                            <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border border-blue-200 dark:border-blue-800">
-                              <div className="flex items-start gap-3">
-                                <MessageSquare className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
-                                <div className="flex-1">
-                                  <h4 className="text-sm font-semibold text-blue-700 dark:text-blue-300 mb-2">
-                                    Answer
-                                  </h4>
-                                  <div className="text-gray-800 dark:text-gray-200 leading-relaxed prose prose-sm dark:prose-invert max-w-none">
-                                    <ReactMarkdown>
-                                      {answer.answer || "No specific answer generated."}
-                                    </ReactMarkdown>
+                            {/* Main Answer - only show if there's content */}
+                            {answer.answer && answer.answer.trim() && (
+                              <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border border-blue-200 dark:border-blue-800">
+                                <div className="flex items-start gap-3">
+                                  <MessageSquare className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
+                                  <div className="flex-1">
+                                    <h4 className="text-sm font-semibold text-blue-700 dark:text-blue-300 mb-2">
+                                      Answer
+                                    </h4>
+                                    <div className="text-gray-800 dark:text-gray-200 leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0">
+                                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                        {answer.answer}
+                                      </ReactMarkdown>
+                                    </div>
                                   </div>
                                 </div>
                               </div>
-                            </div>
+                            )}
 
                             {/* Suggested Follow-up Questions */}
                             {answer.suggested_questions && answer.suggested_questions.length > 0 && (
@@ -668,8 +671,8 @@ export default function StaffPortal() {
                                 </button>
                                 {showReasoning && (
                                   <div className="p-4 bg-purple-50/50 dark:bg-purple-900/10 border-t border-purple-200 dark:border-purple-800">
-                                    <div className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed prose prose-sm dark:prose-invert max-w-none">
-                                      <ReactMarkdown>
+                                    <div className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-2">
+                                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
                                         {answer.reasoning}
                                       </ReactMarkdown>
                                     </div>

@@ -151,60 +151,14 @@ def parse_reasoning_response(text: str) -> dict:
                 suggested_questions.append(q)
 
     # =================================================================
-    # STEP 4: Fallback - if no tags found, use heuristics
+    # STEP 4: Fallback - use remaining text as answer if no tags found
     # =================================================================
 
-    if not answer and not suggested_questions:
-        # Strip hallucinated instructions at start
-        hallucination_patterns = [
-            r'^(?:Please\s+)?(?:ensure|make\s+sure|be\s+sure|note)\s+.*?\n+',
-            r'^(?:The\s+)?(?:answer|questions?|response)\s+should\s+be.*?\n+',
-            r'^(?:No\s+need\s+for|Use|Explain).*?\n+',
-            r'^(?:Okay|OK|Alright),?\s+(?:so\s+)?.*?\n+',
-        ]
-        for _ in range(5):
-            original = text
-            for pattern in hallucination_patterns:
-                text = re.sub(pattern, '', text, flags=re.IGNORECASE)
-            text = text.strip()
-            if text == original:
-                break
+    if not answer and text:
+        answer = _clean_output(text)
 
-        # Try to find questions with ordinal or numbered format
-        question_patterns = [
-            r'(?:^|\n)\s*\d+[.\)]\s*(.+?)(?=\n\s*\d+[.\)]|$)',
-            r'(?:^|\n)\s*(?:First|Second|Third)\s+(?:question|thought)[:\s]+(.+?)(?=\n\s*(?:First|Second|Third)|$)',
-        ]
-        for pattern in question_patterns:
-            items = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
-            if items:
-                for item in items[:3]:
-                    q = re.sub(r'\s+', ' ', item.strip())
-                    if len(q) > 10:
-                        if not q.endswith('?'):
-                            q = q.rstrip('.,:;') + '?'
-                        suggested_questions.append(q)
-                if suggested_questions:
-                    break
-
-        # Use remaining text as answer if we don't have one
-        if not answer:
-            # Remove the questions part from text
-            for q in suggested_questions:
-                text = text.replace(q.rstrip('?'), '')
-            answer = text.strip()
-
-    # =================================================================
-    # STEP 5: Clean up answer text
-    # =================================================================
-
-    # Remove any remaining tag markers
-    answer = re.sub(r'</?(?:answer|questions|think)>', '', answer, flags=re.IGNORECASE)
-
-    # Remove "Now, I should think about..." type transitions
-    answer = re.sub(r'\n*(?:Now,?\s+)?I\s+(?:should|need\s+to|will)\s+(?:think|suggest|provide).*$', '', answer, flags=re.IGNORECASE | re.DOTALL)
-
-    answer = answer.strip()
+    # Clean any remaining tags from answer
+    answer = re.sub(r'<[^>]+>', '', answer).strip()
 
     # =================================================================
     # STEP 5: Final sanitization
@@ -219,49 +173,12 @@ def parse_reasoning_response(text: str) -> dict:
 
 
 def _sanitize_text(text: str) -> str:
-    """Clean up text for display with proper paragraph formatting."""
+    """Clean up text for display."""
     if not text:
         return text
-
-    # HTML entities
-    replacements = {
-        '&quot;': '"', '&apos;': "'", '&amp;': '&',
-        '&lt;': '<', '&gt;': '>', '&nbsp;': ' ',
-        '\u201c': '"', '\u201d': '"',  # Curly double quotes
-        '\u2018': "'", '\u2019': "'",  # Curly single quotes
-    }
-    for old, new in replacements.items():
-        text = text.replace(old, new)
-
-    # Normalize multiple spaces
+    # Normalize whitespace and clean up
     text = re.sub(r' {2,}', ' ', text)
-
-    # Ensure proper paragraph breaks (markdown needs double newlines)
-    # First normalize all newlines
     text = re.sub(r'\n{3,}', '\n\n', text)
-
-    # Ensure paragraphs are properly separated
-    # Single newlines between paragraphs become double newlines
-    lines = text.split('\n')
-    result_lines = []
-    for i, line in enumerate(lines):
-        line = line.strip()
-        if line:
-            result_lines.append(line)
-            # Add blank line after if next line exists and current line ends a sentence
-            if i < len(lines) - 1 and line and line[-1] in '.!?':
-                next_line = lines[i + 1].strip() if i + 1 < len(lines) else ''
-                # If next line starts a new thought (capital letter, not a continuation)
-                if next_line and next_line[0].isupper() and not next_line.startswith(('However', 'But', 'And', 'So', 'Also', 'Additionally')):
-                    result_lines.append('')  # Add blank line for paragraph break
-        elif result_lines and result_lines[-1] != '':
-            result_lines.append('')  # Preserve intentional blank lines
-
-    text = '\n'.join(result_lines)
-
-    # Clean up excessive blank lines
-    text = re.sub(r'\n{3,}', '\n\n', text)
-
     return text.strip()
 
 
