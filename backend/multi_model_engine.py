@@ -994,16 +994,14 @@
 #         print(f"\nSummary:\n{summary}")
 #         print(f"\nKey Flags:\n{flags}")
 
-
 """
 Multi-Model Reasoning Engine - Professional LLM Engine for Medical Triage
 
 Supports multiple offline quantized models with:
 - Dynamic model switching at runtime
-- Structured JSON output via GBNF Grammars (Guarantees Blue/Green/Purple format)
-- Automatic fallback on errors
-- Memory-efficient model management
-- Thread-safe model loading
+- Structured JSON output via GBNF Grammars
+- Optimized Inference parameters (Repetition Penalty, Top-K, Top-P)
+- One-Shot Prompting for consistency
 
 Supported model families:
 - Llama (Meta)
@@ -1052,7 +1050,6 @@ class TriageResponse(BaseModel):
     - answer -> Green Section (Main Conclusion)
     - follow_up_questions -> Purple Section (Next Steps)
     """
-    # Silences the 'model_' namespace conflict warning
     model_config = ConfigDict(protected_namespaces=())
 
     reasoning: str = Field(
@@ -1132,15 +1129,15 @@ class MultiModelEngine:
         self._current_model: Optional[LoadedModel] = None
         self._lock = threading.RLock()
 
-        # Config
+        # Config - Optimization Keys
         self.n_gpu_layers = int(os.environ.get("N_GPU_LAYERS", "-1")) 
-        self.n_threads = int(os.environ.get("N_THREADS", "4"))
+        self.n_threads = int(os.environ.get("N_THREADS", "6")) # Slightly higher threads can help CPU inference
 
         # Stats
         self._total_inferences = 0
         self._model_switches = 0
 
-        # Compile Grammar (The "Magic" for Structured Output)
+        # Compile Grammar
         self.json_grammar = None
         if LLAMA_AVAILABLE:
             try:
@@ -1189,7 +1186,7 @@ class MultiModelEngine:
 
         with self._lock:
             if self._current_model and self._current_model.model_id == model_id:
-                return True # Already loaded
+                return True 
 
             self.unload_model()
 
@@ -1200,9 +1197,10 @@ class MultiModelEngine:
                 gpu_layers = self.n_gpu_layers
                 if gpu_layers == -1: gpu_layers = config.recommended_gpu_layers or -1
                 
+                # Load with slightly larger context for safety
                 instance = Llama(
                     model_path=path,
-                    n_ctx=config.context_length,
+                    n_ctx=4096, 
                     n_threads=self.n_threads,
                     n_gpu_layers=gpu_layers,
                     verbose=False
@@ -1234,52 +1232,52 @@ class MultiModelEngine:
     def switch_model(self, model_id: str) -> bool:
         return self.load_model(model_id)
 
-    # =========================================================================
-    # Status Method (FIXED: Returns 'model_id' key)
-    # =========================================================================
-
     def get_current_model(self) -> Optional[Dict[str, Any]]:
-        """
-        Retrieves metadata for the currently loaded model.
-        Required by main.py for status checks.
-        """
         with self._lock:
-            if not self._current_model:
-                return None
-            
+            if not self._current_model: return None
             return {
-                "model_id": self._current_model.model_id, # <--- FIXED KEY NAME
-                "id": self._current_model.model_id,       # Kept for backward compat
+                "model_id": self._current_model.model_id,
+                "id": self._current_model.model_id,
                 "name": self._current_model.config.name,
                 "loaded_at": self._current_model.loaded_at.isoformat(),
                 "inference_count": self._current_model.inference_count
             }
 
     # =========================================================================
-    # Core Generation Logic (OPTIMIZED)
+    # Core Generation Logic (OPTIMIZED FOR CONSISTENCY)
     # =========================================================================
 
     def _construct_system_prompt(self, patient_data: str) -> str:
-        """Create a prompt optimized for JSON output."""
+        """
+        Creates a prompt with a ONE-SHOT EXAMPLE to prevent "string" placeholders
+        and ensure consistent output structure.
+        """
+        example_json = json.dumps({
+            "reasoning": "Patient reports severe abdominal pain (8/10) localized to RLQ. Combined with fever (38.5C) and positive rebound tenderness, this strongly suggests appendicitis. Risk is elevated due to potential rupture.",
+            "answer": "High suspicion of acute appendicitis. Immediate surgical consultation is required.",
+            "follow_up_questions": ["When did the pain shift to the lower right side?", "Have you experienced nausea or vomiting?", "Is the pain worse with movement?"]
+        })
+
         return (
             "You are an expert medical triage assistant. You must analyze the patient data "
-            "and output a structured JSON response.\n\n"
-            "PATIENT DATA:\n"
+            "and output a structured JSON response. Do NOT use XML tags like <think>.\n\n"
+            "### EXAMPLE INTERACTION\n"
+            "User: Analyze this patient...\n"
+            f"Assistant: {example_json}\n\n"
+            "### CURRENT PATIENT DATA\n"
             f"{patient_data}\n\n"
-            "INSTRUCTIONS:\n"
-            "1. REASONING: Analyze symptoms, vitals, and risk factors step-by-step. "
-            "Explain WHY the risk band is appropriate.\n"
-            "2. ANSWER: Provide a clear, professional summary for the healthcare provider.\n"
-            "3. FOLLOW-UP: List 3-5 specific questions to narrow down the diagnosis.\n\n"
-            "You must output valid JSON matching this structure:\n"
-            "{ \"reasoning\": \"string\", \"answer\": \"string\", \"follow_up_questions\": [\"string\"] }"
+            "### INSTRUCTIONS\n"
+            "1. REASONING: Briefly analyze triggers, vitals, and risk band.\n"
+            "2. ANSWER: Provide a concise clinical summary.\n"
+            "3. FOLLOW-UP: List 3 specific clinical questions.\n"
+            "4. FORMAT: Output ONLY valid JSON."
         )
 
     def _generate_structured(
         self, 
         patient_context: Dict[str, Any], 
         user_query: str,
-        temperature: float = 0.2
+        temperature: float = 0.3 # Slightly higher for creativity, constrained by Grammar
     ) -> Dict[str, Any]:
         """
         Generates a response strictly formatted for the frontend.
@@ -1288,11 +1286,10 @@ class MultiModelEngine:
             if not self._current_model or not self.json_grammar:
                 return self._fallback_response("Model or Grammar not loaded.")
 
-            # Prepare Context
             data_str = json.dumps(patient_context, indent=2)
             system_msg = self._construct_system_prompt(data_str)
             
-            # Format Prompt (ChatML style)
+            # ChatML Prompt Structure
             prompt = (
                 f"<|im_start|>system\n{system_msg}<|im_end|>\n"
                 f"<|im_start|>user\n{user_query}<|im_end|>\n"
@@ -1300,13 +1297,16 @@ class MultiModelEngine:
             )
 
             try:
-                # === THE KEY OPTIMIZATION ===
+                # === KEY OPTIMIZATIONS FOR SPEED & CONSISTENCY ===
                 output = self._current_model.instance(
                     prompt,
-                    max_tokens=2048,
+                    max_tokens=1024,      # Cap tokens to prevent runaways
                     temperature=temperature,
-                    grammar=self.json_grammar, # Enforces schema
-                    stop=["<|im_end|>", "}"],  # Ensure we stop after JSON
+                    top_p=0.9,            # Nucleus sampling for focus
+                    top_k=40,             # Limit vocabulary options
+                    repeat_penalty=1.1,   # <--- CRITICAL: Prevents "looping"
+                    grammar=self.json_grammar, 
+                    stop=["<|im_end|>", "}"], 
                     echo=False
                 )
 
@@ -1314,28 +1314,36 @@ class MultiModelEngine:
                 self._total_inferences += 1
                 
                 raw_text = output['choices'][0]['text']
+                
+                # Log raw output for debugging
                 log_llm_output(raw_text, context="Structured Generation")
 
-                # Ensure JSON validity (fix cut-offs)
-                if not raw_text.strip().endswith("}"):
-                    raw_text = raw_text.strip() + "}"
+                # Robust JSON Cleaning
+                clean_text = raw_text.strip()
+                # If model stops early, try to close the JSON
+                if not clean_text.endswith("}"):
+                    clean_text += "}"
+                
+                # Sometimes models output the prompt again or "```json" blocks despite grammar
+                if "```json" in clean_text:
+                    clean_text = clean_text.split("```json")[1].split("```")[0].strip()
 
-                parsed = json.loads(raw_text)
+                parsed = json.loads(clean_text)
                 return parsed
 
             except json.JSONDecodeError:
-                print("Error: Model generated invalid JSON despite grammar.")
+                print("Error: Model generated invalid JSON.")
                 return self._fallback_response("Error parsing model output.")
             except Exception as e:
                 print(f"Generation error: {e}")
                 return self._fallback_response(f"System error: {str(e)}")
 
     def _fallback_response(self, error_msg: str) -> Dict[str, Any]:
-        """Return a safe fallback dictionary matching the schema."""
+        """Return a safe fallback dictionary."""
         return {
-            "reasoning": f"Could not generate reasoning. ({error_msg})",
-            "answer": "System is currently unavailable or encountered an error. Please refer to manual protocols.",
-            "follow_up_questions": ["Is the patient stable?", "Have you consulted a supervisor?"]
+            "reasoning": f"Analysis unavailable: {error_msg}",
+            "answer": "Please proceed with standard clinical evaluation protocols.",
+            "follow_up_questions": ["Is the patient hemodynamically stable?", "Check vitals manually."]
         }
 
     # =========================================================================
@@ -1347,25 +1355,16 @@ class MultiModelEngine:
         clinical_state: Dict[str, Any],
         model_id: Optional[str] = None
     ) -> Tuple[str, List[str]]:
-        """
-        Generates the initial patient summary.
-        Refactored to use Structured Generation for better quality.
-        """
         if model_id: self.switch_model(model_id)
 
         response = self._generate_structured(
             clinical_state, 
-            user_query="Generate a clinical triage summary based on the provided data."
+            user_query="Generate a clinical triage summary."
         )
 
-        # Map structured fields to legacy return format
         summary = response.get("answer", "No summary generated.")
-        
-        # Extract flags deterministically
         flags = self._extract_key_flags(clinical_state)
-        
-        # Log reasoning
-        log_llm_output(response.get("reasoning", ""), context="Hidden Reasoning Layer")
+        log_llm_output(response.get("reasoning", ""), context="Hidden Reasoning")
         
         return summary, flags
 
@@ -1375,22 +1374,15 @@ class MultiModelEngine:
         clinical_state: Dict[str, Any],
         model_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """
-        Answers specific questions from the medical staff.
-        Returns the dictionary exactly as needed by the Frontend.
-        """
         if model_id: self.switch_model(model_id)
 
-        # 1. Generate Structured Response
         structured_output = self._generate_structured(
             clinical_state,
             user_query=question
         )
 
-        # 2. Extract deterministic citations
         cited_data = self._extract_citations(structured_output["answer"], clinical_state)
 
-        # 3. Return combined object
         return {
             "answer": structured_output["answer"],
             "reasoning": structured_output["reasoning"],
@@ -1405,25 +1397,21 @@ class MultiModelEngine:
     # =========================================================================
 
     def _extract_key_flags(self, clinical_state: Dict[str, Any]) -> List[str]:
-        """Extract key clinical flags (Deterministic logic)."""
         flags = []
         demo = clinical_state.get("demographics", {})
         answers = clinical_state.get("answers", {})
 
-        # Age logic
         age = demo.get("age", 0)
         if age < 2: flags.append("Infant (< 2y)")
         elif age > 65: flags.append("Elderly (> 65y)")
         if demo.get("pregnant"): flags.append("Pregnant")
 
-        # Vital/Symptom logic
         for k, v in answers.items():
             if "fever" in k.lower() and isinstance(v, (int, float)) and v > 38:
                 flags.append(f"Fever ({v})")
             if "pain" in k.lower() and isinstance(v, (int, float)) and v >= 8:
                 flags.append("Severe Pain")
         
-        # Rule logic
         for rule in clinical_state.get("triggered_rules", []):
             if rule.get("band") == "red":
                 flags.append(f"RED FLAG: {rule.get('description')}")
@@ -1431,7 +1419,6 @@ class MultiModelEngine:
         return flags
 
     def _extract_citations(self, text: str, data: Dict[str, Any]) -> List[str]:
-        """Find which data points were mentioned in the text."""
         citations = []
         text_lower = text.lower()
         
@@ -1445,12 +1432,7 @@ class MultiModelEngine:
                 
         return citations[:5]
 
-    # =========================================================================
-    # Info Methods
-    # =========================================================================
-
     def get_available_models(self) -> List[Dict]:
-        """Get list of models."""
         models = []
         for config in get_all_models():
             m = model_to_dict(config)
@@ -1472,10 +1454,6 @@ class MultiModelEngine:
         return self._current_model is not None
 
 
-# =============================================================================
-# Singleton Pattern
-# =============================================================================
-
 _engine_instance: Optional[MultiModelEngine] = None
 
 def get_engine(
@@ -1486,22 +1464,13 @@ def get_engine(
     global _engine_instance
     if _engine_instance is None or reinitialize:
         if _engine_instance and reinitialize:
-            # Cleanup old instance if strictly needed
             _engine_instance.unload_model()
-            
         _engine_instance = MultiModelEngine(models_dir, default_model_id)
-        
     return _engine_instance
-
-
-# =============================================================================
-# Standalone Test
-# =============================================================================
 
 if __name__ == "__main__":
     TEST_MODELS_DIR = "../models" 
-    
-    print("=== Multi-Model Engine (Structured) Test ===\n")
+    print("=== Multi-Model Engine (Optimized) Test ===\n")
     engine = MultiModelEngine(TEST_MODELS_DIR, auto_load=True)
 
     if engine.is_loaded:
@@ -1509,15 +1478,16 @@ if __name__ == "__main__":
             "demographics": {"age": 50, "sex": "male"},
             "chief_complaint": "chest_pain",
             "answers": {"pain_severity": 8, "history": "hypertension"},
-            "risk_band": "red"
+            "risk_band": "red",
+            "triggered_rules": [{"description": "Chest pain with hypertension"}]
         }
 
-        print("\n--- Testing Staff Q&A (Structured) ---")
+        print("\n--- Testing Response Speed & Consistency ---")
         result = engine.answer_staff_question(
             "What implies the high risk here?", 
             test_case
         )
         
-        print(f"\n[BLUE SECTION - REASONING]\n{result['reasoning']}")
-        print(f"\n[GREEN SECTION - ANSWER]\n{result['answer']}")
-        print(f"\n[PURPLE SECTION - FOLLOW UP]\n{json.dumps(result['suggested_questions'], indent=2)}")
+        print(f"\n[REASONING]: {result['reasoning'][:100]}...")
+        print(f"[ANSWER]: {result['answer']}")
+        print(f"[FOLLOW-UP]: {result['suggested_questions']}")
