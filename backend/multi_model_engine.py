@@ -76,9 +76,10 @@ def _clean_output(text: str) -> str:
     text = re.sub(r'<[^>]+>', '', text)
     # Remove instruction-like prefixes
     text = re.sub(r'^(?:Please|Provide|List|Write|Your|The)\s+(?:your\s+)?(?:answer|response|question).*?(?:here|below)?[.:]?\s*', '', text, flags=re.IGNORECASE)
-    # Normalize whitespace
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+    # Normalize spaces (but preserve newlines for markdown)
+    text = re.sub(r'[ \t]+', ' ', text)  # Only collapse spaces/tabs, not newlines
+    text = re.sub(r'\n{3,}', '\n\n', text)  # Max 2 newlines
+    return text.strip()
 
 
 def parse_reasoning_response(text: str) -> dict:
