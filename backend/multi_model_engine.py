@@ -8,10 +8,13 @@ Features:
 - Anti-Hallucination Prompts
 - Markdown-Formatted Output for Frontend
 - Full Backend Logging
+- PDF Content Generation
+- "Regex Scraper" Fallback (Salverages text even from broken JSON)
 
 Usage:
     engine = get_engine()
     response = engine.answer_staff_question("Why is this high risk?", patient_data)
+    pdf_data = engine.generate_pdf_summary(patient_data)
 """
 
 import os
@@ -63,7 +66,7 @@ def log_llm_output(raw_output: str, context: str = ""):
         print(f"Warning: Logging failed: {e}")
 
 # =============================================================================
-# 2. DEFINE OUTPUT SCHEMA (Markdown Enabled)
+# 2. DEFINE OUTPUT SCHEMA (Strict Constraints)
 # =============================================================================
 
 class TriageResponse(BaseModel):
@@ -78,11 +81,11 @@ class TriageResponse(BaseModel):
     )
     answer: str = Field(
         ..., 
-        description="Direct answer to the user. MUST use Markdown formatting (bold **text**, bullet points -, and \\n newlines) for clear readability."
+        description="Direct answer to the user. MUST use Markdown formatting (bold **text**, bullet points -, and \\n newlines)."
     )
     follow_up_questions: List[str] = Field(
         ..., 
-        description="3 distinct follow-up questions to ask the patient.",
+        description="3 distinct, concise questions (Max 20 words each). MUST end with '?'. Do not explain them.",
         min_items=1,
         max_items=5
     )
@@ -118,7 +121,7 @@ class MultiModelEngine:
         self._current_model: Optional[LoadedModel] = None
         self._lock = threading.RLock()
         
-        # Initialize Counters (Preserved)
+        # Initialize Counters
         self._total_inferences = 0
         self._model_switches = 0
         
@@ -219,9 +222,6 @@ class MultiModelEngine:
     # =========================================================================
 
     def _construct_system_prompt(self, patient_data: str) -> str:
-        """
-        Instructions explicitly demand Markdown and JSON.
-        """
         return (
             "You are an expert medical triage assistant. Analyze the patient data below.\n\n"
             f"### PATIENT DATA\n{patient_data}\n\n"
@@ -231,50 +231,173 @@ class MultiModelEngine:
             "   - Use **bold** for key risks.\n"
             "   - Use `\\n` for new lines/paragraphs.\n"
             "   - Use bullet points (`-`) for lists.\n"
-            "3. Provide detailed medical reasoning.\n"
-            "4. Suggest 3 relevant follow-up questions.\n"
-            "5. Output must be valid JSON."
+            "3. **FOLLOW-UP QUESTIONS:** List exactly 3 SHORT questions. Do NOT write explanations inside the list.\n"
+            "4. Output must be valid JSON."
         )
 
+    def _sanitize_json(self, raw_text: str) -> str:
+        """
+        Advanced Sanitizer:
+        1. Strips hallucinated prompt tags (e.g. ||im_start|>)
+        2. Escapes unescaped newlines inside strings.
+        """
+        # 1. Strip Hallucinations
+        raw_text = raw_text.replace("||im_start|>", "").replace("<|im_start|>", "")
+        
+        # 2. Fix Newlines in Strings
+        result = []
+        in_quote = False
+        escape = False
+        
+        for char in raw_text:
+            if char == '"' and not escape:
+                in_quote = not in_quote
+            
+            if char == '\\' and not escape:
+                escape = True
+            else:
+                escape = False
+                
+            # If we see a real newline INSIDE a string, escape it to \n
+            if char == '\n' and in_quote:
+                result.append('\\n')
+            else:
+                result.append(char)
+        
+        return "".join(result)
+    
+    def _last_resort_parsing(self, json_str: str) -> Dict[str, Any]:
+        """
+        The 'Hail Mary' Scraper.
+        If strict JSON parsing fails (e.g. due to bad quotes inside text),
+        this uses Regex to manually extract the 'reasoning' and 'answer' fields.
+        """
+        extracted = {}
+        
+        # Extract Reasoning: Look for "reasoning": " ... ", "answer"
+        # We use DOTALL and Greedy matching until the next key to handle internal quotes
+        r_match = re.search(r'"reasoning"\s*:\s*"(.*)"\s*,\s*"answer"', json_str, re.DOTALL)
+        if r_match:
+            extracted["reasoning"] = r_match.group(1).strip()
+            
+        # Extract Answer: Look for "answer": " ... ", "follow_up_questions"
+        a_match = re.search(r'"answer"\s*:\s*"(.*)"\s*,\s*"follow_up_questions"', json_str, re.DOTALL)
+        if a_match:
+            extracted["answer"] = a_match.group(1).strip()
+            # Clean up any leftover escaped quotes
+            extracted["answer"] = extracted["answer"].replace('\\"', '"')
+
+        if extracted:
+            logger.info("Recovered data using Regex Scraper.")
+            return extracted
+        return {}
+
+    def _validate_content(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Final Safety Layer:
+        Ensures the content inside the JSON is meaningful.
+        """
+        # 1. Clean Reasoning
+        reasoning = data.get("reasoning", "").strip()
+        
+        # 2. Check Answer Quality
+        answer = data.get("answer", "").strip()
+        
+        # Detect Garbage: too short or just artifacts
+        is_garbage = (
+            len(answer) < 5 or 
+            answer.startswith("||") or 
+            answer.startswith("|") or
+            all(not c.isalnum() for c in answer)
+        )
+        
+        if is_garbage:
+            logger.warning(f"Detected garbage answer. Recovering from reasoning.")
+            # Fallback to reasoning if available
+            if len(reasoning) > 5:
+                data["answer"] = reasoning
+            else:
+                data["answer"] = "The clinical assessment indicates a potential risk. Please review the patient's vitals and full history."
+        
+        return data
+
     def _repair_json(self, json_str: str) -> Dict[str, Any]:
-        """Robust JSON repair for cut-off or doubled output."""
+        """Robust JSON repair including Sanitization, Fallback, & Validation."""
         json_str = json_str.strip()
         
-        # Strategy 1: Detect Restarts
+        # 0. Sanitize text artifacts & newlines
+        json_str = self._sanitize_json(json_str)
+
+        # 1. Strategy: Detect Restarts
         if json_str.count('"reasoning":') > 1:
             last_start = json_str.rfind('{')
             if '"reasoning":' in json_str[last_start:]:
                 json_str = json_str[last_start:]
 
-        # Strategy 2: Attempt standard Parse
+        result = {}
+        parsing_success = False
+
+        # 2. Strategy: Attempt standard Parse
         try:
-            return json.loads(json_str)
+            result = json.loads(json_str)
+            parsing_success = True
         except json.JSONDecodeError as e:
             if e.msg.startswith("Extra data"):
-                try: return json.loads(json_str[:e.pos])
+                try: 
+                    result = json.loads(json_str[:e.pos])
+                    parsing_success = True
                 except: pass
-
-        # Strategy 3: Fix Truncation
-        quote_count = len(re.findall(r'(?<!\\)"', json_str))
-        if quote_count % 2 != 0: json_str += '"'
-        json_str = re.sub(r',\s*([\]}])', r'\1', json_str)
         
-        open_brackets = json_str.count('[')
-        close_brackets = json_str.count(']')
-        json_str += ']' * (open_brackets - close_brackets)
-        
-        open_braces = json_str.count('{')
-        close_braces = json_str.count('}')
-        json_str += '}' * (open_braces - close_braces)
+        # 3. Strategy: Fix Truncation (if parse failed)
+        if not parsing_success:
+            # Fix unclosed quotes
+            quote_count = len(re.findall(r'(?<!\\)"', json_str))
+            if quote_count % 2 != 0: json_str += '"'
+            
+            # Fix trailing comma
+            json_str = re.sub(r',\s*([\]}])', r'\1', json_str)
+            
+            # Balance brackets
+            open_brackets = json_str.count('[')
+            close_brackets = json_str.count(']')
+            json_str += ']' * (open_brackets - close_brackets)
+            
+            open_braces = json_str.count('{')
+            close_braces = json_str.count('}')
+            json_str += '}' * (open_braces - close_braces)
 
-        try:
-            return json.loads(json_str)
-        except:
-            return {
-                "reasoning": "Model output was malformed and could not be repaired.",
-                "answer": "I encountered an internal error processing the response.",
-                "follow_up_questions": ["Please try asking again."]
-            }
+            try:
+                result = json.loads(json_str)
+                parsing_success = True
+            except:
+                pass
+        
+        # 4. Strategy: Regex Scraper (Last Resort)
+        if not parsing_success:
+            logger.warning("JSON Parsing failed completely. Attempting Regex Scrape.")
+            result = self._last_resort_parsing(json_str)
+            if not result:
+                 # Absolute Fallback
+                result = {
+                    "reasoning": "Model output was malformed and could not be repaired.",
+                    "answer": "I encountered an internal error processing the response.",
+                    "follow_up_questions": ["Please try asking again."]
+                }
+
+        # 5. SCHEMA ENFORCEMENT (Prevents KeyErrors)
+        defaults = {
+            "reasoning": "No reasoning provided.",
+            "answer": "No answer provided.",
+            "follow_up_questions": ["No follow-up questions generated."]
+        }
+        for key, default_value in defaults.items():
+            if key not in result:
+                result[key] = default_value
+
+        # 6. CONTENT VALIDATION (Fixes "||" and "...")
+        result = self._validate_content(result)
+
+        return result
 
     def _generate_structured(
         self, 
@@ -312,7 +435,8 @@ class MultiModelEngine:
                         top_p=0.9,
                         repeat_penalty=1.1,
                         grammar=self.json_grammar, 
-                        stop=["<|im_end|>", "}"], 
+                        # Stop tokens
+                        stop=["<|im_end|>", "}", "<|im_start|>", "||im_start|>"], 
                         echo=False
                     )
                     
@@ -322,7 +446,7 @@ class MultiModelEngine:
                     finish_reason = output['choices'][0]['finish_reason']
                     raw_text = output['choices'][0]['text']
                     
-                    # LOGGING (Preserved)
+                    # LOGGING
                     log_llm_output(raw_text, context=f"Structured Generation ({mode})")
 
                     if finish_reason == "length" and mode == "Standard":
@@ -349,6 +473,100 @@ class MultiModelEngine:
         }
 
     # =========================================================================
+    # PDF CONTENT GENERATION
+    # =========================================================================
+
+    def generate_pdf_summary(
+        self,
+        clinical_state: Dict[str, Any],
+        model_id: Optional[str] = None
+    ) -> Dict[str, str]:
+        if model_id:
+            self.switch_model(model_id)
+
+        # 1. Stronger Prompt
+        pdf_prompt = (
+            "ACT AS A MEDICAL SCRIBE. You must generate a FULL, DETAILED medical referral letter.\n"
+            "You MUST output the report content inside the 'answer' JSON field.\n"
+            "Include these exact headers in the 'answer' text:\n"
+            "- CLINICAL SUMMARY:\n"
+            "- DIAGNOSIS:\n"
+            "- CONCLUSION:\n\n"
+            "Do NOT use placeholders like '...'. Do NOT use unescaped double quotes inside the text."
+        )
+
+        # 2. Higher Max Tokens
+        response = self._generate_structured(
+            clinical_state,
+            pdf_prompt,
+            temperature=0.7, 
+            base_max_tokens=3000
+        )
+
+        answer = response.get("answer", "").strip()
+        reasoning = response.get("reasoning", "").strip()
+
+        # 3. Fail-Over Strategy
+        if len(answer) < 50 and len(reasoning) > 100:
+            logger.warning("Model output lazy answer. Swapping with reasoning.")
+            answer = reasoning
+
+        # 4. Parse sections
+        sections = self._parse_pdf_sections(answer)
+
+        return {
+            "summary": sections.get("summary", answer),
+            "diagnosis": sections.get("diagnosis", ""),
+            "conclusion": sections.get("conclusion", "")
+        }
+
+    def _parse_pdf_sections(self, text: str) -> Dict[str, str]:
+        sections = {
+            "summary": "",
+            "diagnosis": "",
+            "conclusion": ""
+        }
+        clean_text = re.sub(r'[*#]', '', text)
+        text_lower = clean_text.lower()
+
+        summary_markers = ["clinical summary", "summary", "overview", "presentation"]
+        diagnosis_markers = ["diagnosis", "differential", "assessment", "impression"]
+        conclusion_markers = ["conclusion", "recommendation", "plan", "next steps"]
+
+        def find_pos(markers):
+            best_pos = -1
+            for m in markers:
+                pos = text_lower.find(m + ":")
+                if pos == -1: pos = text_lower.find(m) 
+                if pos != -1:
+                    if best_pos == -1 or pos < best_pos:
+                        best_pos = pos
+            return best_pos
+
+        summary_pos = find_pos(summary_markers)
+        diagnosis_pos = find_pos(diagnosis_markers)
+        conclusion_pos = find_pos(conclusion_markers)
+
+        positions = []
+        if summary_pos != -1: positions.append(("summary", summary_pos))
+        if diagnosis_pos != -1: positions.append(("diagnosis", diagnosis_pos))
+        if conclusion_pos != -1: positions.append(("conclusion", conclusion_pos))
+
+        positions.sort(key=lambda x: x[1])
+
+        for i, (key, start) in enumerate(positions):
+            end = positions[i+1][1] if i + 1 < len(positions) else len(clean_text)
+            raw_chunk = clean_text[start:end].strip()
+            if ":" in raw_chunk[:30]:
+                raw_chunk = raw_chunk.split(":", 1)[1].strip()
+            sections[key] = raw_chunk
+
+        if not any(sections.values()):
+            sections["summary"] = clean_text
+
+        return sections
+
+    # =========================================================================
     # Public API
     # =========================================================================
 
@@ -365,7 +583,6 @@ class MultiModelEngine:
         )
         
         flags = self._extract_key_flags(clinical_state)
-        # We can log reasoning here too if needed
         return response.get("answer", "No summary."), flags
 
     def answer_staff_question(
