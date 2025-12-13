@@ -144,8 +144,21 @@ def parse_reasoning_response(text: str) -> dict:
     questions_match = re.search(r'<questions>(.*?)</questions>', text, re.DOTALL | re.IGNORECASE)
     if questions_match:
         questions_text = questions_match.group(1).strip()
-        # Extract numbered items from questions block
+
+        # Try numbered format first: "1.", "2)", etc.
         items = re.findall(r'(?:^|\n)\s*\d+[.\)]\s*(.+?)(?=\n\s*\d+[.\)]|$)', questions_text, re.DOTALL)
+
+        # If no numbered items found, try line-by-line (unnumbered questions)
+        if not items:
+            lines = questions_text.split('\n')
+            for line in lines:
+                line = line.strip()
+                # Skip empty lines or lines that are just tags/markers
+                if line and '?' in line and len(line) > 15:
+                    # Remove any leading bullets or dashes
+                    line = re.sub(r'^[-•*]\s*', '', line)
+                    items.append(line)
+
         for item in items:
             q = _clean_output(item)
             if len(q) > 15 and '?' in q:  # Must be substantial and have a question mark
