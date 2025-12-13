@@ -237,32 +237,71 @@ class MultiModelEngine:
             "6. Output must be valid JSON."
         )
 
-    def _repair_json(self, json_str: str) -> str:
+    # =========================================================================
+    # ROBUST JSON REPAIR & PARSING (Replaces the previous version)
+    # =========================================================================
+
+    def _repair_json(self, json_str: str) -> Dict[str, Any]:
         """
-        Robustly repairs truncated or malformed JSON strings.
-        Solves the 'Unterminated string' error.
+        Advanced repair:
+        1. Handles "Extra data" (multiple JSONs).
+        2. Handles "Restarts" (model started typing, then started over).
+        3. Handles "Truncation" (cut-off strings/brackets).
         """
         json_str = json_str.strip()
-        
+
+        # --- STRATEGY 1: Detect Restarts ---
+        # If the model hallucinated and started over, we often see multiple "reasoning" keys.
+        # We want the LAST instance of "{"reasoning"" because that's usually the final thought.
+        if json_str.count('"reasoning":') > 1:
+            # Find the last occurrence of the start of the object
+            last_start = json_str.rfind('{')
+            # Verify if this brace is actually near "reasoning"
+            if '"reasoning":' in json_str[last_start:]:
+                json_str = json_str[last_start:]
+
+        # --- STRATEGY 2: Attempt standard Parse ---
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError as e:
+            # If "Extra data", it means we have {"a":1} {"b":2}
+            # We just take the first valid object.
+            if e.msg.startswith("Extra data"):
+                try:
+                    return json.loads(json_str[:e.pos])
+                except:
+                    pass
+
+        # --- STRATEGY 3: Fix Truncation (Unclosed strings/brackets) ---
         # 1. Fix unclosed string (Odd number of quotes)
         quote_count = len(re.findall(r'(?<!\\)"', json_str))
         if quote_count % 2 != 0:
             json_str += '"'
-            
-        # 2. Fix trailing commas before closing brackets
+
+        # 2. Fix trailing commas before closing brackets (e.g., ["a",])
         json_str = re.sub(r',\s*([\]}])', r'\1', json_str)
-        
+
         # 3. Balance Brackets [ ]
         open_brackets = json_str.count('[')
         close_brackets = json_str.count(']')
         json_str += ']' * (open_brackets - close_brackets)
-        
+
         # 4. Balance Braces { }
         open_braces = json_str.count('{')
         close_braces = json_str.count('}')
         json_str += '}' * (open_braces - close_braces)
-        
-        return json_str
+
+        # --- STRATEGY 4: Final Hail Mary Parse ---
+        try:
+            return json.loads(json_str)
+        except:
+            # If all fails, return a safe dummy object so Frontend doesn't crash
+            logger.error(f"Failed to repair JSON: {json_str[:50]}...")
+            return {
+                "reasoning": "Model output was malformed and could not be repaired.",
+                "answer": "I encountered an internal error processing the response.",
+                "follow_up_questions": ["Please try asking again."]
+            }
 
     def _generate_structured(
         self, 
@@ -271,13 +310,12 @@ class MultiModelEngine:
         temperature: float = 0.6
     ) -> Dict[str, Any]:
         """
-        Generates structured JSON using LlamaGrammar + Auto-Repair.
+        Generates structured JSON using LlamaGrammar + Robust Repair.
         """
         with self._lock:
             if not self._current_model or not self.json_grammar:
                 return self._fallback_response("Engine not ready.")
 
-            # Prepare Prompt
             data_str = json.dumps(patient_context, indent=2)
             system_msg = self._construct_system_prompt(data_str)
             
@@ -288,13 +326,12 @@ class MultiModelEngine:
             )
 
             try:
-                # Run Inference
                 output = self._current_model.instance(
                     prompt,
-                    max_tokens=1500,        # Safe limit
+                    max_tokens=1500,
                     temperature=temperature,
-                    top_p=0.9,              # Focus output
-                    repeat_penalty=1.1,     # <--- CRITICAL: Prevents looping
+                    top_p=0.9,
+                    repeat_penalty=1.1, 
                     grammar=self.json_grammar, 
                     stop=["<|im_end|>", "}"], 
                     echo=False
@@ -304,22 +341,16 @@ class MultiModelEngine:
                 self._total_inferences += 1
                 
                 raw_text = output['choices'][0]['text']
-
-                # Log Raw Output (Critical Fix: Calling the log function)
                 log_llm_output(raw_text, context="Structured Generation")
 
-                # Parse & Repair
+                # Clean Markdown
                 clean_text = raw_text.strip()
                 if "```" in clean_text: 
                     clean_text = clean_text.replace("```json", "").replace("```", "").strip()
 
-                try:
-                    return json.loads(clean_text)
-                except json.JSONDecodeError:
-                    # Attempt Repair
-                    logger.warning("JSON parse failed, attempting repair...")
-                    repaired_text = self._repair_json(clean_text)
-                    return json.loads(repaired_text)
+                # CALL THE NEW REPAIR FUNCTION
+                # Note: _repair_json now returns a Dict, not a Str
+                return self._repair_json(clean_text)
 
             except Exception as e:
                 print(f"Generation error: {e}")
