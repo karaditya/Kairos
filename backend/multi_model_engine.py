@@ -199,26 +199,27 @@ class MultiModelEngine:
             "STRICT RULES:\n"
             "- ONLY use facts from the patient data above.\n"
             "- NEVER invent symptoms, history, or values.\n"
-            "- Quote exact values (e.g., 'pain 8/10').\n\n"
+            "- Quote exact values (e.g., 'pain 8/10').\n"
+            "- ALWAYS respond in the SAME LANGUAGE as the user's question.\n\n"
         )
 
         # DeepSeek / Qwen: XML works naturally, they use <think> internally
         if self._prompt_style == PromptStyle.THINK_TAGS:
             return grounding + (
-                "Respond using these XML tags:\n"
+                "DO NOT repeat the patient data. Respond using these XML tags:\n"
                 "<reasoning>Brief clinical analysis (2-3 sentences)</reasoning>\n"
-                "<answer>Your response to the user</answer>\n"
+                "<answer>Your response to the user. Use bullet points for lists.</answer>\n"
                 "<questions>\n1. First question\n2. Second question\n3. Third question\n</questions>"
             )
 
         # Llama / SmolLM: Simple numbered format
         elif self._prompt_style == PromptStyle.SIMPLE:
             return grounding + (
-                "Respond in exactly this format:\n\n"
+                "DO NOT repeat the patient data. Just respond in this format:\n\n"
                 "1. REASONING\n"
                 "Brief clinical analysis here.\n\n"
                 "2. ANSWER\n"
-                "Your response to the user here.\n\n"
+                "Your response to the user here. Use bullet points (- or *) for lists.\n\n"
                 "3. QUESTIONS\n"
                 "- First follow-up question\n"
                 "- Second follow-up question\n"
@@ -228,11 +229,11 @@ class MultiModelEngine:
         # Mistral / Gemma / Phi: Structured markdown
         else:
             return grounding + (
-                "Respond in exactly this format:\n\n"
+                "DO NOT repeat the patient data. Respond in this format:\n\n"
                 "## Reasoning\n"
                 "Brief clinical analysis here.\n\n"
                 "## Answer\n"
-                "Your response to the user here.\n\n"
+                "Your response to the user here. Use bullet points for lists.\n\n"
                 "## Questions\n"
                 "1. First follow-up question\n"
                 "2. Second follow-up question\n"
@@ -254,6 +255,10 @@ class MultiModelEngine:
         if think_match:
             think_content = think_match.group(1).strip()
         clean_str = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', raw_str, flags=re.DOTALL)
+
+        # 1b. Remove echoed patient card (Llama issue)
+        clean_str = re.sub(r'\*{0,2}PATIENT\s*CARD\*{0,2}:?.*?(?=\*{0,2}(?:REASONING|ANSWER|SYMPTOM|WHAT|CLINICAL|1\.\s*REASONING|##\s*Reasoning)|$)', '', clean_str, flags=re.DOTALL | re.IGNORECASE)
+        clean_str = re.sub(r'\*{3}\s*TRIAGE\s*PRIORITY.*?(?=\*{0,2}(?:REASONING|ANSWER|SYMPTOM|WHAT|CLINICAL)|$)', '', clean_str, flags=re.DOTALL | re.IGNORECASE)
 
         # 2. Try XML tags (DeepSeek/THINK_TAGS)
         r_match = re.search(r'<reasoning>(.*?)(?:</reasoning>|<answer>|$)', clean_str, re.DOTALL | re.IGNORECASE)
@@ -296,9 +301,23 @@ class MultiModelEngine:
             if bullets:
                 data["answer"] = "Based on the patient data:\n" + "\n".join(f"- {b.strip()}" for b in bullets[:10])
 
-        # 9. Ultimate fallback: Use the clean response
+        # 9. Capture any non-standard sections as answer (Llama creative headers)
         if not data["answer"]:
-            # Remove any matched sections from fallback
+            # Find any bold or plain header that's NOT reasoning/questions
+            sections = re.split(r'\n\s*\*{0,2}([A-Z][A-Za-z\s\']+)\*{0,2}[:\s]*\n', clean_str)
+            for i in range(1, len(sections), 2):
+                header = sections[i].strip().upper() if i < len(sections) else ""
+                content = sections[i+1].strip() if i+1 < len(sections) else ""
+                # Skip if it's a reasoning or questions header
+                if any(kw in header for kw in ['REASONING', 'QUESTION', 'FOLLOW']):
+                    continue
+                # Everything else goes to answer
+                if content and len(content) > 20:
+                    data["answer"] = content
+                    break
+
+        # 10. Ultimate fallback: Use the clean response
+        if not data["answer"]:
             fallback = clean_str
             for m in [r_match, q_match]:
                 if m:
@@ -410,7 +429,10 @@ class MultiModelEngine:
                 )
                 
                 raw_response = output['choices'][0]['message']['content']
-                clean_response = re.sub(r'<think>.*?</think>', '', raw_response, flags=re.DOTALL)
+                # Clean all think variants and XML artifacts
+                clean_response = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', raw_response, flags=re.DOTALL)
+                clean_response = re.sub(r'<[^>]+>', '', clean_response)  # Remove stray XML tags
+                clean_response = re.sub(r'\*\*([^*]+)\*\*', r'\1', clean_response)  # Remove bold
                 return clean_response.strip()
 
             except Exception as e:
@@ -419,25 +441,41 @@ class MultiModelEngine:
 
     def generate_pdf_summary(self, clinical_state: Dict[str, Any], model_id: Optional[str] = None) -> Dict[str, str]:
         if model_id: self.switch_model(model_id)
-        
+
         card = self._flatten_patient_data(clinical_state)
-        
-        system_prompt = (
-            "You are a professional Medical Scribe AI. "
-            "Write a formal Clinical Referral Letter based ONLY on the provided data.\n"
-            "FACTUAL GROUNDING:\n"
-            "- ONLY include facts explicitly stated in PATIENT DATA.\n"
-            "- Use exact values (e.g., 'pain severity 8/10').\n"
-            "FORMATTING RULES:\n"
-            "1. Use EXACT headers: 'CLINICAL SUMMARY:', 'DIAGNOSIS:', 'CONCLUSION:'.\n"
-            "2. Do NOT use bold (**), italics, or hashes (#). Write in plain text.\n"
-            "3. Write in continuous paragraphs (prose)."
+
+        # Base prompt
+        base_rules = (
+            "You are a Medical Scribe. Write a Clinical Referral Letter using ONLY the patient data provided.\n"
+            "RULES:\n"
+            "- Only state facts from the data. Never invent information.\n"
+            "- Use exact values (e.g., 'pain 8/10').\n"
+            "- Write in plain prose paragraphs. No bullet points.\n"
+            "- No markdown formatting (no **, ##, or _).\n\n"
         )
-        
+
+        # Model-aware format instructions
+        if self._prompt_style == PromptStyle.THINK_TAGS:
+            # DeepSeek: Tell it not to use XML tags, just plain text
+            format_instructions = (
+                "OUTPUT FORMAT (plain text only, no XML tags):\n\n"
+                "CLINICAL SUMMARY:\n[2-3 sentences describing the patient and main symptoms]\n\n"
+                "DIAGNOSIS:\n[Possible conditions based on symptoms]\n\n"
+                "CONCLUSION:\n[Recommended next steps]"
+            )
+        else:
+            format_instructions = (
+                "OUTPUT FORMAT:\n\n"
+                "CLINICAL SUMMARY:\n[2-3 sentences describing the patient and main symptoms]\n\n"
+                "DIAGNOSIS:\n[Possible conditions based on symptoms]\n\n"
+                "CONCLUSION:\n[Recommended next steps]"
+            )
+
+        system_prompt = base_rules + format_instructions
+
         user_prompt = (
             f"PATIENT DATA:\n{card}\n\n"
-            "TASK: Write the Clinical Referral Letter.\n"
-            "Start immediately with the Summary."
+            "Write the Clinical Referral Letter now."
         )
         
         raw_text = self._generate_raw_text(
