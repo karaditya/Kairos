@@ -253,51 +253,87 @@ class MultiModelEngine:
         
     def _parse_adaptive_output(self, raw_str: str) -> Dict[str, Any]:
         """
-        Universal Parser: Handles XML, Brackets, and bold headers.
+        Universal Parser: Handles XML, Brackets, template echoing, and DeepSeek think-extraction.
         """
         data = {"reasoning": "", "answer": "", "follow_up_questions": []}
 
-        # 1. Clean model-specific artifacts
+        # 1. Extract content from <think> BEFORE removing it (DeepSeek backup)
+        think_content = ""
+        think_match = re.search(r'<think>(.*?)</think>', raw_str, flags=re.DOTALL)
+        if think_match:
+            think_content = think_match.group(1)
+
+        # 2. Clean model artifacts
         clean_str = re.sub(r'<think>.*?</think>', '', raw_str, flags=re.DOTALL)
         clean_str = re.sub(r'```[\w]*\n?', '', clean_str)
 
-        # 2. Try XML tags first (The Gold Standard)
-        r_match = re.search(r'<reasoning>(.*?)</reasoning>', clean_str, re.DOTALL | re.IGNORECASE)
-        a_match = re.search(r'<answer>(.*?)</answer>', clean_str, re.DOTALL | re.IGNORECASE)
-        q_match = re.search(r'<questions>(.*?)</questions>', clean_str, re.DOTALL | re.IGNORECASE)
+        # 3. Remove template echoing (Llama issue)
+        template_patterns = [
+            r'\*\*PATIENT CARD:\*\*.*?(?=<reasoning>|\[REASONING\]|$)',  # Echoed patient card
+            r'---\s*(?:FACTUAL GROUNDING|SECTION ROLES|TAG ROLES).*?(?=<reasoning>|\[REASONING\]|$)',  # Echoed instructions
+            r'\d+\.\s*\[(?:REASONING|ANSWER|QUESTIONS)\]:.*?(?=\[REASONING\]|\[ANSWER\]|$)',  # Echoed role descriptions
+        ]
+        for pattern in template_patterns:
+            clean_str = re.sub(pattern, '', clean_str, flags=re.DOTALL | re.IGNORECASE)
 
-        # 3. Fallback: Robust Bracket/Header Matching
+        # 4. Try XML tags first
+        r_match = re.search(r'<reasoning>(.*?)(?:</reasoning>|<answer>|$)', clean_str, re.DOTALL | re.IGNORECASE)
+        a_match = re.search(r'<answer>(.*?)(?:</answer>|<questions>|$)', clean_str, re.DOTALL | re.IGNORECASE)
+        q_match = re.search(r'<questions>(.*?)(?:</questions>|$)', clean_str, re.DOTALL | re.IGNORECASE)
+
+        # 5. Fallback: Bracket matching
         if not a_match:
             r_match = r_match or re.search(
-                r'(?:\[|\*\*\[)REASONING(?:\]|\]\*\*)\s*(.*?)(?=(?:\[|\*\*\[)ANSWER|(?:\[|\*\*\[)QUESTIONS|$)', 
+                r'\[REASONING\]\s*(.*?)(?=\[ANSWER\]|\[QUESTIONS\]|$)',
                 clean_str, re.DOTALL | re.IGNORECASE
             )
             a_match = re.search(
-                r'(?:\[|\*\*\[)ANSWER(?:\]|\]\*\*)\s*(.*?)(?=(?:\[|\*\*\[)QUESTIONS|$)', 
+                r'\[ANSWER\]\s*(.*?)(?=\[QUESTIONS\]|$)',
                 clean_str, re.DOTALL | re.IGNORECASE
             )
             q_match = q_match or re.search(
-                r'(?:\[|\*\*\[)QUESTIONS(?:\]|\]\*\*)\s*(.*?)$', 
+                r'\[QUESTIONS\]\s*(.*?)$',
                 clean_str, re.DOTALL | re.IGNORECASE
             )
 
-        # 4. Extract and Clean Values
+        # 6. Extract values
         if r_match:
-            data["reasoning"] = r_match.group(1).strip()
+            data["reasoning"] = self._clean_section_content(r_match.group(1))
         if a_match:
-            data["answer"] = a_match.group(1).strip()
+            data["answer"] = self._clean_section_content(a_match.group(1))
         if q_match:
             data["follow_up_questions"] = self._extract_questions(q_match.group(1))
 
-        # 5. Ultimate Fallback
+        # 7. DeepSeek rescue: If answer is too short but <think> has good bullets, extract them
+        if len(data["answer"]) < 50 and think_content:
+            bullets = re.findall(r'^\s*[-\d.]+\s*(.+)$', think_content, re.MULTILINE)
+            if len(bullets) >= 3:
+                data["answer"] = "Based on the patient data:\n" + "\n".join(f"- {b.strip()}" for b in bullets[:12])
+
+        # 8. Ultimate fallback: Use cleaned full text
         if not data["answer"]:
-            fallback = clean_str
-            for pattern in [r'<reasoning>.*?</reasoning>', r'<questions>.*?</questions>',
-                           r'\[REASONING\].*?(?=\[|\Z)', r'\[QUESTIONS\].*']:
-                fallback = re.sub(pattern, '', fallback, flags=re.DOTALL | re.IGNORECASE)
-            data["answer"] = fallback.strip() or "Analysis complete. Please review output."
+            fallback = re.sub(r'<[^>]+>.*?</[^>]+>', '', clean_str, flags=re.DOTALL)
+            fallback = re.sub(r'\[(?:REASONING|QUESTIONS)\].*', '', fallback, flags=re.DOTALL | re.IGNORECASE)
+            data["answer"] = fallback.strip() or "Analysis complete. Please review."
 
         return data
+
+    def _clean_section_content(self, content: str) -> str:
+        """Remove template-like phrases from section content."""
+        noise_patterns = [
+            r'^:?\s*Internal technical note.*$',
+            r'^:?\s*The final response to the user.*$',
+            r'^:?\s*Use Markdown bullet points.*$',
+            r'^:?\s*List exactly \d+ .*$',
+            r'^\d+\.\s*$',  # Stray numbers
+        ]
+        lines = content.strip().split('\n')
+        clean_lines = []
+        for line in lines:
+            is_noise = any(re.match(p, line.strip(), re.IGNORECASE) for p in noise_patterns)
+            if not is_noise and line.strip():
+                clean_lines.append(line)
+        return '\n'.join(clean_lines).strip()
 
     def _extract_questions(self, raw_qs: str) -> List[str]:
         """Helper to clean bulleted questions."""
