@@ -1,10 +1,11 @@
 """
 Multi-Model Reasoning Engine - Professional LLM Engine for Medical Triage
 
-FINAL STABILITY FIXES:
-1. "Garbage Cutter": Instantly chops off hallucinations (</think>, <|im_start|>).
-2. Lazy Question Guard: Fills in valid questions if the model gets lazy.
-3. Force-Feed PDF: Ensures report starts correctly.
+FINAL STABLE BUILD:
+1. Input: Grounded & Sorted (Priority First).
+2. Prompting: "Context-Aware" (Respects Risk, but Answers User).
+3. Robustness: Tiered JSON Parsing (Optimistic -> Surgical).
+4. Features: PDF Generation & Citation preserved.
 """
 
 import os
@@ -146,10 +147,29 @@ class MultiModelEngine:
             }
 
     # =========================================================================
-    # DATA FLATTENER
+    # DATA FLATTENER - GROUNDED & SORTED
     # =========================================================================
     def _flatten_patient_data(self, data: Dict[str, Any]) -> str:
         lines = []
+        
+        # 1. Ground Truth Priority
+        rules = data.get("triggered_rules", [])
+        priority_map = {"red": 3, "amber": 2, "green": 1, "check": 0}
+        
+        sorted_rules = sorted(
+            rules, 
+            key=lambda x: priority_map.get(str(x.get("band")).lower(), 0), 
+            reverse=True
+        )
+        
+        highest_band = "LOW"
+        if sorted_rules:
+            highest_band = sorted_rules[0].get("band", "check").upper()
+
+        lines.append(f"*** TRIAGE PRIORITY: {highest_band} ***")
+        lines.append("-" * 30)
+
+        # 2. Details
         demo = data.get("demographics", {})
         lines.append(f"PATIENT: {demo.get('age', '?')} year old {demo.get('sex', 'Unknown')}")
         if demo.get("pregnant"): lines.append("STATUS: Pregnant")
@@ -162,67 +182,96 @@ class MultiModelEngine:
             lines.append(f" - {readable_key}: {val}")
 
         lines.append("\nCLINICAL ALERTS:")
-        rules = data.get("triggered_rules", [])
-        if not rules: lines.append(" - No automated alerts.")
-        for rule in rules:
-            lines.append(f" - [RISK: {rule.get('band', 'check').upper()}] {rule.get('description')}")
+        if not sorted_rules:
+            lines.append(" - No automated alerts.")
+        else:
+            for rule in sorted_rules:
+                band = rule.get('band', 'check').upper()
+                desc = rule.get('description', '')
+                prefix = f"!! {band} !!" if band == "RED" else band
+                lines.append(f" - [RISK: {prefix}] {desc}")
 
         return "\n".join(lines)
 
     # =========================================================================
-    # 1. STRUCTURED GENERATION (CHAT)
+    # 1. STRUCTURED GENERATION - OPTIMISTIC PARSING
     # =========================================================================
 
     def _construct_system_prompt(self, patient_text_card: str) -> str:
+        """
+        FIXED PROMPT:
+        Clearly separates the 'Fact' (Priority) from the 'Task' (User Question).
+        This prevents the model from ignoring the question to just repeat the risk.
+        """
         return (
-            "You are a Medical Assistant. Use the Patient Card below to answer questions.\n"
+            "You are a helpful Medical Assistant. \n"
+            "Your Goal: Answer the user's specific question using the Patient Card below.\n\n"
             "PATIENT CARD:\n"
             f"{patient_text_card}\n\n"
-            "INSTRUCTIONS:\n"
-            "1. Answer the user's question directly based on facts.\n"
-            "2. 'follow_up_questions': Generate 3 RELEVANT clinical questions.\n"
-            "3. Output valid JSON only."
+            "GUIDELINES:\n"
+            "1. **Context:** The 'TRIAGE PRIORITY' listed above is accurate. "
+            "Do not re-assess the risk level; simply assume it is correct.\n"
+            "2. **Task:** Address the User's input directly.\n"
+            "   - If they ask for questions -> Provide relevant clinical questions.\n"
+            "   - If they ask for reasoning -> Explain the symptoms that match the risk.\n"
+            "3. **Format:** Output valid JSON."
         )
 
-    def _repair_json(self, json_str: str) -> Dict[str, Any]:
-        # 1. Strip Pre-amble / Hallucinations
-        clean_str = re.sub(r'<think>.*?</think>', '', json_str, flags=re.DOTALL)
-        clean_str = clean_str.replace("||im_start|>", "").replace("<|im_start|>", "")
+    def _safe_parse_json(self, raw_str: str) -> Dict[str, Any]:
+        """
+        Optimistic Parser:
+        1. Tries clean load (Happy Path).
+        2. Only runs regex/repair if load fails (Safety Net).
+        """
+        # --- TIER 1: The Happy Path ---
+        try:
+            return json.loads(raw_str)
+        except json.JSONDecodeError:
+            pass # Fall through to Tier 2
+
+        # --- TIER 2: The Safety Net ---
+        start_idx = raw_str.find('{')
+        end_idx = raw_str.rfind('}')
         
-        # Stop processing if we hit hallucinated user input
-        if "<|im_start|>user" in clean_str:
-            clean_str = clean_str.split("<|im_start|>user")[0]
+        clean_str = raw_str
+        if start_idx != -1 and end_idx != -1:
+            clean_str = raw_str[start_idx : end_idx + 1]
 
         data = {}
         try:
             data = json.loads(clean_str)
-        except:
-            r_match = re.search(r'"reasoning"\s*:\s*"(.*)"\s*,\s*"answer"', clean_str, re.DOTALL)
-            a_match = re.search(r'"answer"\s*:\s*"(.*)"\s*,\s*"follow_up_questions"', clean_str, re.DOTALL)
-            data["reasoning"] = r_match.group(1).strip() if r_match else "Processing..."
-            data["answer"] = a_match.group(1).strip() if a_match else "Error parsing response."
-            data["follow_up_questions"] = []
+        except json.JSONDecodeError:
+            try:
+                # Heuristic repair for truncated ends
+                temp_str = clean_str.strip()
+                if temp_str.endswith(','): temp_str = temp_str[:-1]
+                if not temp_str.endswith('}'): temp_str += ']}'
+                data = json.loads(temp_str)
+            except:
+                # Regex fallback
+                r_match = re.search(r'"reasoning"\s*:\s*"(.*)"\s*,\s*"answer"', clean_str, re.DOTALL)
+                a_match = re.search(r'"answer"\s*:\s*"(.*)"\s*,\s*"follow_up_questions"', clean_str, re.DOTALL)
+                data["reasoning"] = r_match.group(1).strip() if r_match else "Processing..."
+                data["answer"] = a_match.group(1).strip() if a_match else "Error parsing response."
+                data["follow_up_questions"] = []
 
-        # 2. Fix Lazy/Empty Questions
-        defaults = [
-            "Has this happened before?",
-            "Is the pain getting worse?",
-            "Do you have a fever?",
-            "Any nausea or vomiting?",
-            "Does it hurt to breathe?"
-        ]
+        return data
+
+    def _validate_response_schema(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Ensures the dictionary has the required keys and valid data."""
+        defaults = ["Is the pain worsening?", "Any fever?", "History of heart issues?", "Any nausea?", "Short of breath?"]
+        
+        if "reasoning" not in data: data["reasoning"] = ""
+        if "answer" not in data: data["answer"] = "Data unavailable."
+        
         questions = data.get("follow_up_questions", [])
         if not isinstance(questions, list): questions = []
         
-        valid_qs = []
-        for q in questions:
-            if isinstance(q, str) and len(q) > 5 and "Question 1" not in q:
-                valid_qs.append(q)
+        valid_qs = [q for q in questions if isinstance(q, str) and len(q) > 5 and "Question 1" not in q]
         
         while len(valid_qs) < 3:
             choice = random.choice(defaults)
-            if choice not in valid_qs:
-                valid_qs.append(choice)
+            if choice not in valid_qs: valid_qs.append(choice)
         
         data["follow_up_questions"] = valid_qs[:3]
         return data
@@ -242,20 +291,26 @@ class MultiModelEngine:
             )
 
             try:
+                # Optimized stop tokens
                 output = self._current_model.instance(
-                    prompt, max_tokens=1000, temperature=0.2,
-                    top_p=0.92, repeat_penalty=1.1, 
-                    grammar=self.json_grammar, stop=["<|im_end|>", "<|im_start|>"], echo=False
+                    prompt, max_tokens=1500, temperature=0.1, 
+                    top_p=0.90, repeat_penalty=1.1, 
+                    grammar=self.json_grammar, 
+                    stop=["<|im_end|>", "<|im_start|>", "</im_start>", "</s>"], 
+                    echo=False
                 )
                 raw = output['choices'][0]['text']
                 log_llm_output(raw, context="OUTPUT (Chat)")
-                return self._repair_json(raw)
+                
+                parsed_data = self._safe_parse_json(raw)
+                return self._validate_response_schema(parsed_data)
+                
             except Exception as e:
                 logger.error(f"Inference error: {e}")
                 return {"answer": "Error.", "reasoning": str(e), "follow_up_questions": []}
 
     # =========================================================================
-    # 2. RAW TEXT GENERATION (PDF) - WITH GARBAGE CUTTER
+    # 2. RAW TEXT GENERATION (PDF)
     # =========================================================================
 
     def _generate_raw_text(self, system_prompt: str, user_prompt: str, force_prefix: str = "") -> str:
@@ -271,28 +326,28 @@ class MultiModelEngine:
             try:
                 output = self._current_model.instance(
                     full_prompt, max_tokens=2000, temperature=0.2, 
-                    top_p=0.95, repeat_penalty=1.2, # Higher penalty to prevent loops
-                    stop=["<|im_end|>", "<|im_start|>", "</think>"], echo=False
+                    top_p=0.95, repeat_penalty=1.2, 
+                    # We removed </think> from stop tokens so we can capture and clean it manually
+                    stop=["<|im_end|>", "<|im_start|>", "User:"], echo=False
                 )
                 
                 raw_continuation = output['choices'][0]['text']
                 full_response = force_prefix + raw_continuation
                 
-                # --- THE GARBAGE CUTTER ---
-                # 1. Stop if it prints the user prompt again
-                if "PATIENT DATA:" in full_response:
-                    full_response = full_response.split("PATIENT DATA:")[0]
-                    
-                # 2. Stop if it prints tags
-                for tag in ["</think>", "<|im_start|>", "<|im_end|>"]:
-                    full_response = full_response.split(tag)[0]
+                # --- CRITICAL FIX: Safe Cleaning ---
+                # 1. Remove <think>...</think> blocks completely (don't truncate!)
+                full_response = re.sub(r'<think>.*?</think>', '', full_response, flags=re.DOTALL)
                 
-                # 3. Stop if it tries to roleplay "User:"
-                if "\nUser:" in full_response:
-                    full_response = full_response.split("\nUser:")[0]
+                # 2. Strip system tags that might leak
+                for tag in ["<|im_end|>", "<|im_start|>"]:
+                    full_response = full_response.split(tag)[0]
                     
+                # 3. Clean up common artifacts
+                if "PATIENT DATA:" in full_response: 
+                    full_response = full_response.split("PATIENT DATA:")[0]
+                
                 log_llm_output(full_response, context="OUTPUT (PDF Raw)")
-                return full_response
+                return full_response.strip()
             except Exception as e:
                 logger.error(f"PDF Gen Error: {e}")
                 return ""
@@ -302,21 +357,23 @@ class MultiModelEngine:
         
         card = self._flatten_patient_data(clinical_state)
         
+        # We explicitly forbid Markdown headers (#) to make regex parsing 100% reliable
         system_prompt = (
             "You are a professional Medical Scribe AI. "
             "Write a formal Clinical Referral Letter. "
-            "Do NOT use markdown bolding. Use plain text."
+            "STRICT FORMATTING RULES:\n"
+            "1. Use EXACT headers: 'CLINICAL SUMMARY:', 'DIAGNOSIS:', 'CONCLUSION:'.\n"
+            "2. Do NOT use markdown bold (**), italics, or hashes (#).\n"
+            "3. Write in plain paragraphs."
         )
         
         user_prompt = (
             f"PATIENT DATA:\n{card}\n\n"
-            "TASK: Finish the report starting immediately with the Clinical Summary.\n"
-            "Follow this structure:\n"
-            "1. CLINICAL SUMMARY (3-4 sentences)\n"
-            "2. DIAGNOSIS (2-3 sentences)\n"
-            "3. CONCLUSION (Recommendation)"
+            "TASK: Write the Clinical Referral Letter.\n"
+            "Start immediately with the Summary."
         )
         
+        # We force the first header to ensure the model aligns
         raw_text = self._generate_raw_text(
             system_prompt, 
             user_prompt, 
@@ -328,28 +385,34 @@ class MultiModelEngine:
     def _parse_pdf_sections(self, text: str) -> Dict[str, str]:
         sections = {"summary": "", "diagnosis": "", "conclusion": ""}
         
-        clean_text = text.replace("**", "").replace("__", "").replace("##", "")
+        # Normalize: Remove asterisks/hashes to make regex matching easier
+        clean_text = text.replace("**", "").replace("##", "").replace("__", "")
         
-        p_summary = re.search(r'CLINICAL SUMMARY[:\s]*', clean_text, re.IGNORECASE)
-        p_diagnosis = re.search(r'(?:DIAGNOSIS|ASSESSMENT)[:\s]*', clean_text, re.IGNORECASE)
-        p_conclusion = re.search(r'(?:CONCLUSION|PLAN)[:\s]*', clean_text, re.IGNORECASE)
+        # Flexible Regex: Matches "DIAGNOSIS", "DIAGNOSIS:", "2. DIAGNOSIS", etc.
+        # [:\s]* handles optional colons and spaces
+        p_summary = re.search(r'(?:1\.\s*)?CLINICAL SUMMARY[:\s]*', clean_text, re.IGNORECASE)
+        p_diagnosis = re.search(r'(?:2\.\s*)?(?:DIAGNOSIS|ASSESSMENT)[:\s]*', clean_text, re.IGNORECASE)
+        p_conclusion = re.search(r'(?:3\.\s*)?(?:CONCLUSION|PLAN|RECOMMENDATION)[:\s]*', clean_text, re.IGNORECASE)
 
-        if not p_summary:
-            return {"summary": clean_text.strip(), "diagnosis": "", "conclusion": ""}
-
-        idx_s = p_summary.end()
+        # Logic to slice the text based on what headers were found
+        idx_s = p_summary.end() if p_summary else 0
         idx_d = p_diagnosis.start() if p_diagnosis else len(clean_text)
         idx_c = p_conclusion.start() if p_conclusion else len(clean_text)
 
-        if p_diagnosis:
+        # Extract Summary (Everything before Diagnosis)
+        if p_summary:
             sections["summary"] = clean_text[idx_s:idx_d].strip()
-            if p_conclusion:
-                sections["diagnosis"] = clean_text[p_diagnosis.end():idx_c].strip()
-                sections["conclusion"] = clean_text[p_conclusion.end():].strip()
-            else:
-                sections["diagnosis"] = clean_text[p_diagnosis.end():].strip()
         else:
-            sections["summary"] = clean_text[idx_s:].strip()
+            # Fallback: If no Summary header, assume the start is the summary
+            sections["summary"] = clean_text[:idx_d].strip()
+
+        # Extract Diagnosis (Everything between Diagnosis and Conclusion)
+        if p_diagnosis:
+            sections["diagnosis"] = clean_text[p_diagnosis.end():idx_c].strip()
+
+        # Extract Conclusion (Everything after Conclusion)
+        if p_conclusion:
+            sections["conclusion"] = clean_text[p_conclusion.end():].strip()
 
         return sections
 
