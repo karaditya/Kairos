@@ -182,69 +182,89 @@ class MultiModelEngine:
 
     def _construct_xml_system_prompt(self, patient_text_card: str) -> str:
         return (
-            "You are an expert Triage Nurse Assistant. "
-            "Your job is to read the PATIENT CARD and answer the user's request accurately.\n\n"
+            "You are an expert Clinical Triage AI. "
+            "Your goal is to answer the user's request based strictly on the PATIENT CARD.\n\n"
             "PATIENT CARD:\n"
             f"{patient_text_card}\n\n"
-            "STRICT RULES:\n"
-            "1. **Direct Answer:** If the user asks for a list, provide a **Markdown Bulleted List** inside the <answer> tag. Do not summarize it into a paragraph.\n"
-            "2. **Reasoning:** Use the <reasoning> tag to explain the clinical risk level (why is it Red/Amber?).\n"
-            "3. **Questions:** Suggest 3 specific clinical questions to ask the **PATIENT** (e.g., 'Does the pain radiate?').\n\n"
-            "REQUIRED XML OUTPUT FORMAT:\n"
+            "--- INSTRUCTIONS ---\n"
+            "You must generate a response in valid XML using the exact tags below.\n\n"
+            "1. <reasoning>\n"
+            "   - **Audience:** Senior Doctor (Internal Note).\n"
+            "   - **Content:** Explain the risk factors. Why is this Red/Amber? Connect symptoms to the protocol.\n"
+            "   - **Rule:** Do NOT show this to the user.\n\n"
+            "2. <answer>\n"
+            "   - **Audience:** The User (The final display text).\n"
+            "   - **Content:** The direct answer to the prompt. If asking for a list, provide a Markdown bullet list here.\n"
+            "   - **Rule:** Do NOT summarize what you just wrote in reasoning. Just give the answer.\n\n"
+            "3. <questions>\n"
+            "   - **Audience:** The Patient (Follow-up).\n"
+            "   - **Content:** 3 short, specific questions to clarify the condition.\n\n"
+            "--- REQUIRED OUTPUT FORMAT ---\n"
             "<reasoning>\n"
-            "(Write your clinical risk analysis here)\n"
+            "... (Clinical logic goes here) ...\n"
             "</reasoning>\n"
             "<answer>\n"
-            "(Put the specific list or direct answer here. Use bullet points if needed.)\n"
+            "... (The detailed response/list goes here) ...\n"
             "</answer>\n"
             "<questions>\n"
-            "- (Question for patient)\n"
-            "- (Question for patient)\n"
-            "- (Question for patient)\n"
+            "- Question 1\n"
+            "- Question 2\n"
+            "- Question 3\n"
             "</questions>"
         )
     
     def _parse_xml_output(self, raw_str: str) -> Dict[str, Any]:
         data = {
             "reasoning": "",
-            "answer": "Processing error. Raw output captured.",
+            "answer": "",
             "follow_up_questions": []
         }
         
-        # 1. Clean up "think" tags (Deepseek specific)
+        # 1. Clean Deepseek/Think tags first (remove completely)
         clean_str = re.sub(r'<think>.*?</think>', '', raw_str, flags=re.DOTALL)
-
-        # 2. Extract <reasoning>
+        
+        # 2. Extract Reasoning (Non-greedy)
         r_match = re.search(r'<reasoning>(.*?)</reasoning>', clean_str, re.DOTALL | re.IGNORECASE)
         if r_match:
             data["reasoning"] = r_match.group(1).strip()
 
-        # 3. Extract <answer>
+        # 3. Extract Answer (The Priority)
+        # We look for the tag explicitly.
         a_match = re.search(r'<answer>(.*?)</answer>', clean_str, re.DOTALL | re.IGNORECASE)
         if a_match:
             data["answer"] = a_match.group(1).strip()
         else:
-            # Fallback for models that forget tags
-            fallback_text = re.sub(r'<.*?>', '', clean_str).strip()
-            if fallback_text: data["answer"] = fallback_text
+            # FAILSAFE: If no <answer> tag is found, we assume the model failed formatting.
+            # We take the whole string but remove the <reasoning> and <questions> parts to clean it.
+            fallback = clean_str
+            fallback = re.sub(r'<reasoning>.*?</reasoning>', '', fallback, flags=re.DOTALL)
+            fallback = re.sub(r'<questions>.*?</questions>', '', fallback, flags=re.DOTALL)
+            data["answer"] = fallback.strip()
 
-        # 4. Extract <questions>
+        # 4. Extract Questions
         q_match = re.search(r'<questions>(.*?)</questions>', clean_str, re.DOTALL | re.IGNORECASE)
         if q_match:
             raw_qs = q_match.group(1).strip()
+            # Split by newlines
             lines = raw_qs.split('\n')
             clean_qs = []
             for line in lines:
-                # --- NEW CLEANER ---
-                # Removes: "Question 1:", "1.", "-", "*", "Q1:"
-                # The regex looks for the pattern at the start (^) of the line
-                line = re.sub(r'^(?:Question\s*\d+[:\.]?|\d+[\.\)]|[-*]|Q\d+[:\.]?)\s*', '', line.strip(), flags=re.IGNORECASE)
+                # Cleaning Logic:
+                # Remove markdown bullets (- or *)
+                # Remove numbering (1. or 1))
+                # Remove "Question 1:" prefixes
+                cleaned_line = re.sub(r'^[\d\-\.\)\*]*(?:Question\s*\d*[:\.]?)?\s*', '', line.strip(), flags=re.IGNORECASE)
                 
-                if len(line) > 5:
-                    clean_qs.append(line)
+                if len(cleaned_line) > 5:
+                    clean_qs.append(cleaned_line)
             data["follow_up_questions"] = clean_qs
 
+        # Final Cleanup: If "Answer" is empty (rare), put a default message
+        if not data["answer"]:
+            data["answer"] = "Analysis complete. Please review the reasoning or questions."
+
         return data
+    
 
     def _validate_response_schema(self, data: Dict[str, Any]) -> Dict[str, Any]:
         defaults = ["Is the pain worsening?", "Any fever?", "History of heart issues?", "Any nausea?", "Short of breath?"]
@@ -307,44 +327,48 @@ class MultiModelEngine:
     # =========================================================================
 
     def _generate_raw_text(self, system_prompt: str, user_prompt: str, force_prefix: str = "") -> str:
+        """
+        Generates plain text (non-XML) for PDF reports.
+        Uses create_chat_completion to ensure compatibility with Llama-3/Deepseek.
+        """
         with self._lock:
-            if not self._current_model: return ""
+            if not self._current_model: 
+                return "Error: Model not loaded."
             
+            # 1. Use the Message Format (Fixes "Garbage Output" on Llama-3)
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
             
-            # Note: "force_prefix" (Prefilling) is harder with chat templates. 
-            # We append it to the user prompt with an instruction instead, which is safer.
+            # 2. Handle the "Force Prefix" (e.g., "CLINICAL SUMMARY:")
+            # Prefilling is tricky with Chat APIs, so we append it to the user prompt instructions.
             if force_prefix:
-                messages[1]["content"] += f"\n\nStart your response immediately with: {force_prefix}"
+                messages[1]["content"] += f"\n\nIMPORTANT: Start your response immediately with the header: '{force_prefix}'"
 
             try:
+                # 3. Call the Engine
                 output = self._current_model.instance.create_chat_completion(
                     messages=messages,
-                    max_tokens=2000,
-                    temperature=0.2,
+                    max_tokens=2500,  # PDFs need more space
+                    temperature=0.2,  # Keep it professional/dry
                     top_p=0.95,
-                    repeat_penalty=1.2,
-                    stop=["<|im_end|>", "<|im_start|>", "User:", "<|eot_id|>"]
+                    stop=["<|im_end|>", "<|im_start|>", "<|eot_id|>"]
                 )
                 
+                # 4. Extract and Clean
                 raw_response = output['choices'][0]['message']['content']
                 
-                # If we asked for a prefix, ensure it's there (models sometimes skip it)
-                if force_prefix and not raw_response.strip().startswith(force_prefix.strip()):
-                    raw_response = force_prefix + raw_response
-
-                # Clean tags
-                full_response = re.sub(r'<think>.*?</think>', '', raw_response, flags=re.DOTALL)
-                full_response = re.sub(r'<.*?>', '', full_response) 
+                # Deepseek Cleaner (Just in case it "thinks" during a PDF gen)
+                clean_response = re.sub(r'<think>.*?</think>', '', raw_response, flags=re.DOTALL)
                 
-                log_llm_output(full_response, context="OUTPUT (PDF Raw)")
-                return full_response.strip()
+                return clean_response.strip()
+
             except Exception as e:
                 logger.error(f"PDF Gen Error: {e}")
-                return ""
+                return "Error generating clinical text. Please try again."
+            
+            
 
     def generate_pdf_summary(self, clinical_state: Dict[str, Any], model_id: Optional[str] = None) -> Dict[str, str]:
         if model_id: self.switch_model(model_id)
