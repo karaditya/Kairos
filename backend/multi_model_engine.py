@@ -4,7 +4,7 @@ Multi-Model Reasoning Engine - Professional LLM Engine for Medical Triage
 FINAL ARCHITECTURE: ADAPTIVE + ROLE-BASED
 1. Input: Grounded & Sorted Patient Data.
 2. Prompting: Role-Based (Senior MD vs Patient vs User) & Adaptive (XML/Brackets).
-3. Parsing: Universal Regex.
+3. Parsing: Universal Regex with "Assimilation" Fallback.
 4. Safety: Factual Grounding Enforced.
 """
 
@@ -200,26 +200,27 @@ class MultiModelEngine:
             "- ONLY use facts from the patient data above.\n"
             "- NEVER invent symptoms, history, or values.\n"
             "- Quote exact values (e.g., 'pain 8/10').\n"
-            "- ALWAYS respond in the SAME LANGUAGE as the user's question.\n\n"
+            "- DO NOT just repeat the patient card. You must analyze it.\n\n"
         )
 
         # DeepSeek / Qwen: XML works naturally, they use <think> internally
         if self._prompt_style == PromptStyle.THINK_TAGS:
             return grounding + (
-                "DO NOT repeat the patient data. Respond using these XML tags:\n"
+                "Respond using these XML tags:\n"
                 "<reasoning>Brief clinical analysis (2-3 sentences)</reasoning>\n"
-                "<answer>Your response to the user. Use bullet points for lists.</answer>\n"
+                "<answer>Your response to the user</answer>\n"
                 "<questions>\n1. First question\n2. Second question\n3. Third question\n</questions>"
             )
 
         # Llama / SmolLM: Simple numbered format
+        # Added explicit instruction not to repeat the card
         elif self._prompt_style == PromptStyle.SIMPLE:
             return grounding + (
-                "DO NOT repeat the patient data. Just respond in this format:\n\n"
+                "Respond in exactly this format:\n\n"
                 "1. REASONING\n"
                 "Brief clinical analysis here.\n\n"
                 "2. ANSWER\n"
-                "Your response to the user here. Use bullet points (- or *) for lists.\n\n"
+                "Your response to the user here. If listing symptoms, use bullets.\n\n"
                 "3. QUESTIONS\n"
                 "- First follow-up question\n"
                 "- Second follow-up question\n"
@@ -229,11 +230,11 @@ class MultiModelEngine:
         # Mistral / Gemma / Phi: Structured markdown
         else:
             return grounding + (
-                "DO NOT repeat the patient data. Respond in this format:\n\n"
+                "Respond in exactly this format:\n\n"
                 "## Reasoning\n"
                 "Brief clinical analysis here.\n\n"
                 "## Answer\n"
-                "Your response to the user here. Use bullet points for lists.\n\n"
+                "Your response to the user here.\n\n"
                 "## Questions\n"
                 "1. First follow-up question\n"
                 "2. Second follow-up question\n"
@@ -242,111 +243,74 @@ class MultiModelEngine:
         
     def _parse_adaptive_output(self, raw_str: str) -> Dict[str, Any]:
         """
-        Model-aware parser matching each format:
-        - THINK_TAGS: XML <reasoning>, <answer>, <questions>
-        - SIMPLE: Numbered 1. REASONING, 2. ANSWER, 3. QUESTIONS
-        - STRUCTURED: Markdown ## Reasoning, ## Answer, ## Questions
+        Universal Parser with 'Assimilation' fallback for creative headers.
         """
         data = {"reasoning": "", "answer": "", "follow_up_questions": []}
 
-        # 1. Extract and preserve <think> content for use in reasoning
+        # 1. Remove <think> blocks (DeepSeek artifact)
         think_content = ""
         think_match = re.search(r'<think(?:ing)?>(.*?)</think(?:ing)?>', raw_str, flags=re.DOTALL)
         if think_match:
             think_content = think_match.group(1).strip()
         clean_str = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', raw_str, flags=re.DOTALL)
 
-        # 1b. Remove echoed patient card (Llama issue)
-        clean_str = re.sub(r'\*{0,2}PATIENT\s*CARD\*{0,2}:?.*?(?=\*{0,2}(?:REASONING|ANSWER|SYMPTOM|WHAT|CLINICAL|1\.\s*REASONING|##\s*Reasoning)|$)', '', clean_str, flags=re.DOTALL | re.IGNORECASE)
-        clean_str = re.sub(r'\*{3}\s*TRIAGE\s*PRIORITY.*?(?=\*{0,2}(?:REASONING|ANSWER|SYMPTOM|WHAT|CLINICAL)|$)', '', clean_str, flags=re.DOTALL | re.IGNORECASE)
-
         # 2. Try XML tags (DeepSeek/THINK_TAGS)
         r_match = re.search(r'<reasoning>(.*?)(?:</reasoning>|<answer>|$)', clean_str, re.DOTALL | re.IGNORECASE)
         a_match = re.search(r'<answer>(.*?)(?:</answer>|<questions>|$)', clean_str, re.DOTALL | re.IGNORECASE)
         q_match = re.search(r'<questions>(.*?)(?:</questions>|$)', clean_str, re.DOTALL | re.IGNORECASE)
 
-        # 3. Try numbered format (Llama/SIMPLE): 1. REASONING / 2. ANSWER / 3. QUESTIONS
+        # 3. Try numbered format (Llama/SIMPLE)
         if not a_match:
             r_match = r_match or re.search(r'(?:^|\n)\s*1\.?\s*REASONING\s*\n(.*?)(?=\n\s*2\.?\s*ANSWER|$)', clean_str, re.DOTALL | re.IGNORECASE)
             a_match = re.search(r'(?:^|\n)\s*2\.?\s*ANSWER\s*\n(.*?)(?=\n\s*3\.?\s*QUESTIONS|$)', clean_str, re.DOTALL | re.IGNORECASE)
             q_match = q_match or re.search(r'(?:^|\n)\s*3\.?\s*QUESTIONS\s*\n(.*?)$', clean_str, re.DOTALL | re.IGNORECASE)
 
-        # 4. Try markdown headers (Mistral/Gemma/STRUCTURED): ## Reasoning / ## Answer / ## Questions
+        # 4. Try markdown headers (Mistral/Gemma)
         if not a_match:
             r_match = r_match or re.search(r'#{1,3}\s*Reasoning\s*\n(.*?)(?=#{1,3}\s*Answer|$)', clean_str, re.DOTALL | re.IGNORECASE)
             a_match = re.search(r'#{1,3}\s*Answer\s*\n(.*?)(?=#{1,3}\s*Questions|$)', clean_str, re.DOTALL | re.IGNORECASE)
             q_match = q_match or re.search(r'#{1,3}\s*Questions\s*\n(.*?)$', clean_str, re.DOTALL | re.IGNORECASE)
 
-        # 5. Generic fallback: Any REASONING/ANSWER/QUESTIONS pattern
-        if not a_match:
-            r_match = r_match or re.search(r'(?:^|\n)\s*\*{0,2}REASONING\*{0,2}[:\s]*\n?(.*?)(?=\*{0,2}ANSWER|$)', clean_str, re.DOTALL | re.IGNORECASE)
-            a_match = re.search(r'(?:^|\n)\s*\*{0,2}ANSWER\*{0,2}[:\s]*\n?(.*?)(?=\*{0,2}QUESTIONS|$)', clean_str, re.DOTALL | re.IGNORECASE)
-            q_match = q_match or re.search(r'(?:^|\n)\s*\*{0,2}QUESTIONS\*{0,2}[:\s]*\n?(.*?)$', clean_str, re.DOTALL | re.IGNORECASE)
+        # 5. Extract values if strict matching succeeded
+        if r_match: data["reasoning"] = r_match.group(1).strip()
+        if a_match: data["answer"] = a_match.group(1).strip()
+        if q_match: data["follow_up_questions"] = self._extract_questions(q_match.group(1))
 
-        # 6. Extract values
-        if r_match:
-            data["reasoning"] = r_match.group(1).strip()
-        if a_match:
-            data["answer"] = a_match.group(1).strip()
-        if q_match:
-            data["follow_up_questions"] = self._extract_questions(q_match.group(1))
-
-        # 7. Enrich reasoning with think content if reasoning is empty/short
+        # 6. FILL GAPS USING THINKING (DeepSeek specific)
         if think_content and len(data["reasoning"]) < 50:
-            data["reasoning"] = think_content[:500]  # Use think content as reasoning
+            data["reasoning"] = think_content[:500] 
 
-        # 8. Rescue answer from think content if answer is empty/short
-        if len(data["answer"]) < 30 and think_content:
-            bullets = re.findall(r'[-*]\s*(.+?)(?:\n|$)', think_content)
-            if bullets:
-                data["answer"] = "Based on the patient data:\n" + "\n".join(f"- {b.strip()}" for b in bullets[:10])
-
-        # 9. Capture any non-standard sections as answer (Llama creative headers)
+        # 7. THE LLAMA "ASSIMILATION" FIX (Creative Header Catch-all)
+        # If no specific "Answer" section was found, or it's empty...
         if not data["answer"]:
-            # Find any bold or plain header that's NOT reasoning/questions
-            sections = re.split(r'\n\s*\*{0,2}([A-Z][A-Za-z\s\']+)\*{0,2}[:\s]*\n', clean_str)
-            for i in range(1, len(sections), 2):
-                header = sections[i].strip().upper() if i < len(sections) else ""
-                content = sections[i+1].strip() if i+1 < len(sections) else ""
-                # Skip if it's a reasoning or questions header
-                if any(kw in header for kw in ['REASONING', 'QUESTION', 'FOLLOW']):
-                    continue
-                # Everything else goes to answer
-                if content and len(content) > 20:
-                    data["answer"] = content
-                    break
-
-        # 10. Ultimate fallback: Use the clean response
-        if not data["answer"]:
+            # Treat the whole cleaned string as the answer, but remove known artifacts
             fallback = clean_str
-            for m in [r_match, q_match]:
-                if m:
-                    try: fallback = fallback.replace(m.group(0), '')
-                    except: pass
-            fallback = fallback.strip()
-            if fallback:
-                data["answer"] = fallback
-            else:
-                data["answer"] = "Analysis complete. Please review the patient data."
+            
+            # Remove XML tags if they exist but were empty/broken
+            fallback = re.sub(r'<[^>]+>', '', fallback)
+            
+            # Remove "System" style headers that the model might echo
+            # e.g. "1. REASONING" (but empty)
+            fallback = re.sub(r'^\s*\d+\.?\s*REASONING\s*$', '', fallback, flags=re.MULTILINE)
+            fallback = re.sub(r'^\s*\d+\.?\s*ANSWER\s*$', '', fallback, flags=re.MULTILINE)
+            fallback = re.sub(r'^\s*\d+\.?\s*QUESTIONS\s*$', '', fallback, flags=re.MULTILINE)
+
+            data["answer"] = fallback.strip()
+            
+            # If we assimilated everything into answer, try to find questions inside it
+            # Look for lines starting with "- " or "1. " at the end of the text
+            potential_questions = re.findall(r'(?:^|\n)\s*[-*]\s*(.+?)\??\s*$', data["answer"])
+            if potential_questions and len(potential_questions) <= 5:
+                # If these look like questions, extract them
+                qs_candidates = [q for q in potential_questions if "?" in q or "question" in q.lower()]
+                if qs_candidates:
+                    data["follow_up_questions"].extend(qs_candidates[:3])
+
+        # 8. Failsafe
+        if not data["answer"]:
+            data["answer"] = "Analysis complete. Please review the patient data."
 
         return data
-
-    def _clean_section_content(self, content: str) -> str:
-        """Remove template-like phrases from section content."""
-        noise_patterns = [
-            r'^:?\s*Internal technical note.*$',
-            r'^:?\s*The final response to the user.*$',
-            r'^:?\s*Use Markdown bullet points.*$',
-            r'^:?\s*List exactly \d+ .*$',
-            r'^\d+\.\s*$',  # Stray numbers
-        ]
-        lines = content.strip().split('\n')
-        clean_lines = []
-        for line in lines:
-            is_noise = any(re.match(p, line.strip(), re.IGNORECASE) for p in noise_patterns)
-            if not is_noise and line.strip():
-                clean_lines.append(line)
-        return '\n'.join(clean_lines).strip()
 
     def _extract_questions(self, raw_qs: str) -> List[str]:
         """Helper to clean bulleted questions."""
@@ -429,10 +393,9 @@ class MultiModelEngine:
                 )
                 
                 raw_response = output['choices'][0]['message']['content']
-                # Clean all think variants and XML artifacts
+                # DEEPSEEK FIX: Aggressive think tag removal
                 clean_response = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', raw_response, flags=re.DOTALL)
-                clean_response = re.sub(r'<[^>]+>', '', clean_response)  # Remove stray XML tags
-                clean_response = re.sub(r'\*\*([^*]+)\*\*', r'\1', clean_response)  # Remove bold
+                
                 return clean_response.strip()
 
             except Exception as e:
@@ -441,41 +404,25 @@ class MultiModelEngine:
 
     def generate_pdf_summary(self, clinical_state: Dict[str, Any], model_id: Optional[str] = None) -> Dict[str, str]:
         if model_id: self.switch_model(model_id)
-
+        
         card = self._flatten_patient_data(clinical_state)
-
-        # Base prompt
-        base_rules = (
-            "You are a Medical Scribe. Write a Clinical Referral Letter using ONLY the patient data provided.\n"
-            "RULES:\n"
-            "- Only state facts from the data. Never invent information.\n"
-            "- Use exact values (e.g., 'pain 8/10').\n"
-            "- Write in plain prose paragraphs. No bullet points.\n"
-            "- No markdown formatting (no **, ##, or _).\n\n"
+        
+        system_prompt = (
+            "You are a professional Medical Scribe AI. "
+            "Write a formal Clinical Referral Letter based ONLY on the provided data.\n"
+            "FACTUAL GROUNDING:\n"
+            "- ONLY include facts explicitly stated in PATIENT DATA.\n"
+            "- Use exact values (e.g., 'pain severity 8/10').\n"
+            "FORMATTING RULES:\n"
+            "1. Use EXACT headers: 'CLINICAL SUMMARY:', 'DIAGNOSIS:', 'CONCLUSION:'.\n"
+            "2. Do NOT use bold (**), italics, or hashes (#). Write in plain text.\n"
+            "3. Write in continuous paragraphs (prose)."
         )
-
-        # Model-aware format instructions
-        if self._prompt_style == PromptStyle.THINK_TAGS:
-            # DeepSeek: Tell it not to use XML tags, just plain text
-            format_instructions = (
-                "OUTPUT FORMAT (plain text only, no XML tags):\n\n"
-                "CLINICAL SUMMARY:\n[2-3 sentences describing the patient and main symptoms]\n\n"
-                "DIAGNOSIS:\n[Possible conditions based on symptoms]\n\n"
-                "CONCLUSION:\n[Recommended next steps]"
-            )
-        else:
-            format_instructions = (
-                "OUTPUT FORMAT:\n\n"
-                "CLINICAL SUMMARY:\n[2-3 sentences describing the patient and main symptoms]\n\n"
-                "DIAGNOSIS:\n[Possible conditions based on symptoms]\n\n"
-                "CONCLUSION:\n[Recommended next steps]"
-            )
-
-        system_prompt = base_rules + format_instructions
-
+        
         user_prompt = (
             f"PATIENT DATA:\n{card}\n\n"
-            "Write the Clinical Referral Letter now."
+            "TASK: Write the Clinical Referral Letter.\n"
+            "Start immediately with the Summary."
         )
         
         raw_text = self._generate_raw_text(
@@ -487,23 +434,39 @@ class MultiModelEngine:
         return self._parse_pdf_sections(raw_text)
 
     def _parse_pdf_sections(self, text: str) -> Dict[str, str]:
+        """
+        Robust parser for PDF sections. 
+        FIX: Handles DeepSeek bold headers (**CLINICAL SUMMARY**) and casing variations.
+        """
         sections = {"summary": "", "diagnosis": "", "conclusion": ""}
         
-        clean_text = text.replace("**", "").replace("##", "").replace("__", "")
+        # Don't strip ** yet, just normalize strict headers logic
+        # We search for the keywords regardless of surrounding punctuation
         
-        p_summary = re.search(r'(?:1\.\s*)?CLINICAL SUMMARY[:\s]*', clean_text, re.IGNORECASE)
-        p_diagnosis = re.search(r'(?:2\.\s*)?(?:DIAGNOSIS|ASSESSMENT)[:\s]*', clean_text, re.IGNORECASE)
-        p_conclusion = re.search(r'(?:3\.\s*)?(?:CONCLUSION|PLAN|RECOMMENDATION)[:\s]*', clean_text, re.IGNORECASE)
+        # Regex explanation:
+        # (?:1\.|[\#\*]+)? -> Optional Numbering (1.) or Markdown (## / **)
+        # \s* -> Optional whitespace
+        # KEYWORD -> The header
+        # [:\s]* -> Optional colon and whitespace
+        
+        p_summary = re.search(r'(?:1\.|[\#\*]+)?\s*CLINICAL SUMMARY[:\s]*', text, re.IGNORECASE)
+        p_diagnosis = re.search(r'(?:2\.|[\#\*]+)?\s*(?:DIAGNOSIS|ASSESSMENT)[:\s]*', text, re.IGNORECASE)
+        p_conclusion = re.search(r'(?:3\.|[\#\*]+)?\s*(?:CONCLUSION|PLAN|RECOMMENDATION)[:\s]*', text, re.IGNORECASE)
 
+        # Calculate Indices
         idx_s = p_summary.end() if p_summary else 0
-        idx_d = p_diagnosis.start() if p_diagnosis else len(clean_text)
-        idx_c = p_conclusion.start() if p_conclusion else len(clean_text)
+        idx_d = p_diagnosis.start() if p_diagnosis else len(text)
+        idx_c = p_conclusion.start() if p_conclusion else len(text)
 
-        if p_summary: sections["summary"] = clean_text[idx_s:idx_d].strip()
-        else: sections["summary"] = clean_text[:idx_d].strip()
+        # Extract and Clean
+        def clean_chunk(s):
+            return s.replace("**", "").replace("##", "").strip()
 
-        if p_diagnosis: sections["diagnosis"] = clean_text[p_diagnosis.end():idx_c].strip()
-        if p_conclusion: sections["conclusion"] = clean_text[p_conclusion.end():].strip()
+        if p_summary: sections["summary"] = clean_chunk(text[idx_s:idx_d])
+        else: sections["summary"] = clean_chunk(text[:idx_d]) # Fallback: Start of text
+
+        if p_diagnosis: sections["diagnosis"] = clean_chunk(text[p_diagnosis.end():idx_c])
+        if p_conclusion: sections["conclusion"] = clean_chunk(text[p_conclusion.end():])
 
         return sections
 
