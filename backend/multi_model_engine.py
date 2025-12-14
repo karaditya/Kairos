@@ -162,7 +162,14 @@ class MultiModelEngine:
         if not answers: lines.append(" - No specific symptoms recorded.")
         for key, val in answers.items():
             readable_key = key.replace("_", " ").title()
-            lines.append(f" - {readable_key}: {val}")
+            # Extract label from dict values, handle booleans nicely
+            if isinstance(val, dict):
+                display_val = val.get("label", val.get("value", str(val)))
+            elif isinstance(val, bool):
+                display_val = "Yes" if val else "No"
+            else:
+                display_val = val
+            lines.append(f" - {readable_key}: {display_val}")
 
         lines.append("\nCLINICAL ALERTS:")
         if not sorted_rules:
