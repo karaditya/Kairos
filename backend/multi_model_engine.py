@@ -181,10 +181,6 @@ class MultiModelEngine:
     # =========================================================================
 
     def _construct_xml_system_prompt(self, patient_text_card: str) -> str:
-        """
-        The Secret Sauce: XML Instructions.
-        This prompt works on Deepseek, Llama, Mistral, and even old models.
-        """
         return (
             "You are a helpful Medical Assistant.\n"
             "Your Goal: Answer the user's question using the Patient Card below.\n\n"
@@ -192,37 +188,35 @@ class MultiModelEngine:
             f"{patient_text_card}\n\n"
             "INSTRUCTIONS:\n"
             "1. **Context:** The 'TRIAGE PRIORITY' is correct. Do not re-assess it.\n"
-            "2. **Format:** You MUST use the following XML tags for your response:\n\n"
+            "2. **Task:**\n"
+            "   - **Reasoning:** Explain the clinical logic linking symptoms to the risk.\n"
+            "   - **Answer:** Address the user directly.\n"
+            "   - **Questions:** Suggest 3 specific clinical questions **TO ASK THE PATIENT** to clarify their condition.\n"
+            "3. **Format:** You MUST use this XML structure:\n\n"
             "<reasoning>\n"
-            "(Briefly explain your clinical thinking here)\n"
+            "The patient reports chest pain which is a red flag...\n"
             "</reasoning>\n"
             "<answer>\n"
-            "(Direct answer to the user)\n"
+            "Based on the symptoms, this is a high-priority case...\n"
             "</answer>\n"
             "<questions>\n"
-            "- Question 1\n"
-            "- Question 2\n"
-            "- Question 3\n"
+            "- Does the pain radiate to your left arm or jaw?\n"
+            "- Have you experienced this specific pain before?\n"
+            "- Are you currently taking any blood thinners?\n"
             "</questions>"
         )
-
+    
     def _parse_xml_output(self, raw_str: str) -> Dict[str, Any]:
-        """
-        Robust XML Parser.
-        It doesn't care about commas, quotes, or JSON syntax errors.
-        It just finds the tags.
-        """
         data = {
             "reasoning": "",
             "answer": "Processing error. Raw output captured.",
             "follow_up_questions": []
         }
         
-        # 1. Clean up "think" tags (Deepseek specific artifact)
+        # 1. Clean up "think" tags (Deepseek specific)
         clean_str = re.sub(r'<think>.*?</think>', '', raw_str, flags=re.DOTALL)
 
         # 2. Extract <reasoning>
-        # DOTALL allows the dot (.) to match newlines, capturing multi-line text
         r_match = re.search(r'<reasoning>(.*?)</reasoning>', clean_str, re.DOTALL | re.IGNORECASE)
         if r_match:
             data["reasoning"] = r_match.group(1).strip()
@@ -232,21 +226,22 @@ class MultiModelEngine:
         if a_match:
             data["answer"] = a_match.group(1).strip()
         else:
-            # Fallback: If no tags found, assume the whole text is the answer (excluding tags)
-            # This handles models that forget the tags completely.
+            # Fallback for models that forget tags
             fallback_text = re.sub(r'<.*?>', '', clean_str).strip()
-            if fallback_text:
-                data["answer"] = fallback_text
+            if fallback_text: data["answer"] = fallback_text
 
         # 4. Extract <questions>
         q_match = re.search(r'<questions>(.*?)</questions>', clean_str, re.DOTALL | re.IGNORECASE)
         if q_match:
             raw_qs = q_match.group(1).strip()
-            # Split by newlines or hyphens
             lines = raw_qs.split('\n')
             clean_qs = []
             for line in lines:
-                line = line.strip().lstrip('-').lstrip('*').strip()
+                # --- NEW CLEANER ---
+                # Removes: "Question 1:", "1.", "-", "*", "Q1:"
+                # The regex looks for the pattern at the start (^) of the line
+                line = re.sub(r'^(?:Question\s*\d+[:\.]?|\d+[\.\)]|[-*]|Q\d+[:\.]?)\s*', '', line.strip(), flags=re.IGNORECASE)
+                
                 if len(line) > 5:
                     clean_qs.append(line)
             data["follow_up_questions"] = clean_qs
@@ -277,34 +272,38 @@ class MultiModelEngine:
                 return {"answer": "Engine Error: Model not loaded.", "reasoning": "", "follow_up_questions": []}
 
             card = self._flatten_patient_data(patient_context)
-            # Use the new XML System Prompt
             sys_prompt = self._construct_xml_system_prompt(card)
             
-            prompt = (
-                f"<|im_start|>system\n{sys_prompt}<|im_end|>\n"
-                f"<|im_start|>user\n{user_query}<|im_end|>\n"
-                f"<|im_start|>assistant\n"
-            )
+            # --- CHANGE: Use Message List, not Raw String ---
+            messages = [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_query}
+            ]
 
             try:
-                # No grammar needed! Pure text generation.
-                output = self._current_model.instance(
-                    prompt, max_tokens=1500, temperature=0.1, 
-                    top_p=0.90, repeat_penalty=1.1, 
-                    stop=["<|im_end|>", "<|im_start|>", "</s>"], 
-                    echo=False
+                # --- CHANGE: Use create_chat_completion ---
+                # This automatically applies the correct template (Llama-3, ChatML, Mistral, etc.)
+                output = self._current_model.instance.create_chat_completion(
+                    messages=messages,
+                    max_tokens=1500,
+                    temperature=0.1,
+                    top_p=0.90,
+                    repeat_penalty=1.1,
+                    stop=["<|im_end|>", "<|im_start|>", "</s>", "<|eot_id|>"], # Covers most models
+                    # stream=False is default
                 )
-                raw = output['choices'][0]['text']
+                
+                # Extract content safely
+                raw = output['choices'][0]['message']['content']
                 log_llm_output(raw, context="OUTPUT (Chat XML)")
                 
-                # Use the robust XML parser
                 parsed_data = self._parse_xml_output(raw)
                 return self._validate_response_schema(parsed_data)
                 
             except Exception as e:
                 logger.error(f"Inference error: {e}")
                 return {"answer": "Error.", "reasoning": str(e), "follow_up_questions": []}
-
+            
     # =========================================================================
     # 2. RAW TEXT GENERATION (PDF)
     # =========================================================================
@@ -313,27 +312,35 @@ class MultiModelEngine:
         with self._lock:
             if not self._current_model: return ""
             
-            full_prompt = (
-                f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
-                f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
-                f"<|im_start|>assistant\n{force_prefix}" 
-            )
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
             
+            # Note: "force_prefix" (Prefilling) is harder with chat templates. 
+            # We append it to the user prompt with an instruction instead, which is safer.
+            if force_prefix:
+                messages[1]["content"] += f"\n\nStart your response immediately with: {force_prefix}"
+
             try:
-                output = self._current_model.instance(
-                    full_prompt, max_tokens=2000, temperature=0.2, 
-                    top_p=0.95, repeat_penalty=1.2, 
-                    stop=["<|im_end|>", "<|im_start|>", "User:"], echo=False
+                output = self._current_model.instance.create_chat_completion(
+                    messages=messages,
+                    max_tokens=2000,
+                    temperature=0.2,
+                    top_p=0.95,
+                    repeat_penalty=1.2,
+                    stop=["<|im_end|>", "<|im_start|>", "User:", "<|eot_id|>"]
                 )
                 
-                raw_continuation = output['choices'][0]['text']
-                full_response = force_prefix + raw_continuation
+                raw_response = output['choices'][0]['message']['content']
                 
-                full_response = re.sub(r'<think>.*?</think>', '', full_response, flags=re.DOTALL)
+                # If we asked for a prefix, ensure it's there (models sometimes skip it)
+                if force_prefix and not raw_response.strip().startswith(force_prefix.strip()):
+                    raw_response = force_prefix + raw_response
+
+                # Clean tags
+                full_response = re.sub(r'<think>.*?</think>', '', raw_response, flags=re.DOTALL)
                 full_response = re.sub(r'<.*?>', '', full_response) 
-                    
-                if "PATIENT DATA:" in full_response: full_response = full_response.split("PATIENT DATA:")[0]
-                if "\nUser:" in full_response: full_response = full_response.split("\nUser:")[0]
                 
                 log_llm_output(full_response, context="OUTPUT (PDF Raw)")
                 return full_response.strip()
