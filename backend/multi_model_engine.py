@@ -254,16 +254,25 @@ class MultiModelEngine:
             think_content = think_match.group(1).strip()
         clean_str = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', raw_str, flags=re.DOTALL)
 
+        # 1b. STRIP ECHOED PATIENT CARD (Llama issue)
+        # Find where actual response starts (REASONING: or ANSWER: or ## or 1. REASONING)
+        response_start = re.search(
+            r'(?:^|\n)\s*(?:REASONING:|ANSWER:|1\.?\s*REASONING|##\s*Reasoning|<reasoning>)',
+            clean_str, re.IGNORECASE
+        )
+        if response_start:
+            clean_str = clean_str[response_start.start():]
+
         # 2. Try XML tags (DeepSeek/THINK_TAGS)
         r_match = re.search(r'<reasoning>(.*?)(?:</reasoning>|<answer>|$)', clean_str, re.DOTALL | re.IGNORECASE)
         a_match = re.search(r'<answer>(.*?)(?:</answer>|<questions>|$)', clean_str, re.DOTALL | re.IGNORECASE)
         q_match = re.search(r'<questions>(.*?)(?:</questions>|$)', clean_str, re.DOTALL | re.IGNORECASE)
 
-        # 3. Try numbered format (Llama/SIMPLE)
+        # 3. Try numbered format (Llama/SIMPLE): "1. REASONING" or just "REASONING:"
         if not a_match:
-            r_match = r_match or re.search(r'(?:^|\n)\s*1\.?\s*REASONING\s*\n(.*?)(?=\n\s*2\.?\s*ANSWER|$)', clean_str, re.DOTALL | re.IGNORECASE)
-            a_match = re.search(r'(?:^|\n)\s*2\.?\s*ANSWER\s*\n(.*?)(?=\n\s*3\.?\s*QUESTIONS|$)', clean_str, re.DOTALL | re.IGNORECASE)
-            q_match = q_match or re.search(r'(?:^|\n)\s*3\.?\s*QUESTIONS\s*\n(.*?)$', clean_str, re.DOTALL | re.IGNORECASE)
+            r_match = r_match or re.search(r'(?:^|\n)\s*(?:1\.?\s*)?REASONING[:\s]*\n(.*?)(?=\n\s*(?:2\.?\s*)?ANSWER|$)', clean_str, re.DOTALL | re.IGNORECASE)
+            a_match = re.search(r'(?:^|\n)\s*(?:2\.?\s*)?ANSWER[:\s]*\n(.*?)(?=\n\s*(?:3\.?\s*)?QUESTIONS|$)', clean_str, re.DOTALL | re.IGNORECASE)
+            q_match = q_match or re.search(r'(?:^|\n)\s*(?:3\.?\s*)?QUESTIONS[:\s]*\n(.*?)$', clean_str, re.DOTALL | re.IGNORECASE)
 
         # 4. Try markdown headers (Mistral/Gemma)
         if not a_match:
