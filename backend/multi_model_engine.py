@@ -191,130 +191,124 @@ class MultiModelEngine:
 
     def _construct_adaptive_system_prompt(self, patient_text_card: str) -> str:
         """
-        Builds a system prompt tailored to the active model's capabilities.
-        Separates 'Logic' from 'Structure' to prevent template echoing.
+        Model-aware prompting: Each model family gets its natural format.
         """
-
-        # 1. THE BASE (Context & Grounding)
-        base_prompt = (
-            "You are an expert Clinical Triage AI. "
-            "Your goal is to answer the user's request based strictly on the PATIENT CARD.\n\n"
-            "PATIENT CARD:\n"
+        grounding = (
+            "You are a clinical triage assistant.\n\n"
             f"{patient_text_card}\n\n"
-            "--- FACTUAL GROUNDING (CRITICAL) ---\n"
-            "- ONLY state facts explicitly listed in the PATIENT CARD above.\n"
-            "- NEVER invent, assume, or infer symptoms, values, or history not provided.\n"
-            "- If data is missing, say 'not reported'.\n"
-            "- Quote exact values (e.g., 'severity 8/10') when referencing data.\n\n"
+            "STRICT RULES:\n"
+            "- ONLY use facts from the patient data above.\n"
+            "- NEVER invent symptoms, history, or values.\n"
+            "- Quote exact values (e.g., 'pain 8/10').\n\n"
         )
 
-        # 2. THE ADAPTIVE LOGIC (Logic vs Template)
-        
-        # --- PATH A: LLAMA / SIMPLE MODELS (Brackets) ---
-        if self._prompt_style == PromptStyle.SIMPLE:
-            return base_prompt + (
-                "--- SECTION ROLES ---\n"
-                "1. [REASONING]: Internal technical note. Explain the risk level (Red/Amber/Green) based on symptoms.\n"
-                "2. [ANSWER]: The final response to the user. Use Markdown bullet points for lists. Be clear and direct.\n"
-                "3. [QUESTIONS]: List exactly 3 specific clinical questions to ask the patient.\n\n"
-                "--- REQUIRED OUTPUT FORMAT ---\n"
-                "Use exactly this structure (replace '...' with your content):\n\n"
-                "[REASONING]\n"
-                "...\n\n"
-                "[ANSWER]\n"
-                "...\n\n"
-                "[QUESTIONS]\n"
-                "- ...\n"
-                "- ...\n"
-                "- ..."
+        # DeepSeek / Qwen: XML works naturally, they use <think> internally
+        if self._prompt_style == PromptStyle.THINK_TAGS:
+            return grounding + (
+                "Respond using these XML tags:\n"
+                "<reasoning>Brief clinical analysis (2-3 sentences)</reasoning>\n"
+                "<answer>Your response to the user</answer>\n"
+                "<questions>\n1. First question\n2. Second question\n3. Third question\n</questions>"
             )
-        
-        # --- PATH B: DEEPSEEK / MISTRAL (XML) ---
+
+        # Llama / SmolLM: Simple numbered format
+        elif self._prompt_style == PromptStyle.SIMPLE:
+            return grounding + (
+                "Respond in exactly this format:\n\n"
+                "1. REASONING\n"
+                "Brief clinical analysis here.\n\n"
+                "2. ANSWER\n"
+                "Your response to the user here.\n\n"
+                "3. QUESTIONS\n"
+                "- First follow-up question\n"
+                "- Second follow-up question\n"
+                "- Third follow-up question"
+            )
+
+        # Mistral / Gemma / Phi: Structured markdown
         else:
-            return base_prompt + (
-                "--- TAG ROLES ---\n"
-                "1. <reasoning>: Internal technical note. Analyze why the patient fits a specific risk band.\n"
-                "2. <answer>: The final response to the user. Use Markdown bullet points for lists. Do not repeat the reasoning.\n"
-                "3. <questions>: List exactly 3 specific clinical questions to ask the patient.\n\n"
-                "--- REQUIRED XML OUTPUT ---\n"
-                "Use exactly this structure (replace '...' with your content):\n\n"
-                "<reasoning>\n"
-                "...\n"
-                "</reasoning>\n"
-                "<answer>\n"
-                "...\n"
-                "</answer>\n"
-                "<questions>\n"
-                "- ...\n"
-                "- ...\n"
-                "- ...\n"
-                "</questions>"
+            return grounding + (
+                "Respond in exactly this format:\n\n"
+                "## Reasoning\n"
+                "Brief clinical analysis here.\n\n"
+                "## Answer\n"
+                "Your response to the user here.\n\n"
+                "## Questions\n"
+                "1. First follow-up question\n"
+                "2. Second follow-up question\n"
+                "3. Third follow-up question"
             )
         
     def _parse_adaptive_output(self, raw_str: str) -> Dict[str, Any]:
         """
-        Universal Parser: Handles XML, Brackets, template echoing, and DeepSeek think-extraction.
+        Model-aware parser matching each format:
+        - THINK_TAGS: XML <reasoning>, <answer>, <questions>
+        - SIMPLE: Numbered 1. REASONING, 2. ANSWER, 3. QUESTIONS
+        - STRUCTURED: Markdown ## Reasoning, ## Answer, ## Questions
         """
         data = {"reasoning": "", "answer": "", "follow_up_questions": []}
 
-        # 1. Extract content from <think> BEFORE removing it (DeepSeek backup)
+        # 1. Extract and preserve <think> content for use in reasoning
         think_content = ""
-        think_match = re.search(r'<think>(.*?)</think>', raw_str, flags=re.DOTALL)
+        think_match = re.search(r'<think(?:ing)?>(.*?)</think(?:ing)?>', raw_str, flags=re.DOTALL)
         if think_match:
-            think_content = think_match.group(1)
+            think_content = think_match.group(1).strip()
+        clean_str = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', raw_str, flags=re.DOTALL)
 
-        # 2. Clean model artifacts
-        clean_str = re.sub(r'<think>.*?</think>', '', raw_str, flags=re.DOTALL)
-        clean_str = re.sub(r'```[\w]*\n?', '', clean_str)
-
-        # 3. Remove template echoing (Llama issue)
-        template_patterns = [
-            r'\*\*PATIENT CARD:\*\*.*?(?=<reasoning>|\[REASONING\]|$)',  # Echoed patient card
-            r'---\s*(?:FACTUAL GROUNDING|SECTION ROLES|TAG ROLES).*?(?=<reasoning>|\[REASONING\]|$)',  # Echoed instructions
-            r'\d+\.\s*\[(?:REASONING|ANSWER|QUESTIONS)\]:.*?(?=\[REASONING\]|\[ANSWER\]|$)',  # Echoed role descriptions
-        ]
-        for pattern in template_patterns:
-            clean_str = re.sub(pattern, '', clean_str, flags=re.DOTALL | re.IGNORECASE)
-
-        # 4. Try XML tags first
+        # 2. Try XML tags (DeepSeek/THINK_TAGS)
         r_match = re.search(r'<reasoning>(.*?)(?:</reasoning>|<answer>|$)', clean_str, re.DOTALL | re.IGNORECASE)
         a_match = re.search(r'<answer>(.*?)(?:</answer>|<questions>|$)', clean_str, re.DOTALL | re.IGNORECASE)
         q_match = re.search(r'<questions>(.*?)(?:</questions>|$)', clean_str, re.DOTALL | re.IGNORECASE)
 
-        # 5. Fallback: Bracket matching
+        # 3. Try numbered format (Llama/SIMPLE): 1. REASONING / 2. ANSWER / 3. QUESTIONS
         if not a_match:
-            r_match = r_match or re.search(
-                r'\[REASONING\]\s*(.*?)(?=\[ANSWER\]|\[QUESTIONS\]|$)',
-                clean_str, re.DOTALL | re.IGNORECASE
-            )
-            a_match = re.search(
-                r'\[ANSWER\]\s*(.*?)(?=\[QUESTIONS\]|$)',
-                clean_str, re.DOTALL | re.IGNORECASE
-            )
-            q_match = q_match or re.search(
-                r'\[QUESTIONS\]\s*(.*?)$',
-                clean_str, re.DOTALL | re.IGNORECASE
-            )
+            r_match = r_match or re.search(r'(?:^|\n)\s*1\.?\s*REASONING\s*\n(.*?)(?=\n\s*2\.?\s*ANSWER|$)', clean_str, re.DOTALL | re.IGNORECASE)
+            a_match = re.search(r'(?:^|\n)\s*2\.?\s*ANSWER\s*\n(.*?)(?=\n\s*3\.?\s*QUESTIONS|$)', clean_str, re.DOTALL | re.IGNORECASE)
+            q_match = q_match or re.search(r'(?:^|\n)\s*3\.?\s*QUESTIONS\s*\n(.*?)$', clean_str, re.DOTALL | re.IGNORECASE)
+
+        # 4. Try markdown headers (Mistral/Gemma/STRUCTURED): ## Reasoning / ## Answer / ## Questions
+        if not a_match:
+            r_match = r_match or re.search(r'#{1,3}\s*Reasoning\s*\n(.*?)(?=#{1,3}\s*Answer|$)', clean_str, re.DOTALL | re.IGNORECASE)
+            a_match = re.search(r'#{1,3}\s*Answer\s*\n(.*?)(?=#{1,3}\s*Questions|$)', clean_str, re.DOTALL | re.IGNORECASE)
+            q_match = q_match or re.search(r'#{1,3}\s*Questions\s*\n(.*?)$', clean_str, re.DOTALL | re.IGNORECASE)
+
+        # 5. Generic fallback: Any REASONING/ANSWER/QUESTIONS pattern
+        if not a_match:
+            r_match = r_match or re.search(r'(?:^|\n)\s*\*{0,2}REASONING\*{0,2}[:\s]*\n?(.*?)(?=\*{0,2}ANSWER|$)', clean_str, re.DOTALL | re.IGNORECASE)
+            a_match = re.search(r'(?:^|\n)\s*\*{0,2}ANSWER\*{0,2}[:\s]*\n?(.*?)(?=\*{0,2}QUESTIONS|$)', clean_str, re.DOTALL | re.IGNORECASE)
+            q_match = q_match or re.search(r'(?:^|\n)\s*\*{0,2}QUESTIONS\*{0,2}[:\s]*\n?(.*?)$', clean_str, re.DOTALL | re.IGNORECASE)
 
         # 6. Extract values
         if r_match:
-            data["reasoning"] = self._clean_section_content(r_match.group(1))
+            data["reasoning"] = r_match.group(1).strip()
         if a_match:
-            data["answer"] = self._clean_section_content(a_match.group(1))
+            data["answer"] = a_match.group(1).strip()
         if q_match:
             data["follow_up_questions"] = self._extract_questions(q_match.group(1))
 
-        # 7. DeepSeek rescue: If answer is too short but <think> has good bullets, extract them
-        if len(data["answer"]) < 50 and think_content:
-            bullets = re.findall(r'^\s*[-\d.]+\s*(.+)$', think_content, re.MULTILINE)
-            if len(bullets) >= 3:
-                data["answer"] = "Based on the patient data:\n" + "\n".join(f"- {b.strip()}" for b in bullets[:12])
+        # 7. Enrich reasoning with think content if reasoning is empty/short
+        if think_content and len(data["reasoning"]) < 50:
+            data["reasoning"] = think_content[:500]  # Use think content as reasoning
 
-        # 8. Ultimate fallback: Use cleaned full text
+        # 8. Rescue answer from think content if answer is empty/short
+        if len(data["answer"]) < 30 and think_content:
+            bullets = re.findall(r'[-*]\s*(.+?)(?:\n|$)', think_content)
+            if bullets:
+                data["answer"] = "Based on the patient data:\n" + "\n".join(f"- {b.strip()}" for b in bullets[:10])
+
+        # 9. Ultimate fallback: Use the clean response
         if not data["answer"]:
-            fallback = re.sub(r'<[^>]+>.*?</[^>]+>', '', clean_str, flags=re.DOTALL)
-            fallback = re.sub(r'\[(?:REASONING|QUESTIONS)\].*', '', fallback, flags=re.DOTALL | re.IGNORECASE)
-            data["answer"] = fallback.strip() or "Analysis complete. Please review."
+            # Remove any matched sections from fallback
+            fallback = clean_str
+            for m in [r_match, q_match]:
+                if m:
+                    try: fallback = fallback.replace(m.group(0), '')
+                    except: pass
+            fallback = fallback.strip()
+            if fallback:
+                data["answer"] = fallback
+            else:
+                data["answer"] = "Analysis complete. Please review the patient data."
 
         return data
 
