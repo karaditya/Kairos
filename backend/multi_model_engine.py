@@ -1,11 +1,11 @@
 """
 Multi-Model Reasoning Engine - Professional LLM Engine for Medical Triage
 
-FINAL ARCHITECTURE: XML TAGGING (The "Universal" Format)
-1. Input: Grounded & Sorted.
-2. Prompting: XML-Based (No JSON fragility).
-3. Parsing: Regex Tag Extraction (Robust to formatting errors).
-4. Features: PDF Generation & Citation preserved.
+FINAL ARCHITECTURE: ADAPTIVE + ROLE-BASED
+1. Input: Grounded & Sorted Patient Data.
+2. Prompting: Role-Based (Senior MD vs Patient vs User) & Adaptive (XML/Brackets).
+3. Parsing: Universal Regex.
+4. Safety: Factual Grounding Enforced.
 """
 
 import os
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 LLM_LOG_PATH = os.path.join(os.path.dirname(__file__), "backend.log")
 
 from model_registry import (
-    SUPPORTED_MODELS, ModelConfig, get_model_config, get_all_models, model_to_dict, DEFAULT_MODEL_ID,
+    SUPPORTED_MODELS, ModelConfig, get_model_config, get_all_models, model_to_dict, DEFAULT_MODEL_ID, PromptStyle,
 )
 
 # =============================================================================
@@ -66,9 +66,6 @@ class MultiModelEngine:
         self._total_inferences = 0
         self.n_gpu_layers = int(os.environ.get("N_GPU_LAYERS", "-1"))
         self.n_threads = int(os.environ.get("N_THREADS", "6"))
-
-        # NOTE: We removed self.json_grammar because XML does not need it.
-        # This makes the engine lighter and faster.
 
         if auto_load:
             self._try_load_default_model()
@@ -117,9 +114,15 @@ class MultiModelEngine:
                 self._current_model = None
 
     def switch_model(self, model_id: str) -> bool: return self.load_model(model_id)
-    
+
     @property
     def is_loaded(self) -> bool: return self._current_model is not None
+
+    @property
+    def _prompt_style(self) -> PromptStyle:
+        if self._current_model:
+            return self._current_model.config.prompt_style
+        return PromptStyle.STRUCTURED
 
     def get_current_model(self) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -162,7 +165,6 @@ class MultiModelEngine:
         if not answers: lines.append(" - No specific symptoms recorded.")
         for key, val in answers.items():
             readable_key = key.replace("_", " ").title()
-            # Extract label from dict values, handle booleans nicely
             if isinstance(val, dict):
                 display_val = val.get("label", val.get("value", str(val)))
             elif isinstance(val, bool):
@@ -184,11 +186,17 @@ class MultiModelEngine:
         return "\n".join(lines)
 
     # =========================================================================
-    # 1. XML-BASED GENERATION (The "Universal Adapter")
+    # 1. ADAPTIVE + ROLE-BASED PROMPTING
     # =========================================================================
 
-    def _construct_xml_system_prompt(self, patient_text_card: str) -> str:
-        return (
+    def _construct_adaptive_system_prompt(self, patient_text_card: str) -> str:
+        """
+        Builds a system prompt tailored to the active model's capabilities.
+        Separates 'Logic' from 'Structure' to prevent template echoing.
+        """
+
+        # 1. THE BASE (Context & Grounding)
+        base_prompt = (
             "You are an expert Clinical Triage AI. "
             "Your goal is to answer the user's request based strictly on the PATIENT CARD.\n\n"
             "PATIENT CARD:\n"
@@ -196,103 +204,119 @@ class MultiModelEngine:
             "--- FACTUAL GROUNDING (CRITICAL) ---\n"
             "- ONLY state facts explicitly listed in the PATIENT CARD above.\n"
             "- NEVER invent, assume, or infer symptoms, values, or history not provided.\n"
-            "- If data is missing, say 'not reported' - do NOT guess.\n"
-            "- Quote exact values (e.g., 'severity 8/10', 'left side') when referencing data.\n\n"
-            "--- INSTRUCTIONS ---\n"
-            "You must generate a response in valid XML using the exact tags below.\n\n"
-            "1. <reasoning>\n"
-            "   - **Audience:** Senior Doctor (Internal Note).\n"
-            "   - **Content:** Explain the risk factors. Why is this Red/Amber? Connect symptoms to the protocol.\n"
-            "   - **Rule:** Do NOT show this to the user.\n\n"
-            "2. <answer>\n"
-            "   - **Audience:** The User (The final display text).\n"
-            "   - **Content:** The direct answer to the prompt. If asking for a list, provide a Markdown bullet list here.\n"
-            "   - **Rule:** Do NOT summarize what you just wrote in reasoning. Just give the answer.\n\n"
-            "3. <questions>\n"
-            "   - **Audience:** The Patient (Follow-up).\n"
-            "   - **Content:** 3 short, specific questions to clarify the condition.\n\n"
-            "--- REQUIRED OUTPUT FORMAT ---\n"
-            "<reasoning>\n"
-            "... (Clinical logic goes here) ...\n"
-            "</reasoning>\n"
-            "<answer>\n"
-            "... (The detailed response/list goes here) ...\n"
-            "</answer>\n"
-            "<questions>\n"
-            "- Question 1\n"
-            "- Question 2\n"
-            "- Question 3\n"
-            "</questions>"
+            "- If data is missing, say 'not reported'.\n"
+            "- Quote exact values (e.g., 'severity 8/10') when referencing data.\n\n"
         )
-    
-    def _parse_xml_output(self, raw_str: str) -> Dict[str, Any]:
-        data = {
-            "reasoning": "",
-            "answer": "",
-            "follow_up_questions": []
-        }
+
+        # 2. THE ADAPTIVE LOGIC (Logic vs Template)
         
-        # 1. Clean Deepseek/Think tags first (remove completely)
+        # --- PATH A: LLAMA / SIMPLE MODELS (Brackets) ---
+        if self._prompt_style == PromptStyle.SIMPLE:
+            return base_prompt + (
+                "--- SECTION ROLES ---\n"
+                "1. [REASONING]: Internal technical note. Explain the risk level (Red/Amber/Green) based on symptoms.\n"
+                "2. [ANSWER]: The final response to the user. Use Markdown bullet points for lists. Be clear and direct.\n"
+                "3. [QUESTIONS]: List exactly 3 specific clinical questions to ask the patient.\n\n"
+                "--- REQUIRED OUTPUT FORMAT ---\n"
+                "Use exactly this structure (replace '...' with your content):\n\n"
+                "[REASONING]\n"
+                "...\n\n"
+                "[ANSWER]\n"
+                "...\n\n"
+                "[QUESTIONS]\n"
+                "- ...\n"
+                "- ...\n"
+                "- ..."
+            )
+        
+        # --- PATH B: DEEPSEEK / MISTRAL (XML) ---
+        else:
+            return base_prompt + (
+                "--- TAG ROLES ---\n"
+                "1. <reasoning>: Internal technical note. Analyze why the patient fits a specific risk band.\n"
+                "2. <answer>: The final response to the user. Use Markdown bullet points for lists. Do not repeat the reasoning.\n"
+                "3. <questions>: List exactly 3 specific clinical questions to ask the patient.\n\n"
+                "--- REQUIRED XML OUTPUT ---\n"
+                "Use exactly this structure (replace '...' with your content):\n\n"
+                "<reasoning>\n"
+                "...\n"
+                "</reasoning>\n"
+                "<answer>\n"
+                "...\n"
+                "</answer>\n"
+                "<questions>\n"
+                "- ...\n"
+                "- ...\n"
+                "- ...\n"
+                "</questions>"
+            )
+        
+    def _parse_adaptive_output(self, raw_str: str) -> Dict[str, Any]:
+        """
+        Universal Parser: Handles XML, Brackets, and bold headers.
+        """
+        data = {"reasoning": "", "answer": "", "follow_up_questions": []}
+
+        # 1. Clean model-specific artifacts
         clean_str = re.sub(r'<think>.*?</think>', '', raw_str, flags=re.DOTALL)
-        
-        # 2. Extract Reasoning (Non-greedy)
+        clean_str = re.sub(r'```[\w]*\n?', '', clean_str)
+
+        # 2. Try XML tags first (The Gold Standard)
         r_match = re.search(r'<reasoning>(.*?)</reasoning>', clean_str, re.DOTALL | re.IGNORECASE)
+        a_match = re.search(r'<answer>(.*?)</answer>', clean_str, re.DOTALL | re.IGNORECASE)
+        q_match = re.search(r'<questions>(.*?)</questions>', clean_str, re.DOTALL | re.IGNORECASE)
+
+        # 3. Fallback: Robust Bracket/Header Matching
+        if not a_match:
+            r_match = r_match or re.search(
+                r'(?:\[|\*\*\[)REASONING(?:\]|\]\*\*)\s*(.*?)(?=(?:\[|\*\*\[)ANSWER|(?:\[|\*\*\[)QUESTIONS|$)', 
+                clean_str, re.DOTALL | re.IGNORECASE
+            )
+            a_match = re.search(
+                r'(?:\[|\*\*\[)ANSWER(?:\]|\]\*\*)\s*(.*?)(?=(?:\[|\*\*\[)QUESTIONS|$)', 
+                clean_str, re.DOTALL | re.IGNORECASE
+            )
+            q_match = q_match or re.search(
+                r'(?:\[|\*\*\[)QUESTIONS(?:\]|\]\*\*)\s*(.*?)$', 
+                clean_str, re.DOTALL | re.IGNORECASE
+            )
+
+        # 4. Extract and Clean Values
         if r_match:
             data["reasoning"] = r_match.group(1).strip()
-
-        # 3. Extract Answer (The Priority)
-        # We look for the tag explicitly.
-        a_match = re.search(r'<answer>(.*?)</answer>', clean_str, re.DOTALL | re.IGNORECASE)
         if a_match:
             data["answer"] = a_match.group(1).strip()
-        else:
-            # FAILSAFE: If no <answer> tag is found, we assume the model failed formatting.
-            # We take the whole string but remove the <reasoning> and <questions> parts to clean it.
-            fallback = clean_str
-            fallback = re.sub(r'<reasoning>.*?</reasoning>', '', fallback, flags=re.DOTALL)
-            fallback = re.sub(r'<questions>.*?</questions>', '', fallback, flags=re.DOTALL)
-            data["answer"] = fallback.strip()
-
-        # 4. Extract Questions
-        q_match = re.search(r'<questions>(.*?)</questions>', clean_str, re.DOTALL | re.IGNORECASE)
         if q_match:
-            raw_qs = q_match.group(1).strip()
-            # Split by newlines
-            lines = raw_qs.split('\n')
-            clean_qs = []
-            for line in lines:
-                # Cleaning Logic:
-                # Remove markdown bullets (- or *)
-                # Remove numbering (1. or 1))
-                # Remove "Question 1:" prefixes
-                cleaned_line = re.sub(r'^[\d\-\.\)\*]*(?:Question\s*\d*[:\.]?)?\s*', '', line.strip(), flags=re.IGNORECASE)
-                
-                if len(cleaned_line) > 5:
-                    clean_qs.append(cleaned_line)
-            data["follow_up_questions"] = clean_qs
+            data["follow_up_questions"] = self._extract_questions(q_match.group(1))
 
-        # Final Cleanup: If "Answer" is empty (rare), put a default message
+        # 5. Ultimate Fallback
         if not data["answer"]:
-            data["answer"] = "Analysis complete. Please review the reasoning or questions."
+            fallback = clean_str
+            for pattern in [r'<reasoning>.*?</reasoning>', r'<questions>.*?</questions>',
+                           r'\[REASONING\].*?(?=\[|\Z)', r'\[QUESTIONS\].*']:
+                fallback = re.sub(pattern, '', fallback, flags=re.DOTALL | re.IGNORECASE)
+            data["answer"] = fallback.strip() or "Analysis complete. Please review output."
 
         return data
-    
+
+    def _extract_questions(self, raw_qs: str) -> List[str]:
+        """Helper to clean bulleted questions."""
+        clean_qs = []
+        for line in raw_qs.split('\n'):
+            cleaned = re.sub(r'\[.*?\]', '', line) 
+            cleaned = re.sub(r'^[\d\-\.\)\*]*(?:Question\s*\d*[:\.]?)?\s*', '', cleaned.strip(), flags=re.IGNORECASE)
+            if len(cleaned) > 5:
+                clean_qs.append(cleaned)
+        return clean_qs
 
     def _validate_response_schema(self, data: Dict[str, Any]) -> Dict[str, Any]:
         defaults = ["Is the pain worsening?", "Any fever?", "History of heart issues?", "Any nausea?", "Short of breath?"]
-        
-        # Ensure list structure
         questions = data.get("follow_up_questions", [])
         if not isinstance(questions, list): questions = []
-        
-        # Filter junk
         valid_qs = [q for q in questions if isinstance(q, str) and len(q) > 5]
-        
-        # Fill gaps
         while len(valid_qs) < 3:
             choice = random.choice(defaults)
             if choice not in valid_qs: valid_qs.append(choice)
-        
         data["follow_up_questions"] = valid_qs[:3]
         return data
 
@@ -302,85 +326,66 @@ class MultiModelEngine:
                 return {"answer": "Engine Error: Model not loaded.", "reasoning": "", "follow_up_questions": []}
 
             card = self._flatten_patient_data(patient_context)
-            sys_prompt = self._construct_xml_system_prompt(card)
+            sys_prompt = self._construct_adaptive_system_prompt(card)
             
-            # --- CHANGE: Use Message List, not Raw String ---
             messages = [
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": user_query}
             ]
 
             try:
-                # --- CHANGE: Use create_chat_completion ---
-                # This automatically applies the correct template (Llama-3, ChatML, Mistral, etc.)
                 output = self._current_model.instance.create_chat_completion(
                     messages=messages,
                     max_tokens=1500,
                     temperature=0.1,
                     top_p=0.90,
                     repeat_penalty=1.1,
-                    stop=["<|im_end|>", "<|im_start|>", "</s>", "<|eot_id|>"], # Covers most models
-                    # stream=False is default
+                    stop=["<|im_end|>", "<|im_start|>", "</s>", "<|eot_id|>"], 
                 )
                 
-                # Extract content safely
                 raw = output['choices'][0]['message']['content']
-                log_llm_output(raw, context="OUTPUT (Chat XML)")
+                log_llm_output(raw, context="OUTPUT (Chat)")
                 
-                parsed_data = self._parse_xml_output(raw)
+                parsed_data = self._parse_adaptive_output(raw)
                 return self._validate_response_schema(parsed_data)
                 
             except Exception as e:
                 logger.error(f"Inference error: {e}")
-                return {"answer": "Error.", "reasoning": str(e), "follow_up_questions": []}
+                return {"answer": "Error during generation.", "reasoning": str(e), "follow_up_questions": []}
             
     # =========================================================================
     # 2. RAW TEXT GENERATION (PDF)
     # =========================================================================
 
     def _generate_raw_text(self, system_prompt: str, user_prompt: str, force_prefix: str = "") -> str:
-        """
-        Generates plain text (non-XML) for PDF reports.
-        Uses create_chat_completion to ensure compatibility with Llama-3/Deepseek.
-        """
         with self._lock:
             if not self._current_model: 
                 return "Error: Model not loaded."
             
-            # 1. Use the Message Format (Fixes "Garbage Output" on Llama-3)
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
             
-            # 2. Handle the "Force Prefix" (e.g., "CLINICAL SUMMARY:")
-            # Prefilling is tricky with Chat APIs, so we append it to the user prompt instructions.
             if force_prefix:
                 messages[1]["content"] += f"\n\nIMPORTANT: Start your response immediately with the header: '{force_prefix}'"
 
             try:
-                # 3. Call the Engine
                 output = self._current_model.instance.create_chat_completion(
                     messages=messages,
-                    max_tokens=2500,  # PDFs need more space
-                    temperature=0.2,  # Keep it professional/dry
+                    max_tokens=2500,
+                    temperature=0.2,
                     top_p=0.95,
                     stop=["<|im_end|>", "<|im_start|>", "<|eot_id|>"]
                 )
                 
-                # 4. Extract and Clean
                 raw_response = output['choices'][0]['message']['content']
-                
-                # Deepseek Cleaner (Just in case it "thinks" during a PDF gen)
                 clean_response = re.sub(r'<think>.*?</think>', '', raw_response, flags=re.DOTALL)
-                
                 return clean_response.strip()
 
             except Exception as e:
                 logger.error(f"PDF Gen Error: {e}")
                 return "Error generating clinical text. Please try again."
-            
-            
 
     def generate_pdf_summary(self, clinical_state: Dict[str, Any], model_id: Optional[str] = None) -> Dict[str, str]:
         if model_id: self.switch_model(model_id)
@@ -390,14 +395,13 @@ class MultiModelEngine:
         system_prompt = (
             "You are a professional Medical Scribe AI. "
             "Write a formal Clinical Referral Letter based ONLY on the provided data.\n"
-            "FACTUAL GROUNDING (CRITICAL):\n"
+            "FACTUAL GROUNDING:\n"
             "- ONLY include facts explicitly stated in PATIENT DATA.\n"
-            "- NEVER invent symptoms, history, or values not provided.\n"
-            "- Use exact values from the data (e.g., 'pain severity 8/10').\n"
+            "- Use exact values (e.g., 'pain severity 8/10').\n"
             "FORMATTING RULES:\n"
             "1. Use EXACT headers: 'CLINICAL SUMMARY:', 'DIAGNOSIS:', 'CONCLUSION:'.\n"
-            "2. Do NOT use markdown bold (**), italics, or hashes (#).\n"
-            "3. Write in plain paragraphs."
+            "2. Do NOT use bold (**), italics, or hashes (#). Write in plain text.\n"
+            "3. Write in continuous paragraphs (prose)."
         )
         
         user_prompt = (
