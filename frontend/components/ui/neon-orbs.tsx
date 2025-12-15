@@ -1,11 +1,8 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import Link from "next/link"
-import { Button } from "@/components/ui/button"
-import { ArrowRight, Users } from "lucide-react"
 
-export default function Home() {
+export function NeonOrbs() {
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
@@ -96,71 +93,6 @@ export default function Home() {
           <div className="beam-container beam-spin-7-reverse">
             <div className="beam-light" />
           </div>
-        </div>
-      </div>
-
-      {/* Center content */}
-      <div className="relative z-10 text-center text-indigo-900 dark:text-white transition-colors duration-500 px-4 -translate-y-16 md:-translate-y-20">
-        <h1
-          className={`text-5xl sm:text-6xl md:text-8xl font-extralight tracking-[0.3em] mb-6 transition-all duration-1000 ease-out ${
-            mounted
-              ? "opacity-100 translate-y-0 blur-0"
-              : "opacity-0 translate-y-8 blur-sm"
-          }`}
-          style={{ transitionDelay: "500ms" }}
-        >
-          {"KAIROS".split("").map((char, i) => (
-            <span
-              key={i}
-              className={`inline-block transition-all duration-500 ${
-                mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"
-              }`}
-              style={{ transitionDelay: `${800 + i * 80}ms` }}
-            >
-              {char}
-            </span>
-          ))}
-        </h1>
-
-        <p
-          className={`text-lg sm:text-xl md:text-2xl font-light tracking-[0.15em] text-indigo-600/70 dark:text-white/60 mb-12 transition-all duration-1000 ease-out ${
-            mounted
-              ? "opacity-100 translate-y-0 blur-0"
-              : "opacity-0 translate-y-4 blur-sm"
-          }`}
-          style={{ transitionDelay: "1400ms" }}
-        >
-          THE FUTURE OF ADMIN IS NOW HERE
-        </p>
-
-        {/* Navigation buttons */}
-        <div
-          className={`flex flex-col sm:flex-row gap-4 justify-center items-center transition-all duration-1000 ease-out ${
-            mounted
-              ? "opacity-100 translate-y-0"
-              : "opacity-0 translate-y-6"
-          }`}
-          style={{ transitionDelay: "1800ms" }}
-        >
-          <Link href="/triage">
-            <Button
-              size="lg"
-              className="bg-indigo-600 hover:bg-indigo-700 dark:bg-blue-600 dark:hover:bg-blue-700 text-white px-8 py-6 text-lg rounded-full shadow-lg shadow-indigo-500/25 dark:shadow-blue-500/25 transition-all duration-300 hover:scale-105"
-            >
-              Start Triage
-              <ArrowRight className="ml-2 h-5 w-5" />
-            </Button>
-          </Link>
-          <Link href="/staff">
-            <Button
-              size="lg"
-              variant="outline"
-              className="border-indigo-300 dark:border-white/30 text-indigo-700 dark:text-white/80 hover:bg-indigo-50 dark:hover:bg-white/10 px-8 py-6 text-lg rounded-full transition-all duration-300 hover:scale-105"
-            >
-              <Users className="mr-2 h-5 w-5" />
-              Staff Portal
-            </Button>
-          </Link>
         </div>
       </div>
 
