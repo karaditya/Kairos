@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, useRef } from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -66,6 +66,8 @@ function HeroSection() {
 
   return (
     <section className="relative w-full min-h-screen overflow-hidden flex items-center justify-center bg-slate-100 dark:bg-[#050a18] transition-colors duration-500">
+      {/* Bottom gradient fade for smooth transition */}
+      <div className="absolute bottom-0 left-0 right-0 h-48 bg-gradient-to-t from-white dark:from-zinc-900 to-transparent z-20 pointer-events-none" />
       {/* Top-left orb */}
       <div
         className={`absolute transition-all duration-1000 ease-out ${
@@ -298,6 +300,8 @@ function HeroSection() {
 // Trusted By Section with Sparkles
 function TrustedBySection() {
   const [isDark, setIsDark] = useState(false)
+  const [isVisible, setIsVisible] = useState(false)
+  const sectionRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
     const checkDark = () => {
@@ -309,9 +313,33 @@ function TrustedBySection() {
     return () => observer.disconnect()
   }, [])
 
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setIsVisible(true)
+        }
+      },
+      { threshold: 0.1 }
+    )
+    if (sectionRef.current) {
+      observer.observe(sectionRef.current)
+    }
+    return () => observer.disconnect()
+  }, [])
+
   return (
-    <section className="relative w-full overflow-hidden bg-white dark:bg-zinc-900 transition-colors duration-500">
-      <div className="mx-auto pt-32 w-full max-w-2xl px-4">
+    <section
+      ref={sectionRef}
+      className="relative w-full overflow-hidden bg-white dark:bg-zinc-900 transition-colors duration-500"
+    >
+      {/* Top gradient fade for smooth transition from hero */}
+      <div className="absolute top-0 left-0 right-0 h-32 bg-gradient-to-b from-white dark:from-zinc-900 to-transparent z-10 pointer-events-none" />
+      <div
+        className={`mx-auto pt-32 w-full max-w-2xl px-4 transition-all duration-1000 ease-out ${
+          isVisible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-10"
+        }`}
+      >
         <div className="text-center text-3xl">
           <span className="text-indigo-900 dark:text-blue-200">
             Trusted by experts.
@@ -360,9 +388,34 @@ function TrustedBySection() {
 
 // Contact Section
 function ContactSection() {
+  const [isVisible, setIsVisible] = useState(false)
+  const sectionRef = useRef<HTMLElement>(null)
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setIsVisible(true)
+        }
+      },
+      { threshold: 0.1 }
+    )
+    if (sectionRef.current) {
+      observer.observe(sectionRef.current)
+    }
+    return () => observer.disconnect()
+  }, [])
+
   return (
-    <section className="relative w-full py-20 px-4 bg-white dark:bg-zinc-900 transition-colors duration-500">
-      <div className="mx-auto max-w-5xl">
+    <section
+      ref={sectionRef}
+      className="relative w-full py-20 px-4 bg-white dark:bg-zinc-900 transition-colors duration-500"
+    >
+      <div
+        className={`mx-auto max-w-5xl transition-all duration-1000 ease-out ${
+          isVisible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-10"
+        }`}
+      >
         {/* Kairos branding above contact */}
         <div className="text-center mb-12">
           <h2 className="text-4xl sm:text-5xl md:text-6xl font-extralight tracking-[0.2em] text-indigo-900 dark:text-white mb-4">
@@ -424,24 +477,50 @@ function ContactSection() {
 
 // Horizon Glow Footer
 function HorizonGlowFooter() {
+  const [isVisible, setIsVisible] = useState(false)
+  const footerRef = useRef<HTMLElement>(null)
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setIsVisible(true)
+        }
+      },
+      { threshold: 0.1 }
+    )
+    if (footerRef.current) {
+      observer.observe(footerRef.current)
+    }
+    return () => observer.disconnect()
+  }, [])
+
   return (
-    <footer className="relative min-h-[300px] w-full">
-      {/* Dark Horizon Glow */}
+    <footer ref={footerRef} className="relative min-h-[300px] w-full">
+      {/* Top gradient for smooth transition */}
+      <div className="absolute top-0 left-0 right-0 h-24 bg-gradient-to-b from-white dark:from-zinc-900 to-transparent z-10 pointer-events-none" />
+
+      {/* Light mode horizon glow */}
       <div
-        className="absolute inset-0 z-0"
+        className="absolute inset-0 z-0 dark:hidden"
         style={{
-          background: "radial-gradient(125% 125% at 50% 10%, #ffffff 40%, #e0e7ff 100%)",
+          background: "radial-gradient(ellipse 125% 125% at 50% 10%, #ffffff 40%, #e0e7ff 100%)",
         }}
       />
+      {/* Dark mode horizon glow */}
       <div
-        className="absolute inset-0 z-0 dark:block hidden"
+        className="absolute inset-0 z-0 hidden dark:block"
         style={{
-          background: "radial-gradient(125% 125% at 50% 10%, #000000 40%, #0d1a36 100%)",
+          background: "radial-gradient(ellipse 125% 125% at 50% 10%, #18181b 40%, #0d1a36 100%)",
         }}
       />
 
       {/* Footer content */}
-      <div className="relative z-10 flex flex-col items-center justify-center min-h-[300px] px-4 text-center">
+      <div
+        className={`relative z-10 flex flex-col items-center justify-center min-h-[300px] px-4 text-center transition-all duration-1000 ease-out ${
+          isVisible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-10"
+        }`}
+      >
         <h3 className="text-3xl sm:text-4xl font-extralight tracking-[0.2em] text-indigo-900 dark:text-white mb-4">
           KAIROS
         </h3>
