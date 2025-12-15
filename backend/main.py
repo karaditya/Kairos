@@ -45,7 +45,7 @@ STAFF_PIN = os.environ.get("STAFF_PIN", "1234")  # Default PIN for demo
 
 class StartSessionRequest(BaseModel):
     language: str = "en"
-    
+
 class StartSessionResponse(BaseModel):
     session_id: str
     first_question: Dict[str, Any]
@@ -118,41 +118,46 @@ reasoning_engine: MultiModelEngine = None
 async def lifespan(app: FastAPI):
     """Initialize components on startup, cleanup on shutdown."""
     global db, triage_engine, risk_engine, reasoning_engine
-    
-    print("🏥 Starting Offline Triage MVP...")
-    
+
+    print("Starting Offline Triage MVP...")
+
     # Initialize database
     db = Database(DB_PATH)
     db.initialize()
-    print(f"  ✓ Database initialized: {DB_PATH}")
-    
+    print(f"  Database initialized: {DB_PATH}")
+
     # Initialize triage engine
     triage_engine = TriageEngine(CONFIG_DIR)
-    print(f"  ✓ Triage engine loaded: {len(triage_engine.trees)} complaint trees")
-    
+    print(f"  Triage engine loaded: {len(triage_engine.trees)} complaint trees")
+
     # Initialize risk engine
     risk_engine = RiskEngine(CONFIG_DIR)
-    print(f"  ✓ Risk engine loaded: {len(risk_engine.rules)} red-flag rules")
-    
+    print(f"  Risk engine loaded: {len(risk_engine.rules)} red-flag rules")
+
     # Initialize multi-model reasoning engine
     models_dir = os.path.dirname(MODEL_PATH)
     reasoning_engine = get_engine(models_dir=models_dir, reinitialize=True)
+
     if reasoning_engine.is_loaded:
         current = reasoning_engine.get_current_model()
-        print(f"  ✓ LLM loaded: {current['name']} ({current['model_id']})")
+        if current:
+            print(f"  LLM loaded: {current['name']} ({current['model_id']})")
+        else:
+            stats = reasoning_engine.get_engine_stats()
+            print(f"  LLM loaded: {stats.get('model_loaded', 'Unknown')}")
     else:
-        print(f"  ⚠ No LLM loaded (will use fallback mode)")
+        print(f"  No LLM loaded (will use fallback mode)")
 
     # List available models
-    available = [m for m in reasoning_engine.get_available_models() if m["is_available"]]
-    print(f"  ✓ Available models: {len(available)}")
-    
-    print("🚀 Triage MVP ready!")
+    available = [m for m in reasoning_engine.get_available_models() if m.get("is_available")]
+    print(f"  Available models: {len(available)}")
+
+    print("Triage MVP ready!")
     print(f"   Patient interface: http://localhost:8000/")
     print(f"   Staff interface: http://localhost:8000/staff")
-    
+
     yield
-    
+
     # Cleanup
     print("Shutting down...")
     if reasoning_engine:
@@ -186,7 +191,7 @@ app.add_middleware(
 async def start_session(request: StartSessionRequest):
     """Initialize a new patient session."""
     session_id = str(uuid.uuid4())
-    
+
     # Create session in database
     session = Session(
         id=session_id,
@@ -198,7 +203,7 @@ async def start_session(request: StartSessionRequest):
         demographics={}
     )
     db.create_session(session)
-    
+
     # Return demographics question
     first_question = {
         "id": "demographics",
@@ -210,7 +215,7 @@ async def start_session(request: StartSessionRequest):
             {"id": "pregnant", "label": get_text("pregnant", request.language), "type": "yesno", "conditional": "sex=female"}
         ]
     }
-    
+
     return StartSessionResponse(
         session_id=session_id,
         first_question=first_question,
@@ -223,7 +228,7 @@ async def submit_demographics(session_id: str, demographics: DemographicsRequest
     session = db.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     # Store demographics
     session.demographics = {
         "age": demographics.age,
@@ -232,10 +237,10 @@ async def submit_demographics(session_id: str, demographics: DemographicsRequest
     }
     session.status = "chief_complaint"
     db.update_session(session)
-    
+
     # Return chief complaint selection
     complaints = triage_engine.get_available_complaints(session.language)
-    
+
     return {
         "next_question": {
             "id": "chief_complaint",
@@ -254,26 +259,26 @@ async def submit_chief_complaint(session_id: str, complaint: Dict[str, Any]):
     session = db.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     complaint_id = complaint.get("complaint_id", "general")
     free_text = complaint.get("free_text", "")
-    
+
     # Store complaint
     session.answers["chief_complaint"] = complaint_id
     session.answers["chief_complaint_text"] = free_text
-    
+
     # Load triage tree for this complaint
     tree = triage_engine.get_tree(complaint_id)
     if not tree:
         tree = triage_engine.get_tree("general")
-    
+
     # Get first question
     first_q = triage_engine.get_first_question(tree)
     session.current_question_id = first_q["id"]
     session.status = "triage"
     session.answers["_tree_id"] = tree["id"]
     db.update_session(session)
-    
+
     return {
         "next_question": localize_question(first_q, session.language),
         "progress": 0.15,
@@ -286,39 +291,39 @@ async def submit_answer(session_id: str, request: AnswerRequest):
     session = db.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     # Store answer
     session.answers[request.question_id] = request.answer
-    
+
     # Get current tree
     tree_id = session.answers.get("_tree_id", "general")
     tree = triage_engine.get_tree(tree_id)
-    
+
     # Determine next question
     next_q = triage_engine.get_next_question(
-        tree, 
-        request.question_id, 
+        tree,
+        request.question_id,
         request.answer,
         session.answers
     )
-    
+
     # Calculate progress
     total_questions = triage_engine.count_questions(tree)
     answered = len([k for k in session.answers.keys() if not k.startswith("_")])
     progress = min(0.15 + (answered / total_questions) * 0.7, 0.85)
-    
+
     if next_q is None:
         # Triage complete - compute risk
         session.status = "complete"
         session.current_question_id = None
-        
+
         # Compute risk band
         risk_result = risk_engine.compute_risk(session.demographics, session.answers)
         session.answers["_risk_band"] = risk_result["band"]
         session.answers["_triggered_rules"] = risk_result["triggered_rules"]
-        
+
         db.update_session(session)
-        
+
         return AnswerResponse(
             next_question=None,
             progress=1.0,
@@ -328,7 +333,7 @@ async def submit_answer(session_id: str, request: AnswerRequest):
     else:
         session.current_question_id = next_q["id"]
         db.update_session(session)
-        
+
         return AnswerResponse(
             next_question=localize_question(next_q, session.language),
             progress=progress,
@@ -341,18 +346,18 @@ async def get_summary(session_id: str):
     session = db.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     if session.status != "complete":
         raise HTTPException(status_code=400, detail="Triage not complete")
-    
+
     # Get risk data
     risk_band = session.answers.get("_risk_band", "amber")
     triggered_rules = session.answers.get("_triggered_rules", [])
-    
+
     # Generate ticket ID
     ticket_id = generate_ticket_id(session_id)
-    
-    # Use TRM-style reasoning to generate summary
+
+    # Build clinical state for LLM
     clinical_state = {
         "demographics": session.demographics,
         "chief_complaint": session.answers.get("chief_complaint", "unknown"),
@@ -360,17 +365,22 @@ async def get_summary(session_id: str):
         "risk_band": risk_band,
         "triggered_rules": triggered_rules
     }
-    
-    # Run reasoning loop
-    summary, key_flags = reasoning_engine.generate_summary(clinical_state)
-    
+
+    # Use the engine to generate a summary via answer_staff_question
+    summary_prompt = "Provide a brief 2-3 sentence summary of this patient's condition and triage priority."
+    ai_result = reasoning_engine.answer_staff_question(summary_prompt, clinical_state)
+    summary_text = ai_result.get("answer", "Triage assessment complete. Please proceed as directed.")
+
+    # Extract key flags from triggered rules
+    key_flags = reasoning_engine._extract_key_flags(clinical_state)
+
     # Waiting instruction based on risk
     waiting_instructions = {
         "red": get_text("wait_red", session.language),
         "amber": get_text("wait_amber", session.language),
         "green": get_text("wait_green", session.language)
     }
-    
+
     # Create case record for staff
     case = Case(
         id=str(uuid.uuid4()),
@@ -380,20 +390,20 @@ async def get_summary(session_id: str):
         risk_band=risk_band,
         demographics=session.demographics,
         answers=session.answers,
-        summary=summary,
+        summary=summary_text,
         key_flags=key_flags,
         triggered_rules=triggered_rules,
         status="pending"
     )
     db.create_case(case)
-    
+
     return SummaryResponse(
         session_id=session_id,
         ticket_id=ticket_id,
         risk_band=risk_band,
         risk_color={"red": "#dc3545", "amber": "#ffc107", "green": "#28a745"}[risk_band],
         triggered_rules=[{"rule": r["id"], "description": r["description"]} for r in triggered_rules],
-        summary=summary,
+        summary=summary_text,
         key_flags=key_flags,
         waiting_instruction=waiting_instructions.get(risk_band, waiting_instructions["amber"]),
         demographics=session.demographics,
@@ -428,7 +438,8 @@ async def generate_summary_pdf(session_id: str):
         "triggered_rules": triggered_rules
     }
 
-    # Generate extended summary with diagnosis and conclusion using higher token limit
+    # Generate extended summary with diagnosis and conclusion using the engine
+    # Returns {"summary": ..., "diagnosis": ..., "conclusion": ...}
     pdf_sections = reasoning_engine.generate_pdf_summary(clinical_state)
 
     # Extract key flags
@@ -446,9 +457,9 @@ async def generate_summary_pdf(session_id: str):
         ticket_id=ticket_id,
         risk_band=risk_band,
         demographics=session.demographics,
-        summary=pdf_sections["summary"],
-        diagnosis=pdf_sections["diagnosis"],
-        conclusion=pdf_sections["conclusion"],
+        summary=pdf_sections.get("summary", "Summary unavailable."),
+        diagnosis=pdf_sections.get("diagnosis", "Assessment unavailable."),
+        conclusion=pdf_sections.get("conclusion", "Please consult clinical staff."),
         key_flags=key_flags,
         triggered_rules=[{"rule": r["id"], "description": r["description"]} for r in triggered_rules],
         answers={k: v for k, v in session.answers.items() if not k.startswith("_")},
@@ -478,8 +489,6 @@ def verify_staff_pin(x_staff_pin: str = Header(None)):
 @app.post("/staff/auth")
 async def staff_auth(request: StaffAuthRequest):
     """Authenticate staff with PIN."""
-    print(f"[DEBUG] Auth attempt - Received PIN: '{request.pin}' (len={len(request.pin)}), Expected: '{STAFF_PIN}' (len={len(STAFF_PIN)})")
-    print(f"[DEBUG] PIN match: {request.pin == STAFF_PIN}")
     if request.pin == STAFF_PIN:
         return {"authenticated": True, "token": hashlib.sha256(f"{request.pin}{datetime.now()}".encode()).hexdigest()[:32]}
     raise HTTPException(status_code=401, detail="Invalid PIN")
@@ -510,7 +519,7 @@ async def get_case(case_id: str, _: bool = Depends(verify_staff_pin)):
     case = db.get_case(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    
+
     return {
         "id": case.id,
         "session_id": case.session_id,
@@ -551,12 +560,12 @@ async def staff_ask(case_id: str, request: StaffAskRequestWithModel, _: bool = D
     )
 
     return StaffAskResponse(
-        answer=result["answer"],
-        reasoning=result["reasoning"],
-        has_reasoning=result["has_reasoning"],
-        suggested_questions=result["suggested_questions"],
-        cited_data=result["cited_data"],
-        model_used=result["model_used"],
+        answer=result.get("answer", "No answer generated."),
+        reasoning=result.get("reasoning", ""),
+        has_reasoning=result.get("has_reasoning", bool(result.get("reasoning"))),
+        suggested_questions=result.get("suggested_questions", []),
+        cited_data=result.get("cited_data", []),
+        model_used=result.get("model_used", "Unknown"),
         disclaimer="This is decision support only. Clinical judgment is required for all patient care decisions."
     )
 
@@ -601,10 +610,10 @@ async def get_model_info(model_id: str):
 
     model_info = model_to_dict(config)
     model_info["is_available"] = reasoning_engine._model_exists(model_id)
-    model_info["is_loaded"] = (
-        reasoning_engine._current_model is not None and
-        reasoning_engine._current_model.model_id == model_id
-    )
+
+    current = reasoning_engine._current_model
+    model_info["is_loaded"] = (current is not None and current.model_id == model_id)
+
     return model_info
 
 @app.post("/models/switch", dependencies=[Depends(verify_staff_pin)])
@@ -636,12 +645,6 @@ async def get_model_stats():
     return reasoning_engine.get_engine_stats()
 
 # =============================================================================
-# Static Files & Frontend
-# =============================================================================
-# Note: Frontend is now served by Next.js on port 3000
-# Old HTML routes removed after migrating to Next.js
-
-# =============================================================================
 # Helper Functions
 # =============================================================================
 
@@ -661,12 +664,12 @@ TRANSLATIONS = {
         "demographics_prompt": "Por favor proporcione su información:",
         "age": "Edad",
         "sex": "Sexo",
-        "pregnant": "¿Está actualmente embarazada?",
-        "chief_complaint_prompt": "¿Cuál es su principal preocupación hoy?",
+        "pregnant": "Esta actualmente embarazada?",
+        "chief_complaint_prompt": "Cual es su principal preocupacion hoy?",
         "other_complaint": "Otro (por favor describa)",
-        "wait_red": "Por favor diríjase inmediatamente al área de emergencias. Un miembro del personal le asistirá.",
-        "wait_amber": "Por favor espere en el área de espera prioritaria. Será atendido pronto.",
-        "wait_green": "Por favor tome asiento en el área de espera general. Será llamado cuando sea su turno."
+        "wait_red": "Por favor dirijase inmediatamente al area de emergencias. Un miembro del personal le asistira.",
+        "wait_amber": "Por favor espere en el area de espera prioritaria. Sera atendido pronto.",
+        "wait_green": "Por favor tome asiento en el area de espera general. Sera llamado cuando sea su turno."
     }
 }
 

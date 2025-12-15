@@ -1,10 +1,10 @@
 """
 Multi-Model Reasoning Engine - Professional LLM Engine for Medical Triage
 
-FINAL ARCHITECTURE: ADAPTIVE + ROLE-BASED
+HYBRID ARCHITECTURE: ADAPTIVE PROMPTING + JSON GRAMMAR
 1. Input: Grounded & Sorted Patient Data.
-2. Prompting: Role-Based (Senior MD vs Patient vs User) & Adaptive (XML/Brackets).
-3. Parsing: Universal Regex with "Assimilation" Fallback.
+2. Prompting: Role-Based (Senior MD vs Patient vs User) & Adaptive (XML/Brackets/JSON).
+3. Output: JSON grammar for compatible models, regex parsing for others.
 4. Safety: Factual Grounding Enforced.
 """
 
@@ -14,6 +14,7 @@ import threading
 import logging
 import re
 import random
+import json
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime
@@ -26,7 +27,32 @@ from model_registry import (
 )
 
 # =============================================================================
-# 1. LOGGING
+# JSON SCHEMAS (for models that support JSON grammar)
+# =============================================================================
+
+TRIAGE_CHAT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "reasoning": {"type": "string"},
+        "answer": {"type": "string"},
+        "follow_up_questions": {"type": "array", "items": {"type": "string"}}
+    },
+    "required": ["reasoning", "answer", "follow_up_questions"]
+}
+
+MEDICAL_REPORT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "clinical_summary": {"type": "string"},
+        "differential_analysis": {"type": "string"},
+        "risk_factors_identified": {"type": "array", "items": {"type": "string"}},
+        "recommended_actions": {"type": "string"}
+    },
+    "required": ["clinical_summary", "differential_analysis", "risk_factors_identified", "recommended_actions"]
+}
+
+# =============================================================================
+# LOGGING
 # =============================================================================
 
 def log_llm_output(raw_output: str, context: str = ""):
@@ -40,7 +66,7 @@ def log_llm_output(raw_output: str, context: str = ""):
     print(f"[{context}] Generated {len(raw_output)} chars.")
 
 # =============================================================================
-# 2. ENGINE CLASS
+# ENGINE CLASS
 # =============================================================================
 
 try:
@@ -70,7 +96,10 @@ class MultiModelEngine:
         if auto_load:
             self._try_load_default_model()
 
-    # --- Model Loading Logic ---
+    # =========================================================================
+    # MODEL LOADING
+    # =========================================================================
+
     def _try_load_default_model(self):
         if self._model_exists(self.default_model_id):
             self.load_model(self.default_model_id)
@@ -124,6 +153,20 @@ class MultiModelEngine:
             return self._current_model.config.prompt_style
         return PromptStyle.STRUCTURED
 
+    @property
+    def _supports_json_grammar(self) -> bool:
+        """
+        Determine if current model works well with JSON grammar.
+        DeepSeek (THINK_TAGS) uses <think> internally - JSON grammar breaks its reasoning.
+        Llama/SmolLM (SIMPLE) can struggle with strict JSON.
+        STRUCTURED models (Gemma, Phi, etc.) handle JSON grammar well.
+        """
+        if not self._current_model:
+            return False
+        style = self._current_model.config.prompt_style
+        # Only STRUCTURED models reliably support JSON grammar
+        return style == PromptStyle.STRUCTURED
+
     def get_current_model(self) -> Optional[Dict[str, Any]]:
         with self._lock:
             if not self._current_model: return None
@@ -138,17 +181,18 @@ class MultiModelEngine:
     # =========================================================================
     # DATA FLATTENER
     # =========================================================================
+
     def _flatten_patient_data(self, data: Dict[str, Any]) -> str:
         lines = []
         rules = data.get("triggered_rules", [])
         priority_map = {"red": 3, "amber": 2, "green": 1, "check": 0}
-        
+
         sorted_rules = sorted(
-            rules, 
-            key=lambda x: priority_map.get(str(x.get("band")).lower(), 0), 
+            rules,
+            key=lambda x: priority_map.get(str(x.get("band")).lower(), 0),
             reverse=True
         )
-        
+
         highest_band = "LOW"
         if sorted_rules:
             highest_band = sorted_rules[0].get("band", "check").upper()
@@ -159,7 +203,7 @@ class MultiModelEngine:
         demo = data.get("demographics", {})
         lines.append(f"PATIENT: {demo.get('age', '?')} year old {demo.get('sex', 'Unknown')}")
         if demo.get("pregnant"): lines.append("STATUS: Pregnant")
-        
+
         lines.append("\nREPORTED SYMPTOMS:")
         answers = data.get("answers", {})
         if not answers: lines.append(" - No specific symptoms recorded.")
@@ -186,12 +230,17 @@ class MultiModelEngine:
         return "\n".join(lines)
 
     # =========================================================================
-    # 1. ADAPTIVE + ROLE-BASED PROMPTING
+    # ADAPTIVE PROMPTING (Cross-Model Styles + Role-Based Personas)
     # =========================================================================
 
-    def _construct_adaptive_system_prompt(self, patient_text_card: str) -> str:
+    def _construct_adaptive_system_prompt(self, patient_text_card: str, use_json: bool = False) -> str:
         """
-        Model-aware prompting: Each model family gets its natural format.
+        Model-aware prompting with ROLE-BASED PERSONAS:
+        - Reasoning: Senior physician's clinical thinking (technical, diagnostic)
+        - Answer: Patient-friendly explanation (warm, simple, reassuring, non-technical)
+        - Questions: Triage nurse's focused assessment questions (practical, systematic)
+
+        CRITICAL: Personas are embedded via TONE descriptions, not "As a..." to prevent echoing.
         """
         grounding = (
             "You are a clinical triage assistant.\n\n"
@@ -200,50 +249,131 @@ class MultiModelEngine:
             "- ONLY use facts from the patient data above.\n"
             "- NEVER invent symptoms, history, or values.\n"
             "- Quote exact values (e.g., 'pain 8/10').\n"
-            "- DO NOT just repeat the patient card. You must analyze it.\n\n"
+            "- DO NOT repeat instructions or the patient card in your response.\n"
+            "- DO NOT start with phrases like 'Based on...', 'Looking at...', 'I can see...'.\n"
+            "- Jump straight into the content for each section.\n\n"
         )
+
+        # Role-based tone guidance (embedded, not explicit "As a...")
+        role_guidance = (
+            "WRITING STYLE:\n"
+            "- For reasoning: Use medical terminology, discuss differential diagnosis, "
+            "risk factors, and clinical significance.\n"
+            "- For answer: Use simple, reassuring language without medical jargon. "
+            "Be empathetic and explain what happens next.\n"
+            "- For questions: Ask specific, practical questions to assess urgency.\n\n"
+        )
+
+        # If using JSON grammar, request JSON format
+        if use_json:
+            return grounding + role_guidance + (
+                "Respond with ONLY valid JSON, nothing else:\n"
+                '{"reasoning": "...", "answer": "...", "follow_up_questions": ["...", "...", "..."]}'
+            )
 
         # DeepSeek / Qwen: XML works naturally, they use <think> internally
         if self._prompt_style == PromptStyle.THINK_TAGS:
-            return grounding + (
-                "Respond using these XML tags:\n"
-                "<reasoning>Brief clinical analysis (2-3 sentences)</reasoning>\n"
-                "<answer>Your response to the user</answer>\n"
-                "<questions>\n1. First question\n2. Second question\n3. Third question\n</questions>"
+            return grounding + role_guidance + (
+                "Respond using ONLY these XML tags with your actual content:\n"
+                "<reasoning>YOUR CLINICAL ANALYSIS</reasoning>\n"
+                "<answer>YOUR PATIENT RESPONSE</answer>\n"
+                "<questions>\n- YOUR FIRST QUESTION?\n- YOUR SECOND QUESTION?\n- YOUR THIRD QUESTION?\n</questions>"
             )
 
         # Llama / SmolLM: Simple numbered format
-        # Added explicit instruction not to repeat the card
         elif self._prompt_style == PromptStyle.SIMPLE:
-            return grounding + (
-                "Respond in exactly this format:\n\n"
-                "1. REASONING\n"
-                "Brief clinical analysis here.\n\n"
-                "2. ANSWER\n"
-                "Your response to the user here. If listing symptoms, use bullets.\n\n"
-                "3. QUESTIONS\n"
-                "- First follow-up question\n"
-                "- Second follow-up question\n"
-                "- Third follow-up question"
+            return grounding + role_guidance + (
+                "Respond using ONLY these headers with your actual content:\n\n"
+                "##REASONING##\n"
+                "[Your clinical analysis]\n\n"
+                "##ANSWER##\n"
+                "[Your patient response]\n\n"
+                "##QUESTIONS##\n"
+                "- [Your first question]?\n"
+                "- [Your second question]?\n"
+                "- [Your third question]?"
             )
 
         # Mistral / Gemma / Phi: Structured markdown
         else:
-            return grounding + (
-                "Respond in exactly this format:\n\n"
+            return grounding + role_guidance + (
+                "Respond using ONLY these headers with your actual content:\n\n"
                 "## Reasoning\n"
-                "Brief clinical analysis here.\n\n"
+                "[Your clinical analysis]\n\n"
                 "## Answer\n"
-                "Your response to the user here.\n\n"
+                "[Your patient response]\n\n"
                 "## Questions\n"
-                "1. First follow-up question\n"
-                "2. Second follow-up question\n"
-                "3. Third follow-up question"
+                "- [Your first question]?\n"
+                "- [Your second question]?\n"
+                "- [Your third question]?"
             )
-        
+
+    # =========================================================================
+    # OUTPUT PARSING (Regex-based for styled output)
+    # =========================================================================
+
+    def _strip_instruction_echoes(self, text: str) -> str:
+        """
+        Remove common instruction echo patterns from LLM output.
+        Prevents the model from repeating prompts/instructions in the response.
+        """
+        if not text:
+            return text
+
+        result = text.strip()
+
+        # Direct replacements for common echoed placeholders
+        echoed_placeholders = [
+            "Patient-friendly response here",
+            "Clinical analysis here",
+            "YOUR CLINICAL ANALYSIS",
+            "YOUR PATIENT RESPONSE",
+            "YOUR FIRST QUESTION",
+            "YOUR SECOND QUESTION",
+            "YOUR THIRD QUESTION",
+            "[Your clinical analysis]",
+            "[Your patient response]",
+            "[Your first question]",
+            "[Your second question]",
+            "[Your third question]",
+            "Question 1",
+            "Question 2",
+            "Question 3",
+            "your clinical analysis here",
+            "your patient-friendly response here",
+        ]
+
+        for placeholder in echoed_placeholders:
+            result = result.replace(placeholder, "").strip()
+
+        # Patterns that indicate echoed instructions (at start of text)
+        echo_patterns = [
+            r'^(?:Based on|Looking at|I can see|According to|From the)[\s\S]{0,50}(?:data|information|card|above)',
+            r'^(?:Here is|Here\'s|Below is|The following)',
+            r'^(?:As (?:a|an|the) (?:nurse|doctor|physician|clinician))',
+            r'^(?:In my (?:clinical|medical|professional))',
+            r'^(?:TONE FOR|OUTPUT FORMAT|STRICT RULES|FACTUAL GROUNDING|WRITING STYLE)',
+            r'^\s*[-•]\s*(?:For )?(?:reasoning|answer|questions):\s*',
+            r'^\[Your [^\]]+\]\s*',
+        ]
+
+        for pattern in echo_patterns:
+            match = re.match(pattern, result, re.IGNORECASE)
+            if match:
+                remainder = result[match.end():]
+                content_start = re.search(r'[A-Z][a-z]', remainder)
+                if content_start:
+                    result = remainder[content_start.start():]
+
+        # Clean up any remaining bracket placeholders anywhere in text
+        result = re.sub(r'\[Your [^\]]+\]\??', '', result)
+
+        return result.strip()
+
     def _parse_adaptive_output(self, raw_str: str) -> Dict[str, Any]:
         """
         Universal Parser with 'Assimilation' fallback for creative headers.
+        Includes echo-stripping to remove instruction leakage.
         """
         data = {"reasoning": "", "answer": "", "follow_up_questions": []}
 
@@ -255,9 +385,8 @@ class MultiModelEngine:
         clean_str = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', raw_str, flags=re.DOTALL)
 
         # 1b. STRIP ECHOED PATIENT CARD (Llama issue)
-        # Find where actual response starts (REASONING: or ANSWER: or ## or 1. REASONING)
         response_start = re.search(
-            r'(?:^|\n)\s*(?:REASONING:|ANSWER:|1\.?\s*REASONING|##\s*Reasoning|<reasoning>)',
+            r'(?:^|\n)\s*(?:##REASONING##|REASONING:|1\.?\s*REASONING|##\s*Reasoning|<reasoning>)',
             clean_str, re.IGNORECASE
         )
         if response_start:
@@ -268,68 +397,126 @@ class MultiModelEngine:
         a_match = re.search(r'<answer>(.*?)(?:</answer>|<questions>|$)', clean_str, re.DOTALL | re.IGNORECASE)
         q_match = re.search(r'<questions>(.*?)(?:</questions>|$)', clean_str, re.DOTALL | re.IGNORECASE)
 
-        # 3. Try numbered format (Llama/SIMPLE): "1. REASONING" or just "REASONING:"
+        # 3. Try ##HEADER## format (Llama/SIMPLE)
+        if not a_match:
+            r_match = r_match or re.search(r'##REASONING##\s*\n?(.*?)(?=##ANSWER##|$)', clean_str, re.DOTALL | re.IGNORECASE)
+            a_match = re.search(r'##ANSWER##\s*\n?(.*?)(?=##QUESTIONS##|$)', clean_str, re.DOTALL | re.IGNORECASE)
+            q_match = q_match or re.search(r'##QUESTIONS##\s*\n?(.*?)$', clean_str, re.DOTALL | re.IGNORECASE)
+
+        # 4. Try numbered format fallback: "1. REASONING" or just "REASONING:"
         if not a_match:
             r_match = r_match or re.search(r'(?:^|\n)\s*(?:1\.?\s*)?REASONING[:\s]*\n(.*?)(?=\n\s*(?:2\.?\s*)?ANSWER|$)', clean_str, re.DOTALL | re.IGNORECASE)
             a_match = re.search(r'(?:^|\n)\s*(?:2\.?\s*)?ANSWER[:\s]*\n(.*?)(?=\n\s*(?:3\.?\s*)?QUESTIONS|$)', clean_str, re.DOTALL | re.IGNORECASE)
             q_match = q_match or re.search(r'(?:^|\n)\s*(?:3\.?\s*)?QUESTIONS[:\s]*\n(.*?)$', clean_str, re.DOTALL | re.IGNORECASE)
 
-        # 4. Try markdown headers (Mistral/Gemma)
+        # 5. Try markdown headers (Mistral/Gemma)
         if not a_match:
             r_match = r_match or re.search(r'#{1,3}\s*Reasoning\s*\n(.*?)(?=#{1,3}\s*Answer|$)', clean_str, re.DOTALL | re.IGNORECASE)
             a_match = re.search(r'#{1,3}\s*Answer\s*\n(.*?)(?=#{1,3}\s*Questions|$)', clean_str, re.DOTALL | re.IGNORECASE)
             q_match = q_match or re.search(r'#{1,3}\s*Questions\s*\n(.*?)$', clean_str, re.DOTALL | re.IGNORECASE)
 
-        # 5. Extract values if strict matching succeeded
-        if r_match: data["reasoning"] = r_match.group(1).strip()
-        if a_match: data["answer"] = a_match.group(1).strip()
+        # 6. Extract values if matching succeeded (with echo stripping)
+        if r_match: data["reasoning"] = self._strip_instruction_echoes(r_match.group(1).strip())
+        if a_match: data["answer"] = self._strip_instruction_echoes(a_match.group(1).strip())
         if q_match: data["follow_up_questions"] = self._extract_questions(q_match.group(1))
 
-        # 6. FILL GAPS USING THINKING (DeepSeek specific)
+        # 7. FILL GAPS USING THINKING (DeepSeek specific)
         if think_content and len(data["reasoning"]) < 50:
-            data["reasoning"] = think_content[:500] 
+            data["reasoning"] = self._strip_instruction_echoes(think_content[:500])
 
-        # 7. THE LLAMA "ASSIMILATION" FIX (Creative Header Catch-all)
-        # If no specific "Answer" section was found, or it's empty...
+        # 8. THE "ASSIMILATION" FIX (Creative Header Catch-all)
         if not data["answer"]:
-            # Treat the whole cleaned string as the answer, but remove known artifacts
             fallback = clean_str
-            
-            # Remove XML tags if they exist but were empty/broken
             fallback = re.sub(r'<[^>]+>', '', fallback)
-            
-            # Remove "System" style headers that the model might echo
-            # e.g. "1. REASONING" (but empty)
+            fallback = re.sub(r'^\s*##[A-Z]+##\s*$', '', fallback, flags=re.MULTILINE)
             fallback = re.sub(r'^\s*\d+\.?\s*REASONING\s*$', '', fallback, flags=re.MULTILINE)
             fallback = re.sub(r'^\s*\d+\.?\s*ANSWER\s*$', '', fallback, flags=re.MULTILINE)
             fallback = re.sub(r'^\s*\d+\.?\s*QUESTIONS\s*$', '', fallback, flags=re.MULTILINE)
+            data["answer"] = self._strip_instruction_echoes(fallback.strip())
 
-            data["answer"] = fallback.strip()
-            
-            # If we assimilated everything into answer, try to find questions inside it
-            # Look for lines starting with "- " or "1. " at the end of the text
             potential_questions = re.findall(r'(?:^|\n)\s*[-*]\s*(.+?)\??\s*$', data["answer"])
             if potential_questions and len(potential_questions) <= 5:
-                # If these look like questions, extract them
                 qs_candidates = [q for q in potential_questions if "?" in q or "question" in q.lower()]
                 if qs_candidates:
                     data["follow_up_questions"].extend(qs_candidates[:3])
 
-        # 8. Failsafe
+        # 9. Failsafe
         if not data["answer"]:
             data["answer"] = "Analysis complete. Please review the patient data."
 
         return data
 
     def _extract_questions(self, raw_qs: str) -> List[str]:
-        """Helper to clean bulleted questions."""
+        """Helper to clean bulleted questions and remove echoed placeholders."""
         clean_qs = []
         for line in raw_qs.split('\n'):
-            cleaned = re.sub(r'\[.*?\]', '', line) 
-            cleaned = re.sub(r'^[\d\-\.\)\*]*(?:Question\s*\d*[:\.]?)?\s*', '', cleaned.strip(), flags=re.IGNORECASE)
-            if len(cleaned) > 5:
+            cleaned = line.strip()
+
+            # Skip empty lines
+            if not cleaned:
+                continue
+
+            # Remove bracket placeholders
+            cleaned = re.sub(r'\[Your [^\]]+\]\??', '', cleaned)
+            cleaned = re.sub(r'\[.*?\]', '', cleaned)
+
+            # Remove common prefixes: "- Question 1:", "1.", "- ", etc.
+            cleaned = re.sub(
+                r'^[\d\-\.\)\*•]*\s*(?:Question\s*\d*[:\.]?\s*)?',
+                '',
+                cleaned,
+                flags=re.IGNORECASE
+            )
+
+            # Remove echoed placeholders
+            echoed_q_placeholders = [
+                "YOUR FIRST QUESTION",
+                "YOUR SECOND QUESTION",
+                "YOUR THIRD QUESTION",
+                "First question",
+                "Second question",
+                "Third question",
+            ]
+            for placeholder in echoed_q_placeholders:
+                cleaned = cleaned.replace(placeholder, "").strip()
+
+            # Only keep if it's a real question (has substance)
+            cleaned = cleaned.strip()
+            if len(cleaned) > 10 and cleaned not in ["?", "-", ""]:
+                # Ensure it ends with a question mark if it looks like a question
+                if not cleaned.endswith("?") and any(w in cleaned.lower() for w in ["what", "how", "when", "where", "why", "do you", "are you", "have you", "is the", "does"]):
+                    cleaned += "?"
                 clean_qs.append(cleaned)
+
         return clean_qs
+
+    def _clean_json_output(self, raw_output: str) -> str:
+        """Robust JSON sanitizer for models using JSON grammar."""
+        text = raw_output.strip()
+
+        # Remove Markdown code blocks
+        if text.startswith("```"):
+            text = re.sub(r"^```(json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+
+        # Emergency Truncation (If loop detected)
+        if len(text) > 2000 and not text.endswith("}"):
+            last_valid = text.rfind('",')
+            if last_valid > 100:
+                text = text[:last_valid+2] + ' "answer": "Response truncated.", "follow_up_questions": []}'
+                return text
+
+        # Fix cut-off JSON
+        if text.count('"') % 2 != 0:
+            text += '"'
+
+        if not text.endswith('}'):
+            open_braces = text.count('{')
+            close_braces = text.count('}')
+            if open_braces > close_braces:
+                text += '}' * (open_braces - close_braces)
+
+        return text
 
     def _validate_response_schema(self, data: Dict[str, Any]) -> Dict[str, Any]:
         defaults = ["Is the pain worsening?", "Any fever?", "History of heart issues?", "Any nausea?", "Short of breath?"]
@@ -342,53 +529,86 @@ class MultiModelEngine:
         data["follow_up_questions"] = valid_qs[:3]
         return data
 
+    # =========================================================================
+    # CORE GENERATION (Hybrid: JSON Grammar or Styled Prompting)
+    # =========================================================================
+
     def _generate_structured(self, patient_context: Dict[str, Any], user_query: str) -> Dict[str, Any]:
+        """
+        HYBRID GENERATION:
+        - STRUCTURED models (Gemma, Phi): Use JSON grammar for reliable output
+        - THINK_TAGS models (DeepSeek): Use XML styled prompting + regex parsing
+        - SIMPLE models (Llama, SmolLM): Use ##HEADER## prompting + regex parsing
+        """
         with self._lock:
             if not self._current_model:
                 return {"answer": "Engine Error: Model not loaded.", "reasoning": "", "follow_up_questions": []}
 
             card = self._flatten_patient_data(patient_context)
-            sys_prompt = self._construct_adaptive_system_prompt(card)
-            
+            use_json = self._supports_json_grammar
+            sys_prompt = self._construct_adaptive_system_prompt(card, use_json=use_json)
+
             messages = [
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": user_query}
             ]
 
             try:
-                output = self._current_model.instance.create_chat_completion(
-                    messages=messages,
-                    max_tokens=1500,
-                    temperature=0.1,
-                    top_p=0.90,
-                    repeat_penalty=1.1,
-                    stop=["<|im_end|>", "<|im_start|>", "</s>", "<|eot_id|>"], 
-                )
-                
+                # Build generation kwargs
+                gen_kwargs = {
+                    "messages": messages,
+                    "max_tokens": 1500,
+                    "temperature": 0.1,
+                    "top_p": 0.90,
+                    "repeat_penalty": 1.1,
+                    "stop": ["<|im_end|>", "<|im_start|>", "</s>", "<|eot_id|>"],
+                }
+
+                # Add JSON grammar for compatible models
+                if use_json:
+                    gen_kwargs["response_format"] = {
+                        "type": "json_object",
+                        "schema": TRIAGE_CHAT_SCHEMA
+                    }
+
+                output = self._current_model.instance.create_chat_completion(**gen_kwargs)
                 raw = output['choices'][0]['message']['content']
-                log_llm_output(raw, context="OUTPUT (Chat)")
-                
-                parsed_data = self._parse_adaptive_output(raw)
+                log_llm_output(raw, context=f"OUTPUT ({'JSON Grammar' if use_json else 'Styled'})")
+
+                # Parse based on mode
+                if use_json:
+                    # JSON grammar path
+                    clean_json = self._clean_json_output(raw)
+                    try:
+                        parsed_data = json.loads(clean_json)
+                    except json.JSONDecodeError:
+                        # Fallback to regex parsing if JSON fails
+                        parsed_data = self._parse_adaptive_output(raw)
+                else:
+                    # Styled prompting path (DeepSeek, Llama, SmolLM)
+                    parsed_data = self._parse_adaptive_output(raw)
+
+                self._total_inferences += 1
                 return self._validate_response_schema(parsed_data)
-                
+
             except Exception as e:
                 logger.error(f"Inference error: {e}")
                 return {"answer": "Error during generation.", "reasoning": str(e), "follow_up_questions": []}
-            
+
     # =========================================================================
-    # 2. RAW TEXT GENERATION (PDF)
+    # RAW TEXT GENERATION (PDF)
     # =========================================================================
 
     def _generate_raw_text(self, system_prompt: str, user_prompt: str, force_prefix: str = "") -> str:
         with self._lock:
-            if not self._current_model: 
+            if not self._current_model:
                 return "Error: Model not loaded."
-            
+
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
-            
+
             if force_prefix:
                 messages[1]["content"] += f"\n\nIMPORTANT: Start your response immediately with the header: '{force_prefix}'"
 
@@ -400,11 +620,11 @@ class MultiModelEngine:
                     top_p=0.95,
                     stop=["<|im_end|>", "<|im_start|>", "<|eot_id|>"]
                 )
-                
+
                 raw_response = output['choices'][0]['message']['content']
                 # DEEPSEEK FIX: Aggressive think tag removal
                 clean_response = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', raw_response, flags=re.DOTALL)
-                
+
                 return clean_response.strip()
 
             except Exception as e:
@@ -412,67 +632,74 @@ class MultiModelEngine:
                 return "Error generating clinical text. Please try again."
 
     def generate_pdf_summary(self, clinical_state: Dict[str, Any], model_id: Optional[str] = None) -> Dict[str, str]:
+        """
+        Generate PDF sections with ROLE-BASED PERSONAS:
+        - Clinical Summary: Triage nurse's systematic observation (factual, procedural, organized)
+        - Diagnosis: Senior physician's differential analysis (clinical, analytical, evidence-based)
+        - Conclusion: Attending physician's recommendations (authoritative, actionable, clear)
+
+        CRITICAL: Personas embedded via TONE, not explicit "As a..." to prevent echoing.
+        """
         if model_id: self.switch_model(model_id)
-        
+
         card = self._flatten_patient_data(clinical_state)
-        
+
         system_prompt = (
-            "You are a professional Medical Scribe AI. "
-            "Write a formal Clinical Referral Letter based ONLY on the provided data.\n"
+            "You are a medical documentation specialist writing a Clinical Referral Letter.\n\n"
             "FACTUAL GROUNDING:\n"
             "- ONLY include facts explicitly stated in PATIENT DATA.\n"
             "- Use exact values (e.g., 'pain severity 8/10').\n"
+            "- NEVER invent symptoms, history, or test results.\n\n"
+            "TONE FOR EACH SECTION:\n"
+            "- CLINICAL SUMMARY: Write systematic, factual observations. Document the presenting "
+            "complaint, vital information, and reported symptoms in organized prose. "
+            "Focus on what was observed and reported, not interpretation.\n"
+            "- DIAGNOSIS: Write analytical clinical assessment. Discuss differential considerations, "
+            "risk factors, and clinical significance. Use appropriate medical terminology. "
+            "Provide evidence-based reasoning for the assessment.\n"
+            "- CONCLUSION: Write clear, actionable recommendations. State the triage priority, "
+            "immediate actions needed, and follow-up requirements. Be direct and authoritative.\n\n"
             "FORMATTING RULES:\n"
-            "1. Use EXACT headers: 'CLINICAL SUMMARY:', 'DIAGNOSIS:', 'CONCLUSION:'.\n"
-            "2. Do NOT use bold (**), italics, or hashes (#). Write in plain text.\n"
-            "3. Write in continuous paragraphs (prose)."
+            "- Use EXACT headers: 'CLINICAL SUMMARY:', 'DIAGNOSIS:', 'CONCLUSION:'.\n"
+            "- Do NOT use bold (**), italics, or markdown formatting.\n"
+            "- Write in continuous paragraphs (prose).\n"
+            "- DO NOT echo these instructions or start with 'Based on the data...'.\n"
+            "- Jump straight into the clinical content."
         )
-        
+
         user_prompt = (
             f"PATIENT DATA:\n{card}\n\n"
-            "TASK: Write the Clinical Referral Letter.\n"
-            "Start immediately with the Summary."
+            "Write the Clinical Referral Letter now. Start with CLINICAL SUMMARY:"
         )
-        
+
         raw_text = self._generate_raw_text(
-            system_prompt, 
-            user_prompt, 
-            force_prefix="CLINICAL SUMMARY:\n"
+            system_prompt,
+            user_prompt,
+            force_prefix=""
         )
-        
+
         return self._parse_pdf_sections(raw_text)
 
     def _parse_pdf_sections(self, text: str) -> Dict[str, str]:
-        """
-        Robust parser for PDF sections. 
-        FIX: Handles DeepSeek bold headers (**CLINICAL SUMMARY**) and casing variations.
-        """
+        """Robust parser for PDF sections with echo stripping."""
         sections = {"summary": "", "diagnosis": "", "conclusion": ""}
-        
-        # Don't strip ** yet, just normalize strict headers logic
-        # We search for the keywords regardless of surrounding punctuation
-        
-        # Regex explanation:
-        # (?:1\.|[\#\*]+)? -> Optional Numbering (1.) or Markdown (## / **)
-        # \s* -> Optional whitespace
-        # KEYWORD -> The header
-        # [:\s]* -> Optional colon and whitespace
-        
+
         p_summary = re.search(r'(?:1\.|[\#\*]+)?\s*CLINICAL SUMMARY[:\s]*', text, re.IGNORECASE)
         p_diagnosis = re.search(r'(?:2\.|[\#\*]+)?\s*(?:DIAGNOSIS|ASSESSMENT)[:\s]*', text, re.IGNORECASE)
         p_conclusion = re.search(r'(?:3\.|[\#\*]+)?\s*(?:CONCLUSION|PLAN|RECOMMENDATION)[:\s]*', text, re.IGNORECASE)
 
-        # Calculate Indices
         idx_s = p_summary.end() if p_summary else 0
         idx_d = p_diagnosis.start() if p_diagnosis else len(text)
         idx_c = p_conclusion.start() if p_conclusion else len(text)
 
-        # Extract and Clean
         def clean_chunk(s):
-            return s.replace("**", "").replace("##", "").strip()
+            # Remove markdown artifacts
+            cleaned = s.replace("**", "").replace("##", "").strip()
+            # Apply echo stripping
+            return self._strip_instruction_echoes(cleaned)
 
         if p_summary: sections["summary"] = clean_chunk(text[idx_s:idx_d])
-        else: sections["summary"] = clean_chunk(text[:idx_d]) # Fallback: Start of text
+        else: sections["summary"] = clean_chunk(text[:idx_d])
 
         if p_diagnosis: sections["diagnosis"] = clean_chunk(text[p_diagnosis.end():idx_c])
         if p_conclusion: sections["conclusion"] = clean_chunk(text[p_conclusion.end():])
@@ -501,10 +728,10 @@ class MultiModelEngine:
 
     def answer_staff_question(self, question: str, clinical_state: Dict[str, Any], model_id: Optional[str] = None) -> Dict[str, Any]:
         if model_id: self.switch_model(model_id)
-        
+
         response = self._generate_structured(clinical_state, question)
         citations = self._extract_citations(response.get("answer", ""), clinical_state)
-        
+
         return {
             "answer": response.get("answer", ""),
             "reasoning": response.get("reasoning", ""),
@@ -518,23 +745,30 @@ class MultiModelEngine:
         return [{**model_to_dict(c), "is_available": self._model_exists(c.id), "is_loaded": (self._current_model and self._current_model.model_id == c.id)} for c in get_all_models()]
 
     def get_engine_stats(self) -> Dict:
+        config = self._current_model.config if self._current_model else None
         return {
             "llama_available": LLAMA_AVAILABLE,
-            "current_model": self._current_model.config.name if self._current_model else None,
-            "total_inferences": self._total_inferences
+            "model_loaded": config.name if config else "None",
+            "model_id": config.id if config else None,
+            "current_model": config.name if config else None,
+            "total_inferences": self._total_inferences,
+            "uses_json_grammar": self._supports_json_grammar
         }
 
-# Singleton
+# =============================================================================
+# SINGLETON
+# =============================================================================
+
 _engine_instance: Optional[MultiModelEngine] = None
 
 def get_engine(
-    models_dir: str = "../models", 
-    default_model_id: str = DEFAULT_MODEL_ID, 
+    models_dir: str = "../models",
+    default_model_id: str = DEFAULT_MODEL_ID,
     reinitialize: bool = False
 ) -> MultiModelEngine:
     global _engine_instance
     if _engine_instance is None or reinitialize:
         if _engine_instance and reinitialize:
-             _engine_instance.unload_model()
+            _engine_instance.unload_model()
         _engine_instance = MultiModelEngine(models_dir, default_model_id)
     return _engine_instance
