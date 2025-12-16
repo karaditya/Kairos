@@ -504,14 +504,14 @@ function HorizonGlowFooter() {
       <div
         className="absolute inset-0 z-0 dark:hidden"
         style={{
-          background: "radial-gradient(ellipse 125% 125% at 50% 10%, #ffffff 40%, #e0e7ff 100%)",
+          background: "radial-gradient(ellipse 125% 125% at 90% 10%, #ffffff 40%, #c1b1eeff 100%)",
         }}
       />
       {/* Dark mode horizon glow */}
       <div
         className="absolute inset-0 z-0 hidden dark:block"
         style={{
-          background: "radial-gradient(ellipse 125% 125% at 50% 10%, #18181b 40%, #0d1a36 100%)",
+          background: "radial-gradient(ellipse 125% 125% at 90% 10%, #18181b 40%, #15316dff 100%)",
         }}
       />
 
