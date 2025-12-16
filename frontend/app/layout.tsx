@@ -6,8 +6,8 @@ import { ThemeToggle } from "@/components/ui/theme-toggle"
 const inter = Inter({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
-  title: "HealthcareAI - AI-Powered Triage Solutions",
-  description: "Transform healthcare with intelligent diagnostic quizzes, patient education tools, and clinical decision support powered by advanced AI.",
+  title: "Kairos - The Future of Admin is Now Here",
+  description: "Transform administrative workflows with intelligent AI-powered solutions. Kairos brings the future of administration to the present.",
 }
 
 export default function RootLayout({
