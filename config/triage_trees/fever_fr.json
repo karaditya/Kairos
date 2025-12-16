@@ -1,0 +1,215 @@
+{
+  "id": "fever_fr",
+  "name": "Fièvre",
+  "name_en": "Fever",
+  "description": "Évaluation de la fièvre et des symptômes associés - Échelle FRENCH",
+  "version": "1.0",
+  "system": "french",
+  "default_level": "5",
+  "questions": [
+    {
+      "id": "temperature_measured",
+      "type": "yesno",
+      "text": "Avez-vous mesuré votre température ?",
+      "text_en": "Have you measured your temperature?",
+      "next_if_yes": "temperature_value",
+      "next_if_no": "fever_symptoms"
+    },
+    {
+      "id": "temperature_value",
+      "type": "numeric",
+      "text": "Quelle est votre température ? (en °C)",
+      "text_en": "What is your temperature? (in °C)",
+      "min": 35,
+      "max": 43,
+      "next": "fever_duration"
+    },
+    {
+      "id": "fever_symptoms",
+      "type": "yesno",
+      "text": "Vous sentez-vous fiévreux(se) (frissons, sueurs, sensation de chaleur) ?",
+      "text_en": "Do you feel feverish (chills, sweats, feeling hot)?",
+      "next_if_yes": "fever_duration",
+      "next_if_no": "fever_duration"
+    },
+    {
+      "id": "fever_duration",
+      "type": "choice",
+      "text": "Depuis combien de temps avez-vous de la fièvre ?",
+      "text_en": "How long have you had a fever?",
+      "options": [
+        {"value": "hours", "label": "Moins de 24 heures"},
+        {"value": "days_few", "label": "1 à 3 jours"},
+        {"value": "days_several", "label": "4 à 7 jours"},
+        {"value": "week_plus", "label": "Plus d'une semaine"}
+      ],
+      "next": "neck_stiffness"
+    },
+    {
+      "id": "neck_stiffness",
+      "type": "yesno",
+      "text": "Avez-vous une raideur de la nuque (difficulté à baisser le menton vers la poitrine) ?",
+      "text_en": "Do you have neck stiffness (difficulty lowering chin to chest)?",
+      "next_if_yes": "photophobia",
+      "next_if_no": "headache"
+    },
+    {
+      "id": "photophobia",
+      "type": "yesno",
+      "text": "La lumière vous gêne-t-elle (photophobie) ?",
+      "text_en": "Does light bother you (photophobia)?",
+      "next_if_yes": "rash_present",
+      "next_if_no": "rash_present"
+    },
+    {
+      "id": "headache",
+      "type": "yesno",
+      "text": "Avez-vous des maux de tête ?",
+      "text_en": "Do you have a headache?",
+      "next_if_yes": "headache_severity",
+      "next_if_no": "rash_present"
+    },
+    {
+      "id": "headache_severity",
+      "type": "choice",
+      "text": "Comment décririez-vous vos maux de tête ?",
+      "text_en": "How would you describe your headache?",
+      "options": [
+        {"value": "mild", "label": "Légers - supportables"},
+        {"value": "moderate", "label": "Modérés - gênants"},
+        {"value": "severe", "label": "Sévères - très douloureux"},
+        {"value": "worst_ever", "label": "Les pires de ma vie - brutaux"}
+      ],
+      "next": "rash_present"
+    },
+    {
+      "id": "rash_present",
+      "type": "yesno",
+      "text": "Avez-vous une éruption cutanée (boutons, rougeurs, plaques) ?",
+      "text_en": "Do you have a skin rash?",
+      "next_if_yes": "rash_description",
+      "next_if_no": "breathing_difficulty"
+    },
+    {
+      "id": "rash_description",
+      "type": "choice",
+      "text": "Comment est cette éruption ?",
+      "text_en": "How would you describe the rash?",
+      "options": [
+        {"value": "red_flat", "label": "Rouge et plate"},
+        {"value": "red_raised", "label": "Rouge et en relief"},
+        {"value": "blisters", "label": "Vésicules ou cloques"},
+        {"value": "purple", "label": "Violacée ou ne disparaît pas à la pression"},
+        {"value": "other", "label": "Autre type"}
+      ],
+      "next": "breathing_difficulty"
+    },
+    {
+      "id": "breathing_difficulty",
+      "type": "yesno",
+      "text": "Avez-vous des difficultés à respirer ?",
+      "text_en": "Do you have difficulty breathing?",
+      "next_if_yes": "breathing_severity",
+      "next_if_no": "cough"
+    },
+    {
+      "id": "breathing_severity",
+      "type": "choice",
+      "text": "Quelle est la sévérité de votre difficulté respiratoire ?",
+      "text_en": "How severe is your breathing difficulty?",
+      "options": [
+        {"value": "mild", "label": "Légère - légèrement essoufflé(e)"},
+        {"value": "moderate", "label": "Modérée - difficulté notable"},
+        {"value": "severe", "label": "Sévère - je lutte pour respirer"},
+        {"value": "cant_speak", "label": "Ne peux pas parler en phrases complètes"}
+      ],
+      "next": "cough"
+    },
+    {
+      "id": "cough",
+      "type": "yesno",
+      "text": "Avez-vous de la toux ?",
+      "text_en": "Do you have a cough?",
+      "next_if_yes": "cough_type",
+      "next_if_no": "urinary_symptoms"
+    },
+    {
+      "id": "cough_type",
+      "type": "choice",
+      "text": "Comment est votre toux ?",
+      "text_en": "What type of cough do you have?",
+      "options": [
+        {"value": "dry", "label": "Sèche"},
+        {"value": "productive", "label": "Grasse avec crachats"},
+        {"value": "bloody", "label": "Avec du sang"}
+      ],
+      "next": "urinary_symptoms"
+    },
+    {
+      "id": "urinary_symptoms",
+      "type": "yesno",
+      "text": "Avez-vous des brûlures ou douleurs en urinant ?",
+      "text_en": "Do you have burning or pain when urinating?",
+      "next_if_yes": "confusion",
+      "next_if_no": "confusion"
+    },
+    {
+      "id": "confusion",
+      "type": "yesno",
+      "text": "Vous sentez-vous confus(e) ou désorienté(e) ?",
+      "text_en": "Do you feel confused or disoriented?",
+      "next_if_yes": "vital_signs_available",
+      "next_if_no": "vital_signs_available"
+    },
+    {
+      "id": "vital_signs_available",
+      "type": "yesno",
+      "text": "Pouvez-vous mesurer votre fréquence cardiaque (pouls) ?",
+      "text_en": "Can you measure your heart rate (pulse)?",
+      "next_if_yes": "heart_rate",
+      "next_if_no": "immunocompromised"
+    },
+    {
+      "id": "heart_rate",
+      "type": "numeric",
+      "text": "Quelle est votre fréquence cardiaque ? (battements par minute)",
+      "text_en": "What is your heart rate? (beats per minute)",
+      "min": 20,
+      "max": 250,
+      "next": "immunocompromised"
+    },
+    {
+      "id": "immunocompromised",
+      "type": "yesno",
+      "text": "Avez-vous un système immunitaire affaibli (chimiothérapie, VIH, traitement immunosuppresseur) ?",
+      "text_en": "Do you have a weakened immune system?",
+      "next_if_yes": "chronic_conditions",
+      "next_if_no": "chronic_conditions"
+    },
+    {
+      "id": "chronic_conditions",
+      "type": "choice",
+      "text": "Avez-vous l'une de ces maladies chroniques ?",
+      "text_en": "Do you have any of these chronic conditions?",
+      "multiple": true,
+      "options": [
+        {"value": "diabetes", "label": "Diabète"},
+        {"value": "kidney", "label": "Insuffisance rénale"},
+        {"value": "liver", "label": "Maladie du foie"},
+        {"value": "heart", "label": "Maladie cardiaque"},
+        {"value": "lung", "label": "Maladie pulmonaire (BPCO, asthme)"},
+        {"value": "cancer", "label": "Cancer"},
+        {"value": "none", "label": "Aucune de ces maladies"}
+      ],
+      "next": "referred_by_doctor"
+    },
+    {
+      "id": "referred_by_doctor",
+      "type": "yesno",
+      "text": "Êtes-vous adressé(e) par un médecin aujourd'hui ?",
+      "text_en": "Were you referred by a doctor today?",
+      "next_if_yes": "end",
+      "next_if_no": "end"
+    }
+  ]
+}

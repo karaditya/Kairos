@@ -10,6 +10,7 @@ import { ContactCard } from "@/components/ui/contact-card"
 import { Sparkles } from "@/components/ui/sparkles"
 import { InfiniteSlider } from "@/components/ui/infinite-slider"
 import { ProgressiveBlur } from "@/components/ui/progressive-blur"
+import { LanguageSelectorDropdown, type LanguageCode, type Language } from "@/components/ui/language-selector-dropdown"
 import { ArrowRight, Users, MailIcon, PhoneIcon, MapPinIcon } from "lucide-react"
 
 // Logo components for the slider
@@ -57,7 +58,7 @@ const logos = [
 ]
 
 // Hero Section Component
-function HeroSection() {
+function HeroSection({ language, onLanguageChange }: { language: LanguageCode; onLanguageChange: (lang: Language) => void }) {
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
@@ -66,6 +67,18 @@ function HeroSection() {
 
   return (
     <section className="relative w-full min-h-screen overflow-hidden flex items-center justify-center bg-slate-100 dark:bg-[#050a18] transition-colors duration-500">
+      {/* Language Selector in top-right corner */}
+      <div
+        className={`absolute top-6 right-6 z-30 transition-all duration-1000 ease-out ${
+          mounted ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-4"
+        }`}
+        style={{ transitionDelay: "2000ms" }}
+      >
+        <LanguageSelectorDropdown
+          value={language}
+          onChange={onLanguageChange}
+        />
+      </div>
       {/* Bottom gradient fade for smooth transition */}
       <div className="absolute bottom-0 left-0 right-0 h-48 bg-gradient-to-t from-white dark:from-zinc-900 to-transparent z-20 pointer-events-none" />
       {/* Top-left orb */}
@@ -184,7 +197,7 @@ function HeroSection() {
           }`}
           style={{ transitionDelay: "1400ms" }}
         >
-          THE FUTURE OF ADMIN IS NOW HERE
+          {language === "fr" ? "L'AVENIR DE L'ADMINISTRATION EST ARRIVÉ" : "THE FUTURE OF ADMIN IS NOW HERE"}
         </p>
 
         {/* Navigation buttons */}
@@ -196,12 +209,12 @@ function HeroSection() {
           }`}
           style={{ transitionDelay: "1800ms" }}
         >
-          <Link href="/triage">
+          <Link href={`/triage?lang=${language}`}>
             <Button
               size="lg"
               className="bg-indigo-600 hover:bg-indigo-700 dark:bg-blue-600 dark:hover:bg-blue-700 text-white px-8 py-6 text-lg rounded-full shadow-lg shadow-indigo-500/25 dark:shadow-blue-500/25 transition-all duration-300 hover:scale-105"
             >
-              Start Triage
+              {language === "fr" ? "Commencer le Triage" : "Start Triage"}
               <ArrowRight className="ml-2 h-5 w-5" />
             </Button>
           </Link>
@@ -212,7 +225,7 @@ function HeroSection() {
               className="border-indigo-300 dark:border-white/30 text-indigo-700 dark:text-white/80 hover:bg-indigo-50 dark:hover:bg-white/10 px-8 py-6 text-lg rounded-full transition-all duration-300 hover:scale-105"
             >
               <Users className="mr-2 h-5 w-5" />
-              Staff Portal
+              {language === "fr" ? "Portail Personnel" : "Staff Portal"}
             </Button>
           </Link>
         </div>
@@ -548,9 +561,15 @@ function HorizonGlowFooter() {
 
 // Main Component
 export default function Home() {
+  const [language, setLanguage] = useState<LanguageCode>("en")
+
+  const handleLanguageChange = (lang: Language) => {
+    setLanguage(lang.code)
+  }
+
   return (
     <div className="min-h-screen">
-      <HeroSection />
+      <HeroSection language={language} onLanguageChange={handleLanguageChange} />
       <TrustedBySection />
       <ContactSection />
       <HorizonGlowFooter />

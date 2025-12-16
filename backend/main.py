@@ -317,10 +317,19 @@ async def submit_answer(session_id: str, request: AnswerRequest):
         session.status = "complete"
         session.current_question_id = None
 
-        # Compute risk band
-        risk_result = risk_engine.compute_risk(session.demographics, session.answers)
+        # Compute risk band (pass language to use appropriate system)
+        risk_result = risk_engine.compute_risk(
+            session.demographics,
+            session.answers,
+            language=session.language
+        )
         session.answers["_risk_band"] = risk_result["band"]
         session.answers["_triggered_rules"] = risk_result["triggered_rules"]
+
+        # Store FRENCH-specific data if using French system
+        if session.language == "fr":
+            session.answers["_triage_level"] = risk_result.get("level", "4")
+            session.answers["_level_info"] = risk_result.get("level_info", {})
 
         db.update_session(session)
 
@@ -374,12 +383,25 @@ async def get_summary(session_id: str):
     # Extract key flags from triggered rules
     key_flags = reasoning_engine._extract_key_flags(clinical_state)
 
-    # Waiting instruction based on risk
-    waiting_instructions = {
-        "red": get_text("wait_red", session.language),
-        "amber": get_text("wait_amber", session.language),
-        "green": get_text("wait_green", session.language)
-    }
+    # Determine waiting instruction based on language/system
+    if session.language == "fr":
+        # Use FRENCH triage level for French system
+        triage_level = session.answers.get("_triage_level", "4")
+        level_info = session.answers.get("_level_info", {})
+        waiting_instruction = get_text(f"wait_level_{triage_level}", session.language)
+        if not waiting_instruction or waiting_instruction == f"wait_level_{triage_level}":
+            # Fallback to band-based instruction
+            waiting_instruction = get_text(f"wait_{risk_band}", session.language)
+        risk_color = level_info.get("color", {"red": "#dc3545", "amber": "#ffc107", "green": "#28a745"}[risk_band])
+    else:
+        # Use standard band-based waiting instructions for English
+        waiting_instructions = {
+            "red": get_text("wait_red", session.language),
+            "amber": get_text("wait_amber", session.language),
+            "green": get_text("wait_green", session.language)
+        }
+        waiting_instruction = waiting_instructions.get(risk_band, waiting_instructions["amber"])
+        risk_color = {"red": "#dc3545", "amber": "#ffc107", "green": "#28a745"}[risk_band]
 
     # Create case record for staff
     case = Case(
@@ -401,14 +423,14 @@ async def get_summary(session_id: str):
         session_id=session_id,
         ticket_id=ticket_id,
         risk_band=risk_band,
-        risk_color={"red": "#dc3545", "amber": "#ffc107", "green": "#28a745"}[risk_band],
+        risk_color=risk_color,
         triggered_rules=[{"rule": r["id"], "description": r["description"]} for r in triggered_rules],
         summary=summary_text,
         key_flags=key_flags,
-        waiting_instruction=waiting_instructions.get(risk_band, waiting_instructions["amber"]),
+        waiting_instruction=waiting_instruction,
         demographics=session.demographics,
         answers={k: v for k, v in session.answers.items() if not k.startswith("_")},
-        disclaimer="This tool does not provide medical diagnosis or treatment. A healthcare professional will review your case."
+        disclaimer=get_text("disclaimer", session.language)
     )
 
 
@@ -658,7 +680,26 @@ TRANSLATIONS = {
         "other_complaint": "Other (please describe)",
         "wait_red": "Please proceed immediately to the emergency area. A staff member will assist you.",
         "wait_amber": "Please wait in the priority waiting area. You will be seen soon.",
-        "wait_green": "Please take a seat in the general waiting area. You will be called when it's your turn."
+        "wait_green": "Please take a seat in the general waiting area. You will be called when it's your turn.",
+        "disclaimer": "This tool does not provide medical diagnosis or treatment. A healthcare professional will review your case."
+    },
+    "fr": {
+        "demographics_prompt": "Veuillez fournir vos informations :",
+        "age": "Âge",
+        "sex": "Sexe",
+        "pregnant": "Êtes-vous actuellement enceinte ?",
+        "chief_complaint_prompt": "Quel est le motif principal de votre consultation ?",
+        "other_complaint": "Autre (veuillez décrire)",
+        "wait_red": "Veuillez vous rendre immédiatement à la salle de déchocage (SAUV). Un membre du personnel vous assistera.",
+        "wait_amber": "Veuillez patienter dans la zone d'attente prioritaire. Vous serez pris en charge rapidement.",
+        "wait_green": "Veuillez prendre place dans la salle d'attente générale. Vous serez appelé(e) à votre tour.",
+        "wait_level_1": "Dirigez-vous immédiatement vers la SAUV (salle d'accueil des urgences vitales). Prise en charge médicale en moins d'1 minute.",
+        "wait_level_2": "Rendez-vous au box d'examen ou en SAUV. Prise en charge médicale en moins de 20 minutes.",
+        "wait_level_3A": "Attente prioritaire. Prise en charge médicale en moins de 60 minutes.",
+        "wait_level_3B": "Veuillez patienter. Prise en charge médicale en moins de 90 minutes.",
+        "wait_level_4": "Salle d'attente standard. Prise en charge médicale en moins de 2 heures.",
+        "wait_level_5": "Salle d'attente générale ou circuit court. Prise en charge médicale en moins de 4 heures.",
+        "disclaimer": "Cet outil ne fournit pas de diagnostic ou de traitement médical. Un professionnel de santé examinera votre cas."
     },
     "es": {
         "demographics_prompt": "Por favor proporcione su información:",
@@ -669,7 +710,8 @@ TRANSLATIONS = {
         "other_complaint": "Otro (por favor describa)",
         "wait_red": "Por favor dirijase inmediatamente al area de emergencias. Un miembro del personal le asistira.",
         "wait_amber": "Por favor espere en el area de espera prioritaria. Sera atendido pronto.",
-        "wait_green": "Por favor tome asiento en el area de espera general. Sera llamado cuando sea su turno."
+        "wait_green": "Por favor tome asiento en el area de espera general. Sera llamado cuando sea su turno.",
+        "disclaimer": "Esta herramienta no proporciona diagnóstico ni tratamiento médico. Un profesional de la salud revisará su caso."
     }
 }
 
