@@ -348,33 +348,127 @@ export default function StaffPortal() {
     setShowDownloadButton(false);
   }, [selectedCase?.id]);
 
-  const filteredCases = cases.filter((c) => {
-    const matchesFilter =
-      filter === "all" ||
-      (filter === "red" && c.risk_band === "red") ||
-      (filter === "amber" && c.risk_band === "amber") ||
-      (filter === "green" && c.risk_band === "green") ||
-      (filter === "pending" && c.status === "pending") ||
-      (filter === "reviewed" && c.status === "reviewed");
+  // Priority mapping for sorting (higher = more urgent)
+  const getPriority = (c: CaseResponse): number => {
+    const level = c.answers?._triage_level || "5";
+    const band = c.risk_band;
 
-    const matchesSearch =
-      searchQuery === "" ||
-      c.ticket_id?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.summary?.toLowerCase().includes(searchQuery.toLowerCase());
+    if (language === "fr") {
+      // FRENCH system: 1 > 2 > 3A > 3B > 4 > 5
+      const frenchPriority: Record<string, number> = {
+        "1": 100, "2": 80, "3A": 60, "3B": 50, "4": 30, "5": 10
+      };
+      return frenchPriority[level] || 10;
+    } else {
+      // Manchester system: 1 > 2 > 3 > 4 > 5
+      const manchesterPriority: Record<string, number> = {
+        "1": 100, "2": 80, "3": 60, "4": 40, "5": 20
+      };
+      return manchesterPriority[level] || 20;
+    }
+  };
 
-    return matchesFilter && matchesSearch;
-  });
+  const filteredCases = cases
+    .filter((c) => {
+      const level = c.answers?._triage_level || "5";
+      const matchesFilter =
+        filter === "all" ||
+        // Band-based filters
+        (filter === "red" && c.risk_band === "red") ||
+        (filter === "orange" && c.risk_band === "orange") ||
+        (filter === "amber" && c.risk_band === "amber") ||
+        (filter === "yellow" && c.risk_band === "yellow") ||
+        (filter === "green" && c.risk_band === "green") ||
+        (filter === "blue" && c.risk_band === "blue") ||
+        // Level-based filters (Manchester)
+        (filter === "immediate" && level === "1") ||
+        (filter === "veryUrgent" && level === "2") ||
+        (filter === "urgent" && level === "3") ||
+        (filter === "standard" && level === "4") ||
+        (filter === "nonUrgent" && level === "5") ||
+        // Level-based filters (FRENCH)
+        (filter === "tri1" && level === "1") ||
+        (filter === "tri2" && level === "2") ||
+        (filter === "tri3A" && level === "3A") ||
+        (filter === "tri3B" && level === "3B") ||
+        (filter === "tri4" && level === "4") ||
+        (filter === "tri5" && level === "5") ||
+        // Status filters
+        (filter === "pending" && c.status === "pending") ||
+        (filter === "reviewed" && c.status === "reviewed");
 
-  const getRiskColor = (band: string) => {
-    switch (band) {
-      case "red":
-        return "#dc3545";
-      case "amber":
-        return "#ffc107";
-      case "green":
-        return "#28a745";
-      default:
-        return "#6c757d";
+      const matchesSearch =
+        searchQuery === "" ||
+        c.ticket_id?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        c.summary?.toLowerCase().includes(searchQuery.toLowerCase());
+
+      return matchesFilter && matchesSearch;
+    })
+    .sort((a, b) => getPriority(b) - getPriority(a)); // Sort by priority (most urgent first)
+
+  // Get color based on triage level and system
+  const getRiskColor = (c: CaseResponse): string => {
+    const level = c.answers?._triage_level;
+    const levelInfo = c.answers?._level_info;
+
+    // If we have level info with color, use it
+    if (levelInfo?.color) {
+      return levelInfo.color;
+    }
+
+    // Otherwise use level-based colors
+    if (level) {
+      if (language === "fr") {
+        // FRENCH system colors
+        const frenchColors: Record<string, string> = {
+          "1": "#dc3545",  // Red - Life-threatening
+          "2": "#ff6b35",  // Orange - Severe
+          "3A": "#ffc107", // Yellow - Urgent with comorbidity
+          "3B": "#ffda6b", // Light yellow - Urgent
+          "4": "#28a745",  // Green - Standard
+          "5": "#20c997"   // Teal - Non-urgent
+        };
+        return frenchColors[level] || "#6c757d";
+      } else {
+        // Manchester system colors
+        const manchesterColors: Record<string, string> = {
+          "1": "#dc3545",  // Red - Immediate
+          "2": "#ff6b35",  // Orange - Very Urgent
+          "3": "#ffc107",  // Yellow - Urgent
+          "4": "#28a745",  // Green - Standard
+          "5": "#17a2b8"   // Blue - Non-urgent
+        };
+        return manchesterColors[level] || "#6c757d";
+      }
+    }
+
+    // Fallback to band-based colors
+    const bandColors: Record<string, string> = {
+      "red": "#dc3545",
+      "orange": "#ff6b35",
+      "amber": "#ffc107",
+      "yellow": "#ffc107",
+      "green": "#28a745",
+      "blue": "#17a2b8"
+    };
+    return bandColors[c.risk_band] || "#6c757d";
+  };
+
+  // Get display label for triage level
+  const getLevelLabel = (c: CaseResponse): string => {
+    const level = c.answers?._triage_level;
+    if (!level) return c.risk_band?.toUpperCase() || "N/A";
+
+    if (language === "fr") {
+      const frenchLabels: Record<string, string> = {
+        "1": "Tri 1", "2": "Tri 2", "3A": "Tri 3A", "3B": "Tri 3B", "4": "Tri 4", "5": "Tri 5"
+      };
+      return frenchLabels[level] || level;
+    } else {
+      const manchesterLabels: Record<string, string> = {
+        "1": "P1", "2": "P2", "3": "P3", "4": "P4", "5": "P5"
+      };
+      return manchesterLabels[level] || level;
     }
   };
 
@@ -464,7 +558,7 @@ export default function StaffPortal() {
           </div>
           <div className="flex gap-2 items-center mr-14">
             {/* Model Selector */}
-            <div className="relative">
+            <div className="relative mr-4">
               <Button
                 onClick={() => setShowModelSelector(!showModelSelector)}
                 variant="outline"
@@ -613,20 +707,64 @@ export default function StaffPortal() {
                   />
                 </div>
 
-                {/* Filters - Compact */}
+                {/* Priority Level Filters - Based on triage system */}
                 <div className="flex gap-1 flex-wrap">
-                  {["all", "red", "amber", "green"].map((f) => (
-                    <Button
-                      key={f}
-                      size="sm"
-                      onClick={() => setFilter(f)}
-                      variant={filter === f ? "default" : "outline"}
-                      className="h-7 px-2 text-xs"
-                    >
-                      {t(f)}
-                    </Button>
-                  ))}
+                  <Button
+                    size="sm"
+                    onClick={() => setFilter("all")}
+                    variant={filter === "all" ? "default" : "outline"}
+                    className="h-7 px-2 text-xs"
+                  >
+                    {t("all")}
+                  </Button>
+                  {language === "fr" ? (
+                    // FRENCH system levels
+                    <>
+                      {[
+                        { key: "tri1", label: "Tri 1", color: "#dc3545" },
+                        { key: "tri2", label: "Tri 2", color: "#ff6b35" },
+                        { key: "tri3A", label: "3A", color: "#ffc107" },
+                        { key: "tri3B", label: "3B", color: "#ffda6b" },
+                        { key: "tri4", label: "Tri 4", color: "#28a745" },
+                        { key: "tri5", label: "Tri 5", color: "#20c997" },
+                      ].map((f) => (
+                        <Button
+                          key={f.key}
+                          size="sm"
+                          onClick={() => setFilter(f.key)}
+                          variant={filter === f.key ? "default" : "outline"}
+                          className="h-7 px-2 text-xs"
+                          style={filter === f.key ? { backgroundColor: f.color, borderColor: f.color } : {}}
+                        >
+                          {f.label}
+                        </Button>
+                      ))}
+                    </>
+                  ) : (
+                    // Manchester system levels
+                    <>
+                      {[
+                        { key: "immediate", label: "P1", color: "#dc3545" },
+                        { key: "veryUrgent", label: "P2", color: "#ff6b35" },
+                        { key: "urgent", label: "P3", color: "#ffc107" },
+                        { key: "standard", label: "P4", color: "#28a745" },
+                        { key: "nonUrgent", label: "P5", color: "#17a2b8" },
+                      ].map((f) => (
+                        <Button
+                          key={f.key}
+                          size="sm"
+                          onClick={() => setFilter(f.key)}
+                          variant={filter === f.key ? "default" : "outline"}
+                          className="h-7 px-2 text-xs"
+                          style={filter === f.key ? { backgroundColor: f.color, borderColor: f.color } : {}}
+                        >
+                          {f.label}
+                        </Button>
+                      ))}
+                    </>
+                  )}
                 </div>
+                {/* Status Filters */}
                 <div className="flex gap-1 flex-wrap">
                   {["pending", "reviewed"].map((f) => (
                     <Button
@@ -659,10 +797,12 @@ export default function StaffPortal() {
                           <span className="font-medium text-sm truncate">{c.ticket_id}</span>
                           <div className="flex items-center gap-1.5 flex-shrink-0">
                             {getStatusIcon(c.status)}
-                            <div
-                              className="w-2.5 h-2.5 rounded-full"
-                              style={{ backgroundColor: getRiskColor(c.risk_band) }}
-                            />
+                            <span
+                              className="text-xs font-semibold px-1.5 py-0.5 rounded text-white"
+                              style={{ backgroundColor: getRiskColor(c) }}
+                            >
+                              {getLevelLabel(c)}
+                            </span>
                           </div>
                         </div>
                         <span className="text-xs text-gray-500 truncate w-full">
@@ -698,10 +838,10 @@ export default function StaffPortal() {
                         </p>
                       </div>
                       <div
-                        className="px-3 py-1 rounded-full text-white text-sm font-semibold uppercase"
-                        style={{ backgroundColor: getRiskColor(selectedCase.risk_band) }}
+                        className="px-3 py-1 rounded-full text-white text-sm font-semibold"
+                        style={{ backgroundColor: getRiskColor(selectedCase) }}
                       >
-                        {selectedCase.risk_band}
+                        {getLevelLabel(selectedCase)}
                       </div>
                     </div>
                   </CardHeader>
