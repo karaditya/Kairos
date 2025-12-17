@@ -52,6 +52,13 @@ export interface Translations {
   amber: string;
   green: string;
 
+  // Manchester Triage Levels (English)
+  manchesterLevel1: string;
+  manchesterLevel2: string;
+  manchesterLevel3: string;
+  manchesterLevel4: string;
+  manchesterLevel5: string;
+
   // FRENCH Triage Levels
   triageLevel1: string;
   triageLevel2: string;
@@ -60,10 +67,17 @@ export interface Translations {
   triageLevel4: string;
   triageLevel5: string;
 
-  // Wait Instructions
+  // Wait Instructions (legacy band-based)
   waitRed: string;
   waitAmber: string;
   waitGreen: string;
+
+  // Manchester wait instructions (English)
+  manchesterWait1: string;
+  manchesterWait2: string;
+  manchesterWait3: string;
+  manchesterWait4: string;
+  manchesterWait5: string;
 
   // FRENCH-specific wait instructions
   waitLevel1: string;
@@ -154,7 +168,14 @@ export const translations: Record<LanguageCode, Translations> = {
     amber: "AMBER",
     green: "GREEN",
 
-    // FRENCH Triage Levels
+    // Manchester Triage Levels (English)
+    manchesterLevel1: "IMMEDIATE",
+    manchesterLevel2: "VERY URGENT",
+    manchesterLevel3: "URGENT",
+    manchesterLevel4: "STANDARD",
+    manchesterLevel5: "NON-URGENT",
+
+    // FRENCH Triage Levels (for reference when viewing French cases)
     triageLevel1: "Level 1 - Immediate",
     triageLevel2: "Level 2 - Very Urgent",
     triageLevel3A: "Level 3A - Urgent (Priority)",
@@ -162,10 +183,17 @@ export const translations: Record<LanguageCode, Translations> = {
     triageLevel4: "Level 4 - Standard",
     triageLevel5: "Level 5 - Non-Urgent",
 
-    // Wait Instructions
+    // Wait Instructions (legacy band-based)
     waitRed: "Please proceed immediately to the emergency area. A staff member will assist you.",
     waitAmber: "Please wait in the priority waiting area. You will be seen soon.",
     waitGreen: "Please take a seat in the general waiting area. You will be called when it's your turn.",
+
+    // Manchester wait instructions (English)
+    manchesterWait1: "IMMEDIATE ATTENTION REQUIRED. Please proceed directly to the resuscitation area. You will be seen immediately.",
+    manchesterWait2: "VERY URGENT. Please proceed to the emergency treatment area. Target wait time: 10 minutes.",
+    manchesterWait3: "URGENT. Please wait in the priority area. Target wait time: 60 minutes.",
+    manchesterWait4: "STANDARD. Please take a seat in the waiting area. Target wait time: 120 minutes.",
+    manchesterWait5: "NON-URGENT. Please take a seat in the general waiting area. Target wait time: up to 4 hours.",
 
     // FRENCH-specific wait instructions
     waitLevel1: "Proceed immediately to the resuscitation room (SAUV). Medical care within 1 minute.",
@@ -255,6 +283,13 @@ export const translations: Record<LanguageCode, Translations> = {
     amber: "ORANGE",
     green: "VERT",
 
+    // Manchester Triage Levels (French translation for reference)
+    manchesterLevel1: "IMMÉDIAT",
+    manchesterLevel2: "TRÈS URGENT",
+    manchesterLevel3: "URGENT",
+    manchesterLevel4: "STANDARD",
+    manchesterLevel5: "NON URGENT",
+
     // FRENCH Triage Levels
     triageLevel1: "Tri 1 - Détresse vitale majeure",
     triageLevel2: "Tri 2 - Atteinte patente d'un organe",
@@ -263,10 +298,17 @@ export const translations: Record<LanguageCode, Translations> = {
     triageLevel4: "Tri 4 - Consultation standard",
     triageLevel5: "Tri 5 - Consultation non urgente",
 
-    // Wait Instructions
+    // Wait Instructions (legacy band-based)
     waitRed: "Veuillez vous rendre immédiatement à la salle de déchocage. Un membre du personnel vous assistera.",
     waitAmber: "Veuillez patienter dans la zone d'attente prioritaire. Vous serez pris en charge rapidement.",
     waitGreen: "Veuillez prendre place dans la salle d'attente générale. Vous serez appelé(e) à votre tour.",
+
+    // Manchester wait instructions (French translation)
+    manchesterWait1: "ATTENTION IMMÉDIATE REQUISE. Veuillez vous diriger directement vers la zone de réanimation. Vous serez vu immédiatement.",
+    manchesterWait2: "TRÈS URGENT. Veuillez vous rendre à la zone de traitement d'urgence. Temps d'attente cible : 10 minutes.",
+    manchesterWait3: "URGENT. Veuillez patienter dans la zone prioritaire. Temps d'attente cible : 60 minutes.",
+    manchesterWait4: "STANDARD. Veuillez prendre place dans la salle d'attente. Temps d'attente cible : 120 minutes.",
+    manchesterWait5: "NON URGENT. Veuillez prendre place dans la salle d'attente générale. Temps d'attente cible : jusqu'à 4 heures.",
 
     // FRENCH-specific wait instructions
     waitLevel1: "Dirigez-vous immédiatement vers la SAUV (salle d'accueil des urgences vitales). Prise en charge médicale en moins d'1 minute.",

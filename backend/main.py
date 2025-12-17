@@ -326,10 +326,11 @@ async def submit_answer(session_id: str, request: AnswerRequest):
         session.answers["_risk_band"] = risk_result["band"]
         session.answers["_triggered_rules"] = risk_result["triggered_rules"]
 
-        # Store FRENCH-specific data if using French system
-        if session.language == "fr":
-            session.answers["_triage_level"] = risk_result.get("level", "4")
-            session.answers["_level_info"] = risk_result.get("level_info", {})
+        # Store triage level data for both systems (Manchester for EN, FRENCH for FR)
+        session.answers["_triage_level"] = risk_result.get("level", "4")
+        session.answers["_level_info"] = risk_result.get("level_info", {})
+        session.answers["_risk_color"] = risk_result.get("color", "#28a745")
+        session.answers["_max_wait_minutes"] = risk_result.get("max_wait_minutes", 120)
 
         db.update_session(session)
 
@@ -384,24 +385,30 @@ async def get_summary(session_id: str):
     key_flags = reasoning_engine._extract_key_flags(clinical_state)
 
     # Determine waiting instruction based on language/system
+    triage_level = session.answers.get("_triage_level", "4")
+    level_info = session.answers.get("_level_info", {})
+    risk_color = session.answers.get("_risk_color", "#28a745")
+
     if session.language == "fr":
         # Use FRENCH triage level for French system
-        triage_level = session.answers.get("_triage_level", "4")
-        level_info = session.answers.get("_level_info", {})
         waiting_instruction = get_text(f"wait_level_{triage_level}", session.language)
         if not waiting_instruction or waiting_instruction == f"wait_level_{triage_level}":
             # Fallback to band-based instruction
             waiting_instruction = get_text(f"wait_{risk_band}", session.language)
-        risk_color = level_info.get("color", {"red": "#dc3545", "amber": "#ffc107", "green": "#28a745"}[risk_band])
     else:
-        # Use standard band-based waiting instructions for English
-        waiting_instructions = {
-            "red": get_text("wait_red", session.language),
-            "amber": get_text("wait_amber", session.language),
-            "green": get_text("wait_green", session.language)
-        }
-        waiting_instruction = waiting_instructions.get(risk_band, waiting_instructions["amber"])
-        risk_color = {"red": "#dc3545", "amber": "#ffc107", "green": "#28a745"}[risk_band]
+        # Use Manchester triage levels for English system
+        waiting_instruction = get_text(f"manchester_wait_{triage_level}", session.language)
+        if not waiting_instruction or waiting_instruction == f"manchester_wait_{triage_level}":
+            # Fallback to band-based instruction
+            waiting_instructions = {
+                "red": get_text("wait_red", session.language),
+                "orange": get_text("wait_red", session.language),  # Orange maps to urgent
+                "yellow": get_text("wait_amber", session.language),
+                "green": get_text("wait_green", session.language),
+                "blue": get_text("wait_green", session.language),
+                "amber": get_text("wait_amber", session.language)
+            }
+            waiting_instruction = waiting_instructions.get(risk_band, waiting_instructions.get("green"))
 
     # Create case record for staff
     case = Case(
@@ -681,6 +688,12 @@ TRANSLATIONS = {
         "wait_red": "Please proceed immediately to the emergency area. A staff member will assist you.",
         "wait_amber": "Please wait in the priority waiting area. You will be seen soon.",
         "wait_green": "Please take a seat in the general waiting area. You will be called when it's your turn.",
+        # Manchester Triage System wait instructions
+        "manchester_wait_1": "IMMEDIATE ATTENTION REQUIRED. Please proceed directly to the resuscitation area. You will be seen immediately.",
+        "manchester_wait_2": "VERY URGENT. Please proceed to the emergency treatment area. Target wait time: 10 minutes.",
+        "manchester_wait_3": "URGENT. Please wait in the priority area. Target wait time: 60 minutes.",
+        "manchester_wait_4": "STANDARD. Please take a seat in the waiting area. Target wait time: 120 minutes.",
+        "manchester_wait_5": "NON-URGENT. Please take a seat in the general waiting area. Target wait time: up to 4 hours.",
         "disclaimer": "This tool does not provide medical diagnosis or treatment. A healthcare professional will review your case."
     },
     "fr": {

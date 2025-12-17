@@ -249,7 +249,16 @@ class RiskRule:
     description_en: str = ""  # English description for French rules
 
 
-# FRENCH triage level configuration
+# Manchester Triage System (MTS) level configuration - English system
+MANCHESTER_LEVELS = {
+    "1": {"color": "#dc3545", "name": "Immediate", "description": "Life-threatening condition requiring immediate intervention", "max_wait_minutes": 0, "band": "red"},
+    "2": {"color": "#ff6b35", "name": "Very Urgent", "description": "Severe condition requiring very rapid assessment", "max_wait_minutes": 10, "band": "orange"},
+    "3": {"color": "#ffc107", "name": "Urgent", "description": "Serious condition but patient is stable", "max_wait_minutes": 60, "band": "yellow"},
+    "4": {"color": "#28a745", "name": "Standard", "description": "Standard condition requiring routine care", "max_wait_minutes": 120, "band": "green"},
+    "5": {"color": "#17a2b8", "name": "Non-urgent", "description": "Minor condition that can safely wait", "max_wait_minutes": 240, "band": "blue"}
+}
+
+# FRENCH triage level configuration (SFMU - Société Française de Médecine d'Urgence)
 FRENCH_LEVELS = {
     "1": {"color": "#dc3545", "name": "Tri 1", "name_en": "Level 1", "description": "Détresse vitale majeure", "description_en": "Life-threatening emergency", "max_wait_minutes": 1, "band": "red"},
     "2": {"color": "#ff6b35", "name": "Tri 2", "name_en": "Level 2", "description": "Atteinte patente d'un organe", "description_en": "Severe organ involvement", "max_wait_minutes": 20, "band": "red"},
@@ -268,15 +277,16 @@ class RiskEngine:
     Risk is computed purely from patient data and rule conditions.
 
     Supports two systems:
-    - English: 3-level (red/amber/green)
+    - English: Manchester Triage System - 5-level (Red/Orange/Yellow/Green/Blue)
     - French (FRENCH): 6-level SFMU scale (1, 2, 3A, 3B, 4, 5)
     """
 
     def __init__(self, config_dir: str = "../config"):
         self.config_dir = config_dir
-        self.rules_en: List[RiskRule] = []  # English rules
+        self.rules_en: List[RiskRule] = []  # English rules (Manchester)
         self.rules_fr: List[RiskRule] = []  # French (FRENCH) rules
         self.rules: List[RiskRule] = []  # Default (English)
+        self.manchester_levels = MANCHESTER_LEVELS
         self.french_levels = FRENCH_LEVELS
         self._load_rules()
     
@@ -373,13 +383,15 @@ class RiskEngine:
         Args:
             demographics: Patient demographics (age, sex, pregnant)
             answers: Triage question answers
-            language: "en" for English (3-level), "fr" for French FRENCH (6-level)
+            language: "en" for English Manchester (5-level), "fr" for French FRENCH (6-level)
 
         Returns:
-            For English system:
+            For English (Manchester) system:
             {
-                "band": "red" | "amber" | "green",
-                "triggered_rules": [{"id": ..., "description": ...}, ...]
+                "band": "red" | "orange" | "yellow" | "green" | "blue",
+                "level": "1" | "2" | "3" | "4" | "5",
+                "level_info": {...},
+                "triggered_rules": [{"id": ..., "description": ..., "level": ...}, ...]
             }
 
             For French (FRENCH) system:
@@ -402,10 +414,14 @@ class RiskEngine:
             rules_to_use = self.rules
 
         triggered_rules = []
-        highest_band = "green"
-        highest_level = "5"  # Default FRENCH level (lowest priority)
-        band_priority = {"green": 0, "amber": 1, "red": 2}
-        level_priority = {"5": 0, "4": 1, "3B": 2, "3A": 3, "2": 4, "1": 5}
+        highest_level = "5"  # Default level (lowest priority) for both systems
+
+        # Level priority mapping - higher number = more urgent
+        if language == "fr":
+            level_priority = {"5": 0, "4": 1, "3B": 2, "3A": 3, "2": 4, "1": 5}
+        else:
+            # Manchester system levels
+            level_priority = {"5": 0, "4": 1, "3": 2, "2": 3, "1": 4}
 
         # Sort rules by priority (highest first)
         sorted_rules = sorted(rules_to_use, key=lambda r: r.priority, reverse=True)
@@ -418,30 +434,29 @@ class RiskEngine:
                     "band": rule.band
                 }
 
-                if language == "fr" and rule.level:
+                if rule.level:
                     rule_info["level"] = rule.level
 
                 triggered_rules.append(rule_info)
 
-                # Update highest band
-                if band_priority.get(rule.band, 0) > band_priority.get(highest_band, 0):
-                    highest_band = rule.band
-
-                # Update highest level (for FRENCH system)
+                # Update highest level
                 if rule.level and level_priority.get(rule.level, 0) > level_priority.get(highest_level, 0):
                     highest_level = rule.level
 
+        # Get level info based on system
+        if language == "fr":
+            level_info = self.french_levels.get(highest_level, {})
+        else:
+            level_info = self.manchester_levels.get(highest_level, {})
+
         result = {
-            "band": highest_band,
+            "level": highest_level,
+            "level_info": level_info,
+            "band": level_info.get("band", "green"),
+            "color": level_info.get("color", "#28a745"),
+            "max_wait_minutes": level_info.get("max_wait_minutes", 120),
             "triggered_rules": triggered_rules
         }
-
-        # Add FRENCH-specific fields
-        if language == "fr":
-            result["level"] = highest_level
-            result["level_info"] = self.french_levels.get(highest_level, {})
-            result["color"] = result["level_info"].get("color", "#28a745")
-            result["max_wait_minutes"] = result["level_info"].get("max_wait_minutes", 120)
 
         return result
     
