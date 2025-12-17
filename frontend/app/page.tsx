@@ -69,7 +69,7 @@ function HeroSection({ language, onLanguageChange }: { language: LanguageCode; o
     <section className="relative w-full min-h-screen overflow-hidden flex items-center justify-center bg-slate-100 dark:bg-[#050a18] transition-colors duration-500">
       {/* Language Selector in top-right corner */}
       <div
-        className={`absolute top-6 right-6 z-30 transition-all duration-1000 ease-out ${
+        className={`absolute top-6 right-30 z-30 transition-all duration-1000 ease-out ${
           mounted ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-4"
         }`}
         style={{ transitionDelay: "2000ms" }}
@@ -218,7 +218,7 @@ function HeroSection({ language, onLanguageChange }: { language: LanguageCode; o
               <ArrowRight className="ml-2 h-5 w-5" />
             </Button>
           </Link>
-          <Link href="/staff">
+          <Link href={`/staff?lang=${language}`}>
             <Button
               size="lg"
               variant="outline"
@@ -400,9 +400,44 @@ function TrustedBySection() {
 }
 
 // Contact Section
-function ContactSection() {
+function ContactSection({ language }: { language: LanguageCode }) {
   const [isVisible, setIsVisible] = useState(false)
   const sectionRef = useRef<HTMLElement>(null)
+
+  // Import translations
+  const getText = (key: string) => {
+    const translations: Record<string, Record<string, string>> = {
+      en: {
+        getInTouch: "Get in touch with us",
+        contactUs: "Contact Us",
+        contactDescription: "Have questions about Kairos or need help getting started? Fill out the form and our team will get back to you within 1 business day.",
+        email: "Email",
+        phone: "Phone",
+        address: "Address",
+        name: "Name",
+        yourName: "Your name",
+        yourEmail: "your@email.com",
+        message: "Message",
+        howCanWeHelp: "How can we help you?",
+        submit: "Submit",
+      },
+      fr: {
+        getInTouch: "Prenez contact avec nous",
+        contactUs: "Contactez-nous",
+        contactDescription: "Vous avez des questions sur Kairos ou besoin d'aide pour commencer ? Remplissez le formulaire et notre équipe vous répondra dans un délai d'un jour ouvrable.",
+        email: "E-mail",
+        phone: "Téléphone",
+        address: "Adresse",
+        name: "Nom",
+        yourName: "Votre nom",
+        yourEmail: "votre@email.com",
+        message: "Message",
+        howCanWeHelp: "Comment pouvons-nous vous aider ?",
+        submit: "Envoyer",
+      }
+    }
+    return translations[language]?.[key] || translations.en[key] || key
+  }
 
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -435,27 +470,27 @@ function ContactSection() {
             KAIROS
           </h2>
           <p className="text-lg text-indigo-600/60 dark:text-blue-400/60 tracking-wider">
-            Get in touch with us
+            {getText("getInTouch")}
           </p>
         </div>
 
         <ContactCard
-          title="Contact Us"
-          description="Have questions about Kairos or need help getting started? Fill out the form and our team will get back to you within 1 business day."
+          title={getText("contactUs")}
+          description={getText("contactDescription")}
           contactInfo={[
             {
               icon: MailIcon,
-              label: "Email",
+              label: getText("email"),
               value: "contact@kairos.dev",
             },
             {
               icon: PhoneIcon,
-              label: "Phone",
+              label: getText("phone"),
               value: "+1 (555) 123-4567",
             },
             {
               icon: MapPinIcon,
-              label: "Address",
+              label: getText("address"),
               value: "San Francisco, CA",
               className: "col-span-2 lg:col-span-1",
             },
@@ -463,23 +498,23 @@ function ContactSection() {
         >
           <form className="w-full space-y-4">
             <div className="flex flex-col gap-2">
-              <Label>Name</Label>
-              <Input type="text" placeholder="Your name" />
+              <Label>{getText("name")}</Label>
+              <Input type="text" placeholder={getText("yourName")} />
             </div>
             <div className="flex flex-col gap-2">
-              <Label>Email</Label>
-              <Input type="email" placeholder="your@email.com" />
+              <Label>{getText("email")}</Label>
+              <Input type="email" placeholder={getText("yourEmail")} />
             </div>
             <div className="flex flex-col gap-2">
-              <Label>Phone</Label>
+              <Label>{getText("phone")}</Label>
               <Input type="tel" placeholder="+1 (555) 000-0000" />
             </div>
             <div className="flex flex-col gap-2">
-              <Label>Message</Label>
-              <Textarea placeholder="How can we help you?" />
+              <Label>{getText("message")}</Label>
+              <Textarea placeholder={getText("howCanWeHelp")} />
             </div>
             <Button className="w-full bg-indigo-600 hover:bg-indigo-700 dark:bg-blue-600 dark:hover:bg-blue-700" type="button">
-              Submit
+              {getText("submit")}
             </Button>
           </form>
         </ContactCard>
@@ -489,9 +524,29 @@ function ContactSection() {
 }
 
 // Horizon Glow Footer
-function HorizonGlowFooter() {
+function HorizonGlowFooter({ language }: { language: LanguageCode }) {
   const [isVisible, setIsVisible] = useState(false)
   const footerRef = useRef<HTMLElement>(null)
+
+  const getText = (key: string) => {
+    const translations: Record<string, Record<string, string>> = {
+      en: {
+        tagline: "THE FUTURE OF ADMIN IS NOW HERE",
+        triage: "Triage",
+        staffPortal: "Staff Portal",
+        documentation: "Documentation",
+        copyright: "© 2024 Kairos. All rights reserved.",
+      },
+      fr: {
+        tagline: "L'AVENIR DE L'ADMINISTRATION EST ARRIVÉ",
+        triage: "Triage",
+        staffPortal: "Portail Personnel",
+        documentation: "Documentation",
+        copyright: "© 2024 Kairos. Tous droits réservés.",
+      }
+    }
+    return translations[language]?.[key] || translations.en[key] || key
+  }
 
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -538,21 +593,21 @@ function HorizonGlowFooter() {
           KAIROS
         </h3>
         <p className="text-sm text-indigo-600/60 dark:text-blue-400/60 tracking-wider mb-8">
-          THE FUTURE OF ADMIN IS NOW HERE
+          {getText("tagline")}
         </p>
         <div className="flex gap-6 text-sm text-gray-600 dark:text-gray-400">
-          <Link href="/triage" className="hover:text-indigo-600 dark:hover:text-blue-400 transition-colors">
-            Triage
+          <Link href={`/triage?lang=${language}`} className="hover:text-indigo-600 dark:hover:text-blue-400 transition-colors">
+            {getText("triage")}
           </Link>
-          <Link href="/staff" className="hover:text-indigo-600 dark:hover:text-blue-400 transition-colors">
-            Staff Portal
+          <Link href={`/staff?lang=${language}`} className="hover:text-indigo-600 dark:hover:text-blue-400 transition-colors">
+            {getText("staffPortal")}
           </Link>
           <a href="#" className="hover:text-indigo-600 dark:hover:text-blue-400 transition-colors">
-            Documentation
+            {getText("documentation")}
           </a>
         </div>
         <p className="mt-8 text-xs text-gray-500 dark:text-gray-500">
-          © 2024 Kairos. All rights reserved.
+          {getText("copyright")}
         </p>
       </div>
     </footer>
@@ -571,8 +626,8 @@ export default function Home() {
     <div className="min-h-screen">
       <HeroSection language={language} onLanguageChange={handleLanguageChange} />
       <TrustedBySection />
-      <ContactSection />
-      <HorizonGlowFooter />
+      <ContactSection language={language} />
+      <HorizonGlowFooter language={language} />
     </div>
   )
 }

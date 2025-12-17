@@ -102,6 +102,17 @@ export interface Translations {
   staffPortal: string;
   trustedBy: string;
   contactUs: string;
+  getInTouch: string;
+  contactDescription: string;
+  email: string;
+  phone: string;
+  address: string;
+  name: string;
+  yourName: string;
+  yourEmail: string;
+  message: string;
+  howCanWeHelp: string;
+  submit: string;
 
   // Staff Portal
   staffLogin: string;
@@ -218,6 +229,17 @@ export const translations: Record<LanguageCode, Translations> = {
     staffPortal: "Staff Portal",
     trustedBy: "Trusted By",
     contactUs: "Contact Us",
+    getInTouch: "Get in touch with us",
+    contactDescription: "Have questions about Kairos or need help getting started? Fill out the form and our team will get back to you within 1 business day.",
+    email: "Email",
+    phone: "Phone",
+    address: "Address",
+    name: "Name",
+    yourName: "Your name",
+    yourEmail: "your@email.com",
+    message: "Message",
+    howCanWeHelp: "How can we help you?",
+    submit: "Submit",
 
     // Staff Portal
     staffLogin: "Staff Login",
@@ -333,6 +355,17 @@ export const translations: Record<LanguageCode, Translations> = {
     staffPortal: "Portail Personnel",
     trustedBy: "Ils nous font confiance",
     contactUs: "Contactez-nous",
+    getInTouch: "Prenez contact avec nous",
+    contactDescription: "Vous avez des questions sur Kairos ou besoin d'aide pour commencer ? Remplissez le formulaire et notre équipe vous répondra dans un délai d'un jour ouvrable.",
+    email: "E-mail",
+    phone: "Téléphone",
+    address: "Adresse",
+    name: "Nom",
+    yourName: "Votre nom",
+    yourEmail: "votre@email.com",
+    message: "Message",
+    howCanWeHelp: "Comment pouvons-nous vous aider ?",
+    submit: "Envoyer",
 
     // Staff Portal
     staffLogin: "Connexion Personnel",
