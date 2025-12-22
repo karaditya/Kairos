@@ -20,6 +20,8 @@ import {
   Loader2,
   Brain,
   MessageSquare,
+  Download,
+  Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,7 +29,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { GenerateSummaryButton } from "@/components/ui/generate-summary-button";
 import { AnimatedDownloadButton } from "@/components/ui/animated-download-button";
 import { LanguageSelectorDropdown, type Language } from "@/components/ui/language-selector-dropdown";
-import { api, type CaseResponse, type ModelInfo, type CurrentModel } from "@/lib/api";
+import { api, type CaseResponse, type ModelInfo, type CurrentModel, type GpuInfo, type DownloadProgress } from "@/lib/api";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
@@ -194,6 +196,9 @@ export default function StaffPortal() {
   const [selectedModelId, setSelectedModelId] = useState<string>("");
   const [showModelSelector, setShowModelSelector] = useState(false);
   const [modelSwitching, setModelSwitching] = useState(false);
+  const [gpuInfo, setGpuInfo] = useState<GpuInfo | null>(null);
+  const [downloadingModel, setDownloadingModel] = useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
 
   // PDF generation state
   const [pdfGenerating, setPdfGenerating] = useState(false);
@@ -229,19 +234,61 @@ export default function StaffPortal() {
 
   const fetchModels = async () => {
     try {
-      const response = await api.getModels();
+      const response = await api.getAllModels();
       setModels(response.models);
-      setCurrentModel(response.current_model);
-      if (response.current_model) {
-        setSelectedModelId(response.current_model.model_id);
+      setGpuInfo(response.gpu_info);
+      // Set current model from GGUF (primary) or DrBERT
+      const current = response.current_gguf || response.current_drbert;
+      setCurrentModel(current);
+      if (current) {
+        setSelectedModelId(current.model_id);
       }
     } catch (err) {
       console.error("Failed to fetch models:", err);
+      // Fallback to old endpoint
+      try {
+        const fallback = await api.getModels();
+        setModels(fallback.models.map(m => ({ ...m, is_downloaded: m.is_available ?? false, type: "gguf" as const })));
+        setCurrentModel(fallback.current_model);
+      } catch (e) {
+        console.error("Fallback also failed:", e);
+      }
+    }
+  };
+
+  const handleDownloadModel = async (modelId: string) => {
+    setDownloadingModel(modelId);
+    setDownloadProgress(null);
+    setError("");
+
+    try {
+      await api.downloadModel(modelId, true, (progress) => {
+        setDownloadProgress(progress);
+      });
+
+      // Refresh models list after download
+      await fetchModels();
+      setDownloadingModel(null);
+      setDownloadProgress(null);
+    } catch (err: any) {
+      setError(err.message || "Download failed");
+      setDownloadingModel(null);
+      setDownloadProgress(null);
     }
   };
 
   const handleSwitchModel = async (modelId: string) => {
-    if (modelId === currentModel?.model_id) {
+    const model = models.find(m => m.id === modelId);
+
+    // If not downloaded, trigger download instead
+    if (model && !model.is_downloaded) {
+      await handleDownloadModel(modelId);
+      return;
+    }
+
+    // Check if already the active model
+    const isCurrentlyLoaded = models.find(m => m.id === modelId)?.is_loaded;
+    if (isCurrentlyLoaded) {
       setShowModelSelector(false);
       return;
     }
@@ -250,11 +297,17 @@ export default function StaffPortal() {
     setError("");
 
     try {
-      const response = await api.switchModel(modelId, staffPin);
-      setCurrentModel(response.model);
+      // Use appropriate endpoint based on model type
+      if (model?.type === "drbert") {
+        const result = await api.loadDrBertModel(modelId);
+        setCurrentModel(result.model);
+      } else {
+        const result = await api.switchModel(modelId, staffPin);
+        setCurrentModel(result.model);
+      }
       setSelectedModelId(modelId);
-      setShowModelSelector(false);
       await fetchModels();
+      setShowModelSelector(false);
     } catch (err: any) {
       setError(err.message || "Failed to switch model");
     } finally {
@@ -577,7 +630,7 @@ export default function StaffPortal() {
               </Button>
 
               {showModelSelector && (
-                <div className="absolute right-0 top-full mt-2 w-96 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 z-50 max-h-[500px] overflow-y-auto">
+                <div className="absolute right-0 top-full mt-2 w-[450px] bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 z-50 max-h-[600px] overflow-y-auto">
                   <div className="p-3 border-b border-gray-200 dark:border-gray-700">
                     <h3 className="font-semibold text-gray-900 dark:text-white">
                       {t("selectAiModel")}
@@ -585,71 +638,238 @@ export default function StaffPortal() {
                     <p className="text-xs text-gray-500 mt-1">
                       {t("chooseModel")}
                     </p>
+                    {gpuInfo && gpuInfo.cuda_available && (
+                      <div className="flex items-center gap-2 mt-2 text-xs text-green-600 dark:text-green-400">
+                        <Sparkles className="h-3 w-3" />
+                        GPU: {gpuInfo.gpu_name} ({gpuInfo.free_vram_mb}MB free)
+                      </div>
+                    )}
                   </div>
                   <div className="p-2">
-                    {models.filter(m => m.is_available).length === 0 ? (
+                    {models.length === 0 ? (
                       <p className="text-sm text-gray-500 p-3 text-center">
                         {t("noModelsAvailable")}
                       </p>
                     ) : (
-                      models.filter(m => m.is_available).map((model) => (
-                        <button
-                          key={model.id}
-                          onClick={() => handleSwitchModel(model.id)}
-                          disabled={modelSwitching}
-                          className={`w-full text-left p-3 rounded-lg mb-1 transition-colors ${
-                            model.is_loaded
-                              ? "bg-blue-50 dark:bg-blue-900/30 border-2 border-blue-500"
-                              : "hover:bg-gray-100 dark:hover:bg-gray-700 border-2 border-transparent"
-                          }`}
-                        >
-                          <div className="flex justify-between items-start">
-                            <div className="flex-1">
-                              <div className="flex items-center gap-2">
-                                <span className="font-medium text-gray-900 dark:text-white">
-                                  {model.name}
-                                </span>
-                                {model.is_loaded && (
-                                  <span className="text-xs bg-blue-500 text-white px-2 py-0.5 rounded">
-                                    {t("active")}
-                                  </span>
-                                )}
-                              </div>
-                              <p className="text-xs text-gray-500 mt-1">
-                                {model.description}
-                              </p>
-                              <div className="flex items-center gap-3 mt-2 text-xs">
-                                <span className="flex items-center gap-1">
-                                  <HardDrive className="h-3 w-3" />
-                                  {model.size_mb}MB
-                                </span>
-                                <span className={`flex items-center gap-1 ${getSpeedColor(model.speed_rating)}`}>
-                                  <Zap className="h-3 w-3" />
-                                  {t("speed")}: {model.speed_rating}/10
-                                </span>
-                                <span className={`flex items-center gap-1 ${getQualityColor(model.quality_rating)}`}>
-                                  Quality: {model.quality_rating}/10
-                                </span>
-                              </div>
-                              <div className="flex gap-1 mt-2">
-                                {model.tags.slice(0, 3).map((tag) => (
-                                  <span
-                                    key={tag}
-                                    className="text-xs bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded"
-                                  >
-                                    {tag}
-                                  </span>
-                                ))}
-                              </div>
+                      <>
+                        {/* Q&A Models (GGUF) - For text generation */}
+                        {models.filter(m => m.is_downloaded && m.type === "gguf").length > 0 && (
+                          <div className="mb-2">
+                            <div className="text-xs font-medium text-gray-500 px-2 py-1 flex items-center gap-1">
+                              <MessageSquare className="h-3 w-3" />
+                              Q&A Models (for AI Assistant)
                             </div>
+                            {models.filter(m => m.is_downloaded && m.type === "gguf").map((model) => (
+                              <button
+                                key={model.id}
+                                onClick={() => handleSwitchModel(model.id)}
+                                disabled={modelSwitching || downloadingModel === model.id}
+                                className={`w-full text-left p-3 rounded-lg mb-1 transition-colors ${
+                                  model.is_loaded
+                                    ? "bg-blue-50 dark:bg-blue-900/30 border-2 border-blue-500"
+                                    : "hover:bg-gray-100 dark:hover:bg-gray-700 border-2 border-transparent"
+                                }`}
+                              >
+                                <div className="flex justify-between items-start">
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-medium text-gray-900 dark:text-white">
+                                        {model.name}
+                                      </span>
+                                      {model.is_loaded && (
+                                        <span className="text-xs bg-blue-500 text-white px-2 py-0.5 rounded">
+                                          {t("active")}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="text-xs text-gray-500 mt-1">
+                                      {model.description}
+                                    </p>
+                                    <div className="flex items-center gap-3 mt-2 text-xs">
+                                      <span className="flex items-center gap-1">
+                                        <HardDrive className="h-3 w-3" />
+                                        {model.size_mb}MB
+                                      </span>
+                                      {model.speed_rating && (
+                                        <span className={`flex items-center gap-1 ${getSpeedColor(model.speed_rating)}`}>
+                                          <Zap className="h-3 w-3" />
+                                          {t("speed")}: {model.speed_rating}/10
+                                        </span>
+                                      )}
+                                      {model.quality_rating && (
+                                        <span className={`flex items-center gap-1 ${getQualityColor(model.quality_rating)}`}>
+                                          Quality: {model.quality_rating}/10
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="flex gap-1 mt-2">
+                                      {model.tags.slice(0, 3).map((tag) => (
+                                        <span
+                                          key={tag}
+                                          className="text-xs bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded"
+                                        >
+                                          {tag}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </div>
+                              </button>
+                            ))}
                           </div>
-                        </button>
-                      ))
+                        )}
+
+                        {/* DrBERT Models - For embeddings (separate section) */}
+                        {models.filter(m => m.is_downloaded && m.type === "drbert").length > 0 && (
+                          <div className="mb-2 border-t border-gray-200 dark:border-gray-700 pt-2">
+                            <div className="text-xs font-medium text-purple-600 dark:text-purple-400 px-2 py-1 flex items-center gap-1">
+                              <Brain className="h-3 w-3" />
+                              Embedding Models (for similarity search)
+                            </div>
+                            <p className="text-xs text-gray-400 px-2 mb-2">Not for Q&A - use for French medical embeddings</p>
+                            {models.filter(m => m.is_downloaded && m.type === "drbert").map((model) => (
+                              <div
+                                key={model.id}
+                                className={`w-full text-left p-3 rounded-lg mb-1 border-2 ${
+                                  model.is_loaded
+                                    ? "bg-purple-50 dark:bg-purple-900/30 border-purple-500"
+                                    : "border-transparent bg-gray-50 dark:bg-gray-800"
+                                }`}
+                              >
+                                <div className="flex justify-between items-start">
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-medium text-gray-900 dark:text-white">
+                                        {model.name}
+                                      </span>
+                                      <span className="text-xs bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300 px-2 py-0.5 rounded">
+                                        BERT
+                                      </span>
+                                      {model.is_loaded && (
+                                        <span className="text-xs bg-purple-500 text-white px-2 py-0.5 rounded">
+                                          Loaded
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="text-xs text-gray-500 mt-1">
+                                      {model.description}
+                                    </p>
+                                    <div className="flex items-center gap-3 mt-2 text-xs">
+                                      <span className="flex items-center gap-1">
+                                        <HardDrive className="h-3 w-3" />
+                                        {model.size_mb}MB
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <Button
+                                    size="sm"
+                                    variant={model.is_loaded ? "outline" : "default"}
+                                    onClick={() => model.is_loaded ? api.unloadDrBertModel().then(fetchModels) : handleSwitchModel(model.id)}
+                                    disabled={modelSwitching}
+                                    className="ml-2"
+                                  >
+                                    {model.is_loaded ? "Unload" : "Load"}
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Available for Download Section */}
+                        {models.filter(m => !m.is_downloaded).length > 0 && (
+                          <div className="border-t border-gray-200 dark:border-gray-700 pt-2">
+                            <div className="text-xs font-medium text-gray-500 px-2 py-1">Available for Download</div>
+                            {models.filter(m => !m.is_downloaded).map((model) => (
+                              <div
+                                key={model.id}
+                                className={`w-full text-left p-3 rounded-lg mb-1 border-2 border-dashed border-gray-300 dark:border-gray-600 ${
+                                  downloadingModel === model.id ? "bg-blue-50 dark:bg-blue-900/20" : ""
+                                }`}
+                              >
+                                <div className="flex justify-between items-start">
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-medium text-gray-700 dark:text-gray-300">
+                                        {model.name}
+                                      </span>
+                                      {model.type === "drbert" && (
+                                        <span className="text-xs bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300 px-2 py-0.5 rounded">
+                                          BERT
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="text-xs text-gray-500 mt-1">
+                                      {model.description}
+                                    </p>
+                                    <div className="flex items-center gap-3 mt-2 text-xs text-gray-500">
+                                      <span className="flex items-center gap-1">
+                                        <HardDrive className="h-3 w-3" />
+                                        {model.size_mb}MB
+                                      </span>
+                                      {model.speed_rating && (
+                                        <span className="flex items-center gap-1">
+                                          <Zap className="h-3 w-3" />
+                                          {model.speed_rating}/10
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    {/* Download Progress */}
+                                    {downloadingModel === model.id && downloadProgress && (
+                                      <div className="mt-2">
+                                        <div className="flex items-center justify-between text-xs text-blue-600 dark:text-blue-400 mb-1">
+                                          <span>{downloadProgress.status || "Downloading..."}</span>
+                                          <span>{Math.round((downloadProgress.progress || 0) * 100)}%</span>
+                                        </div>
+                                        <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                                          <div
+                                            className="bg-blue-500 h-2 rounded-full transition-all duration-300"
+                                            style={{ width: `${(downloadProgress.progress || 0) * 100}%` }}
+                                          />
+                                        </div>
+                                        {downloadProgress.speed_mbps && (
+                                          <div className="text-xs text-gray-500 mt-1">
+                                            {downloadProgress.speed_mbps.toFixed(1)} MB/s
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {/* Download Button */}
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDownloadModel(model.id);
+                                    }}
+                                    disabled={downloadingModel !== null}
+                                    className="ml-2 flex items-center gap-1"
+                                  >
+                                    {downloadingModel === model.id ? (
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                      <>
+                                        <Download className="h-4 w-4" />
+                                        Download
+                                      </>
+                                    )}
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                   <div className="p-3 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 rounded-b-lg">
                     <p className="text-xs text-gray-500">
-                      {t("modelsNotListed")}
+                      {gpuInfo?.can_use_gpu
+                        ? `Auto GPU/CPU split enabled (${gpuInfo.recommended_gpu_layers} layers on GPU)`
+                        : "Running on CPU only"}
                     </p>
                   </div>
                 </div>

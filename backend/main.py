@@ -21,8 +21,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
+import asyncio
 
 from database import Database, Session, Case
 from pdf_generator import generate_medical_report_pdf
@@ -30,6 +31,13 @@ from triage_engine import TriageEngine, RiskEngine
 from multi_model_engine import MultiModelEngine, get_engine
 from model_registry import get_all_models, get_model_config, model_to_dict
 from drbert_engine import DrBERTEngine, get_drbert_engine, DRBERT_MODELS
+from model_downloader import (
+    detect_gpu_capabilities,
+    download_and_load_model,
+    get_download_progress,
+    get_all_downloads,
+    check_model_downloaded
+)
 
 # =============================================================================
 # Configuration
@@ -638,6 +646,60 @@ async def get_current_model():
         return {"loaded": False, "message": "No model currently loaded"}
     return {"loaded": True, "model": current}
 
+@app.get("/models/all")
+async def list_all_models_with_download_status():
+    """
+    List all available models (GGUF + DrBERT) with download status.
+    This is the unified endpoint for the frontend model selector.
+    """
+    models_dir = os.path.dirname(MODEL_PATH)
+    gpu_info = detect_gpu_capabilities()
+
+    all_models = []
+
+    # GGUF models
+    for config in get_all_models():
+        model_dict = model_to_dict(config)
+        model_dict["type"] = "gguf"
+        model_dict["is_downloaded"] = reasoning_engine._model_exists(config.id)
+        model_dict["is_loaded"] = (
+            reasoning_engine._current_model and
+            reasoning_engine._current_model.model_id == config.id
+        )
+        all_models.append(model_dict)
+
+    # DrBERT models
+    for model_id, config in DRBERT_MODELS.items():
+        drbert_dict = {
+            "id": config.id,
+            "name": config.name,
+            "family": "drbert",
+            "description": config.description,
+            "type": "drbert",
+            "size_mb": config.approx_size_mb,
+            "training_data_gb": config.training_data_gb,
+            "hf_model_id": config.hf_model_id,
+            "is_downloaded": check_model_downloaded(
+                model_id, "drbert",
+                {"hf_model_id": config.hf_model_id},
+                models_dir
+            ),
+            "is_loaded": (
+                drbert_engine.is_loaded and
+                drbert_engine._current_model and
+                drbert_engine._current_model.config.id == model_id
+            ),
+            "tags": ["french", "medical", "bert"]
+        }
+        all_models.append(drbert_dict)
+
+    return {
+        "models": all_models,
+        "gpu_info": gpu_info,
+        "current_gguf": reasoning_engine.get_current_model(),
+        "current_drbert": drbert_engine.get_current_model() if drbert_engine else None
+    }
+
 @app.get("/models/{model_id}")
 async def get_model_info(model_id: str):
     """Get detailed information about a specific model."""
@@ -655,7 +717,11 @@ async def get_model_info(model_id: str):
 
 @app.post("/models/switch", dependencies=[Depends(verify_staff_pin)])
 async def switch_model(request: ModelSwitchRequest):
-    """Switch to a different model (staff only)."""
+    """Switch to a different GGUF model (staff only).
+
+    Note: GGUF models are used for text generation (Q&A, summaries).
+    DrBERT can run alongside for embeddings/similarity.
+    """
     config = get_model_config(request.model_id)
     if not config:
         raise HTTPException(status_code=404, detail=f"Unknown model: {request.model_id}")
@@ -699,6 +765,9 @@ async def load_drbert_model(model_id: str):
     """
     Load a DrBERT model with automatic GPU/CPU distribution.
     Models: drbert-4gb, drbert-7gb, drbert-4gb-pubmed
+
+    Note: DrBERT is for embeddings/similarity, not text generation.
+    It runs alongside the GGUF model (both can be loaded).
     """
     if model_id not in DRBERT_MODELS:
         raise HTTPException(
@@ -813,6 +882,128 @@ async def drbert_fill_mask(request: Dict[str, Any]):
         return {"predictions": predictions}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# =============================================================================
+# Model Download Endpoints (Unified for GGUF and DrBERT)
+# =============================================================================
+
+@app.get("/gpu/info")
+async def get_gpu_info():
+    """Get GPU capabilities and recommended settings for model loading."""
+    return detect_gpu_capabilities()
+
+@app.get("/download/status")
+async def get_download_status():
+    """Get status of all active/recent downloads."""
+    downloads = get_all_downloads()
+    return {
+        "downloads": {
+            k: {
+                "model_id": v.model_id,
+                "model_type": v.model_type,
+                "status": v.status,
+                "progress": v.progress,
+                "downloaded_mb": v.downloaded_mb,
+                "total_mb": v.total_mb,
+                "error": v.error
+            }
+            for k, v in downloads.items()
+        }
+    }
+
+@app.get("/download/status/{model_id}")
+async def get_model_download_status(model_id: str):
+    """Get download status for a specific model."""
+    progress = get_download_progress(model_id)
+    if not progress:
+        return {"status": "not_started", "model_id": model_id}
+
+    return {
+        "model_id": progress.model_id,
+        "model_type": progress.model_type,
+        "status": progress.status,
+        "progress": progress.progress,
+        "downloaded_mb": progress.downloaded_mb,
+        "total_mb": progress.total_mb,
+        "speed_mbps": progress.speed_mbps,
+        "error": progress.error
+    }
+
+@app.post("/download/{model_id}")
+async def download_model_endpoint(model_id: str, auto_load: bool = True):
+    """
+    Download a model (GGUF or DrBERT) with progress streaming.
+
+    Returns Server-Sent Events with download progress.
+    After download, automatically loads with optimal GPU/CPU split.
+
+    Args:
+        model_id: Model ID (e.g., 'llama-3.2-1b', 'drbert-7gb')
+        auto_load: Whether to load after download (default: True)
+    """
+    # Determine model type and config
+    gguf_config = get_model_config(model_id)
+    drbert_config = DRBERT_MODELS.get(model_id)
+
+    if gguf_config:
+        model_type = "gguf"
+        config = model_to_dict(gguf_config)
+        config["size_bytes"] = gguf_config.size_bytes
+        config["download_url"] = gguf_config.download_url
+        config["filename"] = gguf_config.filename
+        models_dir = os.path.dirname(MODEL_PATH)
+    elif drbert_config:
+        model_type = "drbert"
+        config = {
+            "hf_model_id": drbert_config.hf_model_id,
+            "approx_size_mb": drbert_config.approx_size_mb
+        }
+        models_dir = os.path.dirname(MODEL_PATH)
+    else:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown model: {model_id}. Check /models or /drbert/models for available models."
+        )
+
+    # Check if already downloaded
+    if check_model_downloaded(model_id, model_type, config, models_dir):
+        # Already downloaded, just load if requested
+        if auto_load:
+            if model_type == "gguf":
+                success = reasoning_engine.load_model(model_id)
+            else:
+                success = drbert_engine.load_model(model_id)
+
+            return {
+                "status": "already_downloaded",
+                "loaded": success,
+                "model_id": model_id,
+                "gpu_info": detect_gpu_capabilities()
+            }
+        return {"status": "already_downloaded", "model_id": model_id}
+
+    # Stream download progress
+    async def generate_events():
+        import json
+
+        for update in download_and_load_model(
+            model_id=model_id,
+            model_type=model_type,
+            config=config,
+            models_dir=models_dir,
+            auto_load=auto_load
+        ):
+            yield f"data: {json.dumps(update)}\n\n"
+            await asyncio.sleep(0.01)  # Allow other tasks
+
+    return StreamingResponse(
+        generate_events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
 
 # =============================================================================
 # Helper Functions

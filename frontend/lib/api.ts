@@ -49,19 +49,53 @@ export interface ModelInfo {
   name: string;
   family: string;
   description: string;
-  filename: string;
-  download_url: string;
+  filename?: string;
+  download_url?: string;
   size_mb: number;
-  size_category: string;
-  quality: string;
-  context_length: number;
-  quantization: string;
-  speed_rating: number;
-  quality_rating: number;
-  memory_mb: number;
+  size_category?: string;
+  quality?: string;
+  context_length?: number;
+  quantization?: string;
+  speed_rating?: number;
+  quality_rating?: number;
+  memory_mb?: number;
   tags: string[];
-  is_available: boolean;
+  is_available?: boolean;
   is_loaded: boolean;
+  is_downloaded: boolean;
+  type: "gguf" | "drbert";
+  hf_model_id?: string;
+  training_data_gb?: number;
+}
+
+export interface GpuInfo {
+  cuda_available: boolean;
+  gpu_name: string | null;
+  total_vram_mb: number;
+  free_vram_mb: number;
+  recommended_gpu_layers: number;
+  can_use_gpu: boolean;
+}
+
+export interface AllModelsResponse {
+  models: ModelInfo[];
+  gpu_info: GpuInfo;
+  current_gguf: CurrentModel | null;
+  current_drbert: CurrentModel | null;
+}
+
+export interface DownloadProgress {
+  type: "start" | "progress" | "complete" | "error" | "loading" | "loaded" | "gpu_detected";
+  model_id?: string;
+  progress?: number;
+  downloaded_mb?: number;
+  total_mb?: number;
+  speed_mbps?: number;
+  status?: string;
+  error?: string;
+  success?: boolean;
+  gpu_info?: GpuInfo;
+  result?: any;
 }
 
 export interface CurrentModel {
@@ -310,6 +344,116 @@ export const api = {
       }
     );
     if (!response.ok) throw new Error("Failed to ask question");
+    return response.json();
+  },
+
+  // =========================================================================
+  // Unified Model Management (GGUF + DrBERT)
+  // =========================================================================
+
+  async getAllModels(): Promise<AllModelsResponse> {
+    const response = await fetch(`${API_BASE_URL}/models/all`);
+    if (!response.ok) throw new Error("Failed to fetch all models");
+    return response.json();
+  },
+
+  async getGpuInfo(): Promise<GpuInfo> {
+    const response = await fetch(`${API_BASE_URL}/gpu/info`);
+    if (!response.ok) throw new Error("Failed to fetch GPU info");
+    return response.json();
+  },
+
+  async downloadModel(
+    modelId: string,
+    autoLoad: boolean = true,
+    onProgress?: (progress: DownloadProgress) => void
+  ): Promise<boolean> {
+    const response = await fetch(
+      `${API_BASE_URL}/download/${modelId}?auto_load=${autoLoad}`,
+      { method: "POST" }
+    );
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Failed to start download");
+    }
+
+    // Check if it's already downloaded (JSON response)
+    const contentType = response.headers.get("content-type");
+    if (contentType?.includes("application/json")) {
+      const result = await response.json();
+      if (onProgress) {
+        onProgress({
+          type: "complete",
+          model_id: modelId,
+          success: true,
+          result: result
+        });
+      }
+      return result.loaded || result.status === "already_downloaded";
+    }
+
+    // Handle SSE stream for download progress
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("No response body");
+
+    const decoder = new TextDecoder();
+    let success = false;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const text = decoder.decode(value, { stream: true });
+      const lines = text.split("\n");
+
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          try {
+            const data = JSON.parse(line.slice(6)) as DownloadProgress;
+            if (onProgress) onProgress(data);
+
+            if (data.type === "complete" || data.type === "loaded") {
+              success = data.success ?? true;
+            } else if (data.type === "error") {
+              throw new Error(data.error || "Download failed");
+            }
+          } catch (e) {
+            // Ignore parse errors for incomplete chunks
+          }
+        }
+      }
+    }
+
+    return success;
+  },
+
+  async getDownloadStatus(modelId?: string): Promise<any> {
+    const url = modelId
+      ? `${API_BASE_URL}/download/status/${modelId}`
+      : `${API_BASE_URL}/download/status`;
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("Failed to fetch download status");
+    return response.json();
+  },
+
+  // DrBERT specific endpoints
+  async loadDrBertModel(modelId: string): Promise<any> {
+    const response = await fetch(`${API_BASE_URL}/drbert/load/${modelId}`, {
+      method: "POST",
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Failed to load DrBERT model");
+    }
+    return response.json();
+  },
+
+  async unloadDrBertModel(): Promise<any> {
+    const response = await fetch(`${API_BASE_URL}/drbert/unload`, {
+      method: "POST",
+    });
+    if (!response.ok) throw new Error("Failed to unload DrBERT model");
     return response.json();
   },
 };

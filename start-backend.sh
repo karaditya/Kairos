@@ -47,7 +47,11 @@ fi
 
 # Start backend
 echo "Starting FastAPI backend on http://localhost:8000..."
-echo "GPU Acceleration: ${N_GPU_LAYERS:-0} layers (set N_GPU_LAYERS env var to change)"
+if [ -z "$N_GPU_LAYERS" ]; then
+    echo "GPU Acceleration: Auto-detect (will use optimal GPU/CPU split based on VRAM)"
+else
+    echo "GPU Acceleration: $N_GPU_LAYERS layers (manual override)"
+fi
 echo "LLM output will be appended to backend/backend.log"
 cd backend
 python main.py
