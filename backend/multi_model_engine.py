@@ -590,6 +590,9 @@ class MultiModelEngine:
         """Robust JSON sanitizer for models using JSON grammar."""
         text = raw_output.strip()
 
+        # Strip <think>...</think> blocks (DeepSeek-R1)
+        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
         # Remove Markdown code blocks
         if text.startswith("```"):
             text = re.sub(r"^```(json)?\s*", "", text)
@@ -1062,11 +1065,17 @@ class MultiModelEngine:
                 raw = output['choices'][0]['message']['content']
                 log_llm_output(raw, context="RAG_SYNTHESIS")
 
+                # Extract reasoning from think tags before stripping
+                _, think_reasoning = self._strip_think_tags(raw)
+
                 # Parse response
                 if use_json:
                     clean_json = self._clean_json_output(raw)
                     try:
                         parsed = json.loads(clean_json)
+                        # Use think content as reasoning if not in JSON
+                        if not parsed.get("reasoning") and think_reasoning:
+                            parsed["reasoning"] = think_reasoning
                     except json.JSONDecodeError:
                         parsed = self._parse_rag_output(raw)
                 else:
@@ -1091,14 +1100,30 @@ class MultiModelEngine:
                 logger.error(f"RAG synthesis error: {e}")
                 return self._generate_structured_fallback(patient_context, user_query)
 
+    def _strip_think_tags(self, text: str) -> tuple:
+        """Strip <think>...</think> tags from DeepSeek-R1 output, return (cleaned, reasoning)."""
+        reasoning = ""
+        think_match = re.search(r'<think>(.*?)</think>', text, flags=re.DOTALL)
+        if think_match:
+            reasoning = think_match.group(1).strip()
+        cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+        return cleaned, reasoning
+
     def _parse_rag_output(self, raw_str: str) -> Dict[str, Any]:
         """Parse RAG output with protocol_applied field."""
-        data = self._parse_adaptive_output(raw_str)
+        # Strip think tags first, extract reasoning
+        cleaned, think_reasoning = self._strip_think_tags(raw_str)
+
+        data = self._parse_adaptive_output(cleaned)
+
+        # Use think block as reasoning if no explicit reasoning found
+        if not data.get("reasoning") and think_reasoning:
+            data["reasoning"] = think_reasoning
 
         # Extract protocol_applied if present
         protocol_match = re.search(
             r'#{1,3}\s*Protocol(?:\s+Applied)?\s*\n(.*?)(?=#{1,3}|$)',
-            raw_str, re.DOTALL | re.IGNORECASE
+            cleaned, re.DOTALL | re.IGNORECASE
         )
         if protocol_match:
             data["protocol_applied"] = protocol_match.group(1).strip()
