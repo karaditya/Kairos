@@ -1,0 +1,248 @@
+{
+  "id": "chest_discomfort_fr",
+  "name": "Douleur Thoracique",
+  "name_en": "Chest Discomfort",
+  "description": "Évaluation de la douleur, pression ou gêne thoracique - Échelle FRENCH",
+  "version": "1.0",
+  "system": "french",
+  "default_level": "3B",
+  "questions": [
+    {
+      "id": "pain_type",
+      "type": "choice",
+      "text": "Comment décrivez-vous votre gêne thoracique ?",
+      "text_en": "How would you describe your chest discomfort?",
+      "options": [
+        {"value": "sharp", "label": "Douleur aiguë ou en coup de poignard"},
+        {"value": "pressure", "label": "Pression ou serrement"},
+        {"value": "burning", "label": "Sensation de brûlure"},
+        {"value": "aching", "label": "Douleur sourde"},
+        {"value": "tightness", "label": "Oppression"},
+        {"value": "other", "label": "Autre"}
+      ],
+      "next": "pain_location"
+    },
+    {
+      "id": "pain_location",
+      "type": "choice",
+      "text": "Où exactement se situe la gêne ?",
+      "text_en": "Where exactly is the discomfort located?",
+      "options": [
+        {"value": "center", "label": "Centre de la poitrine"},
+        {"value": "left", "label": "Côté gauche de la poitrine"},
+        {"value": "right", "label": "Côté droit de la poitrine"},
+        {"value": "widespread", "label": "Sur toute la poitrine"},
+        {"value": "moving", "label": "Se déplace"}
+      ],
+      "next": "pain_radiation"
+    },
+    {
+      "id": "pain_radiation",
+      "type": "choice",
+      "text": "La douleur irradie-t-elle vers d'autres zones ?",
+      "text_en": "Does the pain spread to other areas?",
+      "multiple": true,
+      "options": [
+        {"value": "left_arm", "label": "Bras gauche"},
+        {"value": "right_arm", "label": "Bras droit"},
+        {"value": "jaw", "label": "Mâchoire ou cou"},
+        {"value": "back", "label": "Dos"},
+        {"value": "shoulder", "label": "Épaule(s)"},
+        {"value": "none", "label": "Non, elle reste localisée"}
+      ],
+      "next": "pain_severity"
+    },
+    {
+      "id": "pain_severity",
+      "type": "numeric",
+      "text": "Sur une échelle de 0 à 10, quelle est l'intensité de la douleur ? (0=aucune, 10=maximale)",
+      "text_en": "On a scale of 0-10, how severe is the pain?",
+      "min": 0,
+      "max": 10,
+      "next": "pain_onset"
+    },
+    {
+      "id": "pain_onset",
+      "type": "choice",
+      "text": "Quand la douleur a-t-elle commencé ?",
+      "text_en": "When did the pain start?",
+      "options": [
+        {"value": "minutes", "label": "Il y a moins de 30 minutes"},
+        {"value": "hours_few", "label": "Entre 30 minutes et quelques heures"},
+        {"value": "hours_many", "label": "Plusieurs heures"},
+        {"value": "days", "label": "Plusieurs jours"},
+        {"value": "weeks", "label": "Plusieurs semaines ou plus"}
+      ],
+      "next": "pain_start_mode"
+    },
+    {
+      "id": "pain_start_mode",
+      "type": "choice",
+      "text": "Comment la douleur est-elle apparue ?",
+      "text_en": "How did the pain start?",
+      "options": [
+        {"value": "sudden", "label": "Brutalement"},
+        {"value": "gradual", "label": "Progressivement"},
+        {"value": "after_activity", "label": "Après un effort physique"},
+        {"value": "after_eating", "label": "Après un repas"},
+        {"value": "at_rest", "label": "Au repos"}
+      ],
+      "next": "shortness_breath"
+    },
+    {
+      "id": "shortness_breath",
+      "type": "yesno",
+      "text": "Avez-vous des difficultés à respirer ou un essoufflement ?",
+      "text_en": "Are you having difficulty breathing or shortness of breath?",
+      "next_if_yes": "breathing_severity",
+      "next_if_no": "sweating"
+    },
+    {
+      "id": "breathing_severity",
+      "type": "choice",
+      "text": "Quelle est la sévérité de votre difficulté respiratoire ?",
+      "text_en": "How severe is your breathing difficulty?",
+      "options": [
+        {"value": "mild", "label": "Légère - légèrement essoufflé(e)"},
+        {"value": "moderate", "label": "Modérée - difficulté notable"},
+        {"value": "severe", "label": "Sévère - je lutte pour respirer"},
+        {"value": "cant_speak", "label": "Ne peux pas parler en phrases complètes"}
+      ],
+      "next": "sweating"
+    },
+    {
+      "id": "sweating",
+      "type": "yesno",
+      "text": "Transpirez-vous plus que d'habitude (sueurs froides) ?",
+      "text_en": "Are you sweating more than usual (cold sweat)?",
+      "next_if_yes": "nausea",
+      "next_if_no": "nausea"
+    },
+    {
+      "id": "nausea",
+      "type": "yesno",
+      "text": "Avez-vous des nausées ou avez-vous vomi ?",
+      "text_en": "Do you feel nauseous or have you vomited?",
+      "next_if_yes": "dizziness",
+      "next_if_no": "dizziness"
+    },
+    {
+      "id": "dizziness",
+      "type": "yesno",
+      "text": "Vous sentez-vous étourdi(e) ou avez-vous des vertiges ?",
+      "text_en": "Do you feel dizzy or lightheaded?",
+      "next_if_yes": "palpitations",
+      "next_if_no": "palpitations"
+    },
+    {
+      "id": "palpitations",
+      "type": "yesno",
+      "text": "Sentez-vous votre cœur battre rapidement ou irrégulièrement ?",
+      "text_en": "Can you feel your heart racing or beating irregularly?",
+      "next_if_yes": "palpitations_type",
+      "next_if_no": "vital_signs_intro"
+    },
+    {
+      "id": "palpitations_type",
+      "type": "choice",
+      "text": "Comment décririez-vous vos battements cardiaques ?",
+      "text_en": "How would you describe your heartbeat?",
+      "options": [
+        {"value": "fast", "label": "Rapides mais réguliers"},
+        {"value": "irregular", "label": "Irréguliers ou sautant des battements"},
+        {"value": "pounding", "label": "Forts ou violents"},
+        {"value": "flutter", "label": "Sensation de papillonnement"}
+      ],
+      "next": "vital_signs_intro"
+    },
+    {
+      "id": "vital_signs_intro",
+      "type": "choice",
+      "text": "Avez-vous accès à un tensiomètre ou oxymètre de pouls ?",
+      "text_en": "Do you have access to a blood pressure monitor or pulse oximeter?",
+      "options": [
+        {"value": "yes", "label": "Oui, je peux mesurer mes constantes"},
+        {"value": "no", "label": "Non, je n'ai pas ces appareils"}
+      ],
+      "next_conditions": {
+        "yes": "heart_rate",
+        "no": "heart_history"
+      }
+    },
+    {
+      "id": "heart_rate",
+      "type": "numeric",
+      "text": "Quelle est votre fréquence cardiaque (pouls) ? (battements par minute)",
+      "text_en": "What is your heart rate (pulse)? (beats per minute)",
+      "min": 20,
+      "max": 250,
+      "next": "blood_pressure_systolic"
+    },
+    {
+      "id": "blood_pressure_systolic",
+      "type": "numeric",
+      "text": "Quelle est votre tension artérielle systolique ? (premier chiffre, ex: 120 dans 120/80)",
+      "text_en": "What is your systolic blood pressure? (first number)",
+      "min": 50,
+      "max": 300,
+      "next": "oxygen_saturation_available"
+    },
+    {
+      "id": "oxygen_saturation_available",
+      "type": "yesno",
+      "text": "Avez-vous un oxymètre pour mesurer votre saturation en oxygène ?",
+      "text_en": "Do you have an oximeter to measure oxygen saturation?",
+      "next_if_yes": "oxygen_saturation",
+      "next_if_no": "heart_history"
+    },
+    {
+      "id": "oxygen_saturation",
+      "type": "numeric",
+      "text": "Quelle est votre saturation en oxygène (SpO2) ? (en %)",
+      "text_en": "What is your oxygen saturation (SpO2)?",
+      "min": 50,
+      "max": 100,
+      "next": "heart_history"
+    },
+    {
+      "id": "heart_history",
+      "type": "choice",
+      "text": "Avez-vous l'un de ces antécédents médicaux ?",
+      "text_en": "Do you have any of these medical conditions?",
+      "multiple": true,
+      "options": [
+        {"value": "heart_attack", "label": "Infarctus du myocarde antérieur"},
+        {"value": "heart_disease", "label": "Maladie cardiaque"},
+        {"value": "high_bp", "label": "Hypertension artérielle"},
+        {"value": "high_cholesterol", "label": "Hypercholestérolémie"},
+        {"value": "diabetes", "label": "Diabète"},
+        {"value": "blood_clots", "label": "Phlébite ou embolie"},
+        {"value": "none", "label": "Aucun de ces antécédents"}
+      ],
+      "next": "referred_by_doctor"
+    },
+    {
+      "id": "referred_by_doctor",
+      "type": "yesno",
+      "text": "Êtes-vous adressé(e) par un médecin aujourd'hui ?",
+      "text_en": "Were you referred by a doctor today?",
+      "next_if_yes": "medications",
+      "next_if_no": "medications"
+    },
+    {
+      "id": "medications",
+      "type": "yesno",
+      "text": "Prenez-vous des médicaments, notamment anticoagulants ou pour le cœur ?",
+      "text_en": "Are you taking any medications, especially blood thinners or heart medications?",
+      "next_if_yes": "medication_list",
+      "next_if_no": "end"
+    },
+    {
+      "id": "medication_list",
+      "type": "text",
+      "text": "Veuillez lister vos médicaments :",
+      "text_en": "Please list your medications:",
+      "next": "end"
+    }
+  ]
+}

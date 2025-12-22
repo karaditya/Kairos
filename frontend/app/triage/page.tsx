@@ -1,22 +1,32 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { ArrowLeft, ArrowRight, CheckCircle, AlertCircle, FileText, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { LanguageSelectorDropdown, type Language, type LanguageCode } from "@/components/ui/language-selector-dropdown";
 import { api, type SummaryResponse } from "@/lib/api";
+import { t, type LanguageCode as TranslationLanguageCode } from "@/lib/translations";
 import Link from "next/link";
 
 type Step = "demographics" | "complaint" | "triage" | "summary";
 
 export default function TriagePage() {
+  const searchParams = useSearchParams();
+  const langParam = searchParams.get("lang");
+  const initialLanguage: LanguageCode = (langParam === "fr" || langParam === "en") ? langParam : "en";
+
   const [step, setStep] = useState<Step>("demographics");
   const [sessionId, setSessionId] = useState<string>("");
   const [progress, setProgress] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
+
+  // Language selection (initialized from URL parameter)
+  const [language, setLanguage] = useState<LanguageCode>(initialLanguage);
 
   // Demographics
   const [age, setAge] = useState("");
@@ -38,23 +48,43 @@ export default function TriagePage() {
   // PDF generation
   const [pdfLoading, setPdfLoading] = useState(false);
 
-  // Initialize session on mount
-  useEffect(() => {
-    const initSession = async () => {
+  // Helper function to get translated text
+  const getText = (key: keyof typeof import("@/lib/translations").translations.en) => {
+    return t(key, language as TranslationLanguageCode);
+  };
+
+  // Handle language change
+  const handleLanguageChange = async (lang: Language) => {
+    setLanguage(lang.code);
+    // If session already started, we need to reinitialize with new language
+    if (sessionId && step === "demographics") {
       try {
-        const response = await api.startSession("en");
+        const response = await api.startSession(lang.code);
         setSessionId(response.session_id);
         setProgress(response.progress);
       } catch (err) {
-        setError("Failed to initialize session. Is the backend running?");
+        setError(getText("failedInitSession"));
+      }
+    }
+  };
+
+  // Initialize session on mount with the initial language from URL
+  useEffect(() => {
+    const initSession = async () => {
+      try {
+        const response = await api.startSession(initialLanguage);
+        setSessionId(response.session_id);
+        setProgress(response.progress);
+      } catch (err) {
+        setError(getText("failedInitSession"));
       }
     };
     initSession();
-  }, []);
+  }, [initialLanguage]);
 
   const handleDemographicsSubmit = async () => {
     if (!age || !sex) {
-      setError("Please fill in all required fields");
+      setError(getText("pleaseFillRequired"));
       return;
     }
 
@@ -72,7 +102,7 @@ export default function TriagePage() {
       setProgress(response.progress);
       setStep("complaint");
     } catch (err) {
-      setError("Failed to submit demographics");
+      setError(getText("failedSubmitDemographics"));
     } finally {
       setLoading(false);
     }
@@ -80,7 +110,7 @@ export default function TriagePage() {
 
   const handleComplaintSubmit = async () => {
     if (!selectedComplaint) {
-      setError("Please select a chief complaint");
+      setError(getText("selectComplaint"));
       return;
     }
 
@@ -97,7 +127,7 @@ export default function TriagePage() {
       setProgress(response.progress);
       setStep("triage");
     } catch (err) {
-      setError("Failed to submit complaint");
+      setError(getText("failedSubmitComplaint"));
     } finally {
       setLoading(false);
     }
@@ -105,7 +135,7 @@ export default function TriagePage() {
 
   const handleAnswerSubmit = async () => {
     if (currentAnswer === "" || currentAnswer === null) {
-      setError("Please provide an answer");
+      setError(getText("provideAnswer"));
       return;
     }
 
@@ -131,7 +161,7 @@ export default function TriagePage() {
         setCurrentAnswer("");
       }
     } catch (err) {
-      setError("Failed to submit answer");
+      setError(getText("failedSubmitAnswer"));
     } finally {
       setLoading(false);
     }
@@ -148,7 +178,7 @@ export default function TriagePage() {
       const filename = `triage_report_${summary?.ticket_id || sessionId}.pdf`;
       api.downloadBlob(pdfBlob, filename);
     } catch (err) {
-      setError("Failed to generate PDF. Please try again.");
+      setError(getText("failedGeneratePdf"));
     } finally {
       setPdfLoading(false);
     }
@@ -168,14 +198,14 @@ export default function TriagePage() {
                 variant={currentAnswer === true ? "default" : "outline"}
                 className="flex-1"
               >
-                Yes
+                {getText("yes")}
               </Button>
               <Button
                 onClick={() => setCurrentAnswer(false)}
                 variant={currentAnswer === false ? "default" : "outline"}
                 className="flex-1"
               >
-                No
+                {getText("no")}
               </Button>
             </div>
           </div>
@@ -240,18 +270,34 @@ export default function TriagePage() {
       <div className="max-w-3xl mx-auto">
         {/* Header */}
         <div className="mb-8">
-          <Link href="/">
-            <Button variant="ghost" className="mb-4">
-              <ArrowLeft className="mr-2 h-4 w-4" />
-              Back to Home
-            </Button>
-          </Link>
+          <div className="flex items-center justify-between mb-4">
+            <Link href="/">
+              <Button variant="ghost">
+                <ArrowLeft className="mr-2 h-4 w-4" />
+                {getText("backToHome")}
+              </Button>
+            </Link>
+            {/* Language Selector - only show before triage starts */}
+            {step === "demographics" && (
+              <LanguageSelectorDropdown
+                value={language}
+                onChange={handleLanguageChange}
+                disabled={loading}
+              />
+            )}
+          </div>
           <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
-            Medical Triage Assessment
+            {getText("medicalTriageAssessment")}
           </h1>
           <p className="text-gray-600 dark:text-gray-400">
-            Please answer the following questions to help us assess your condition
+            {getText("triageSubtitle")}
           </p>
+          {/* Show which triage system is being used */}
+          {language === "fr" && (
+            <p className="text-sm text-blue-600 dark:text-blue-400 mt-2">
+              Système de triage FRENCH (Échelle de tri SFMU)
+            </p>
+          )}
         </div>
 
         {/* Progress Bar */}
@@ -265,7 +311,7 @@ export default function TriagePage() {
             />
           </div>
           <p className="text-sm text-gray-600 dark:text-gray-400 mt-2">
-            {Math.round(progress * 100)}% Complete
+            {Math.round(progress * 100)}% {getText("percentComplete")}
           </p>
         </div>
 
@@ -288,18 +334,18 @@ export default function TriagePage() {
           >
             <Card>
               <CardHeader>
-                <h2 className="text-2xl font-semibold">Basic Information</h2>
+                <h2 className="text-2xl font-semibold">{getText("basicInformation")}</h2>
               </CardHeader>
               <CardContent className="space-y-6">
                 <div>
                   <label className="block text-sm font-medium mb-2">
-                    Age *
+                    {getText("age")} *
                   </label>
                   <Input
                     type="number"
                     value={age}
                     onChange={(e) => setAge(e.target.value)}
-                    placeholder="Enter your age"
+                    placeholder={getText("enterYourAge")}
                     min="0"
                     max="120"
                   />
@@ -307,17 +353,20 @@ export default function TriagePage() {
 
                 <div>
                   <label className="block text-sm font-medium mb-2">
-                    Sex *
+                    {getText("sex")} *
                   </label>
                   <div className="grid grid-cols-3 gap-2">
-                    {["male", "female", "other"].map((option) => (
+                    {[
+                      { value: "male", label: getText("male") },
+                      { value: "female", label: getText("female") },
+                      { value: "other", label: getText("other") }
+                    ].map((option) => (
                       <Button
-                        key={option}
-                        onClick={() => setSex(option)}
-                        variant={sex === option ? "default" : "outline"}
-                        className="capitalize"
+                        key={option.value}
+                        onClick={() => setSex(option.value)}
+                        variant={sex === option.value ? "default" : "outline"}
                       >
-                        {option}
+                        {option.label}
                       </Button>
                     ))}
                   </div>
@@ -326,7 +375,7 @@ export default function TriagePage() {
                 {sex === "female" && (
                   <div>
                     <label className="block text-sm font-medium mb-2">
-                      Are you pregnant?
+                      {getText("areYouPregnant")}
                     </label>
                     <div className="flex gap-2">
                       <Button
@@ -334,14 +383,14 @@ export default function TriagePage() {
                         variant={pregnant === true ? "default" : "outline"}
                         className="flex-1"
                       >
-                        Yes
+                        {getText("yes")}
                       </Button>
                       <Button
                         onClick={() => setPregnant(false)}
                         variant={pregnant === false ? "default" : "outline"}
                         className="flex-1"
                       >
-                        No
+                        {getText("no")}
                       </Button>
                     </div>
                   </div>
@@ -352,7 +401,7 @@ export default function TriagePage() {
                   disabled={loading}
                   className="w-full"
                 >
-                  {loading ? "Processing..." : "Continue"}
+                  {loading ? getText("processing") : getText("continue")}
                   <ArrowRight className="ml-2 h-4 w-4" />
                 </Button>
               </CardContent>
@@ -368,9 +417,9 @@ export default function TriagePage() {
           >
             <Card>
               <CardHeader>
-                <h2 className="text-2xl font-semibold">Chief Complaint</h2>
+                <h2 className="text-2xl font-semibold">{getText("chiefComplaint")}</h2>
                 <p className="text-gray-600 dark:text-gray-400">
-                  What is the main reason for your visit?
+                  {getText("mainReasonVisit")}
                 </p>
               </CardHeader>
               <CardContent className="space-y-6">
@@ -395,13 +444,13 @@ export default function TriagePage() {
 
                 <div>
                   <label className="block text-sm font-medium mb-2">
-                    Additional details (optional)
+                    {getText("additionalDetails")}
                   </label>
                   <textarea
                     value={complaintText}
                     onChange={(e) => setComplaintText(e.target.value)}
                     className="w-full min-h-[100px] px-3 py-2 border border-input rounded-md bg-background"
-                    placeholder="Describe your symptoms in more detail..."
+                    placeholder={getText("describeSymptoms")}
                   />
                 </div>
 
@@ -410,7 +459,7 @@ export default function TriagePage() {
                   disabled={loading || !selectedComplaint}
                   className="w-full"
                 >
-                  {loading ? "Processing..." : "Continue"}
+                  {loading ? getText("processing") : getText("continue")}
                   <ArrowRight className="ml-2 h-4 w-4" />
                 </Button>
               </CardContent>
@@ -434,7 +483,7 @@ export default function TriagePage() {
                   disabled={loading || currentAnswer === "" || currentAnswer === null}
                   className="w-full"
                 >
-                  {loading ? "Processing..." : "Continue"}
+                  {loading ? getText("processing") : getText("continue")}
                   <ArrowRight className="ml-2 h-4 w-4" />
                 </Button>
               </CardContent>
@@ -456,26 +505,26 @@ export default function TriagePage() {
                 <div className="flex items-center gap-2">
                   <CheckCircle className="h-8 w-8 text-green-600" />
                   <div>
-                    <h2 className="text-2xl font-semibold">Assessment Complete</h2>
+                    <h2 className="text-2xl font-semibold">{getText("assessmentComplete")}</h2>
                     <p className="text-gray-600 dark:text-gray-400">
-                      Ticket ID: {summary.ticket_id}
+                      {getText("ticketId")}: {summary.ticket_id}
                     </p>
                   </div>
                 </div>
               </CardHeader>
               <CardContent className="space-y-6">
                 <div>
-                  <h3 className="font-semibold mb-2">Risk Level</h3>
+                  <h3 className="font-semibold mb-2">{getText("riskLevel")}</h3>
                   <div
                     className="inline-block px-4 py-2 rounded-full text-white font-semibold uppercase"
                     style={{ backgroundColor: summary.risk_color }}
                   >
-                    {summary.risk_band}
+                    {language === "fr" ? getText(summary.risk_band as "red" | "amber" | "green") : summary.risk_band}
                   </div>
                 </div>
 
                 <div>
-                  <h3 className="font-semibold mb-2">Summary</h3>
+                  <h3 className="font-semibold mb-2">{getText("summary")}</h3>
                   <p className="text-gray-700 dark:text-gray-300">
                     {summary.summary}
                   </p>
@@ -483,7 +532,7 @@ export default function TriagePage() {
 
                 {summary.key_flags && summary.key_flags.length > 0 && (
                   <div>
-                    <h3 className="font-semibold mb-2">Key Flags</h3>
+                    <h3 className="font-semibold mb-2">{getText("keyFlags")}</h3>
                     <ul className="list-disc list-inside space-y-1">
                       {summary.key_flags.map((flag, index) => (
                         <li key={index} className="text-gray-700 dark:text-gray-300">
@@ -495,7 +544,7 @@ export default function TriagePage() {
                 )}
 
                 <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg">
-                  <h3 className="font-semibold mb-2">Next Steps</h3>
+                  <h3 className="font-semibold mb-2">{getText("nextSteps")}</h3>
                   <p className="text-gray-700 dark:text-gray-300">
                     {summary.waiting_instruction}
                   </p>
@@ -503,7 +552,7 @@ export default function TriagePage() {
 
                 <div className="bg-yellow-50 dark:bg-yellow-900/20 p-4 rounded-lg border border-yellow-200 dark:border-yellow-800">
                   <p className="text-sm text-gray-700 dark:text-gray-300">
-                    ⚠️ {summary.disclaimer}
+                    {summary.disclaimer}
                   </p>
                 </div>
 
@@ -516,21 +565,21 @@ export default function TriagePage() {
                     {pdfLoading ? (
                       <>
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Generating PDF...
+                        {getText("generatingPdf")}
                       </>
                     ) : (
                       <>
                         <FileText className="mr-2 h-4 w-4" />
-                        Generate Summary PDF
+                        {getText("generatePdf")}
                       </>
                     )}
                   </Button>
                   <div className="flex gap-4">
                     <Button onClick={() => window.print()} variant="outline" className="flex-1">
-                      Print Ticket
+                      {getText("printTicket")}
                     </Button>
                     <Link href="/" className="flex-1">
-                      <Button className="w-full">Return Home</Button>
+                      <Button className="w-full">{getText("returnHome")}</Button>
                     </Link>
                   </div>
                 </div>

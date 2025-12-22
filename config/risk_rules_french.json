@@ -1,0 +1,543 @@
+{
+  "version": "1.0",
+  "description": "FRENCH (FRench Emergency Nurses Classification in Hospital) triage system by SFMU. 6 priority levels based on complexity/severity.",
+  "system": "french",
+  "levels": {
+    "1": {"color": "#dc3545", "name": "Tri 1", "description": "Détresse vitale majeure", "max_wait_minutes": 1},
+    "2": {"color": "#ff6b35", "name": "Tri 2", "description": "Atteinte patente d'un organe", "max_wait_minutes": 20},
+    "3A": {"color": "#ffc107", "name": "Tri 3A", "description": "Atteinte potentielle avec comorbidité", "max_wait_minutes": 60},
+    "3B": {"color": "#ffda6b", "name": "Tri 3B", "description": "Atteinte potentielle sans comorbidité", "max_wait_minutes": 90},
+    "4": {"color": "#28a745", "name": "Tri 4", "description": "Atteinte fonctionnelle stable", "max_wait_minutes": 120},
+    "5": {"color": "#20c997", "name": "Tri 5", "description": "Pas d'atteinte évidente", "max_wait_minutes": 240}
+  },
+  "rules": [
+    {
+      "id": "cardiac_arrest",
+      "description": "Arrêt cardiorespiratoire",
+      "description_en": "Cardiac arrest",
+      "level": "1",
+      "band": "red",
+      "priority": 1000,
+      "conditions": [
+        {"field": "answers.chief_complaint", "op": "==", "value": "cardiac_arrest"}
+      ]
+    },
+    {
+      "id": "vital_hr_critical_high",
+      "description": "Fréquence cardiaque critique ≥180/min",
+      "description_en": "Critical heart rate ≥180 bpm",
+      "level": "1",
+      "band": "red",
+      "priority": 100,
+      "conditions": [
+        {"field": "answers.heart_rate", "op": ">=", "value": 180}
+      ]
+    },
+    {
+      "id": "vital_hr_critical_low",
+      "description": "Fréquence cardiaque critique ≤40/min",
+      "description_en": "Critical heart rate ≤40 bpm",
+      "level": "1",
+      "band": "red",
+      "priority": 100,
+      "conditions": [
+        {"field": "answers.heart_rate", "op": "<=", "value": 40}
+      ]
+    },
+    {
+      "id": "vital_sbp_critical",
+      "description": "Pression artérielle systolique critique ≤70 mmHg",
+      "description_en": "Critical systolic blood pressure ≤70 mmHg",
+      "level": "1",
+      "band": "red",
+      "priority": 100,
+      "conditions": [
+        {"field": "answers.blood_pressure_systolic", "op": "<=", "value": 70}
+      ]
+    },
+    {
+      "id": "vital_rr_critical",
+      "description": "Fréquence respiratoire critique >40/min",
+      "description_en": "Critical respiratory rate >40/min",
+      "level": "1",
+      "band": "red",
+      "priority": 100,
+      "conditions": [
+        {"field": "answers.respiratory_rate", "op": ">", "value": 40}
+      ]
+    },
+    {
+      "id": "vital_gcs_critical",
+      "description": "Score de Glasgow critique ≤8 (coma)",
+      "description_en": "Critical Glasgow score ≤8 (coma)",
+      "level": "1",
+      "band": "red",
+      "priority": 100,
+      "conditions": [
+        {"field": "answers.glasgow_score", "op": "<=", "value": 8}
+      ]
+    },
+    {
+      "id": "amputation",
+      "description": "Traumatisme avec amputation",
+      "description_en": "Trauma with amputation",
+      "level": "1",
+      "band": "red",
+      "priority": 100,
+      "conditions": [
+        {"field": "answers.amputation", "op": "is_true", "value": true}
+      ]
+    },
+    {
+      "id": "respiratory_distress_severe",
+      "description": "Détresse respiratoire majeure - ne peut pas parler",
+      "description_en": "Severe respiratory distress - cannot speak",
+      "level": "1",
+      "band": "red",
+      "priority": 100,
+      "conditions": [
+        {"field": "answers.breathing_severity", "op": "==", "value": "cant_speak"}
+      ]
+    },
+    {
+      "id": "imminent_delivery",
+      "description": "Accouchement imminent ou réalisé",
+      "description_en": "Imminent or completed delivery",
+      "level": "1",
+      "band": "red",
+      "priority": 100,
+      "conditions": [
+        {"field": "answers.delivery_imminent", "op": "is_true", "value": true}
+      ]
+    },
+    {
+      "id": "vital_sbp_low",
+      "description": "Hypotension artérielle 70-90 mmHg",
+      "description_en": "Low blood pressure 70-90 mmHg",
+      "level": "2",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "answers.blood_pressure_systolic", "op": ">", "value": 70},
+        {"field": "answers.blood_pressure_systolic", "op": "<=", "value": 90}
+      ]
+    },
+    {
+      "id": "vital_hr_high",
+      "description": "Tachycardie ≥130/min",
+      "description_en": "Tachycardia ≥130 bpm",
+      "level": "2",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "answers.heart_rate", "op": ">=", "value": 130},
+        {"field": "answers.heart_rate", "op": "<", "value": 180}
+      ]
+    },
+    {
+      "id": "vital_rr_high",
+      "description": "Fréquence respiratoire élevée 30-40/min",
+      "description_en": "High respiratory rate 30-40/min",
+      "level": "2",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "answers.respiratory_rate", "op": ">=", "value": 30},
+        {"field": "answers.respiratory_rate", "op": "<=", "value": 40}
+      ]
+    },
+    {
+      "id": "vital_spo2_low",
+      "description": "Saturation en oxygène basse 86-90%",
+      "description_en": "Low oxygen saturation 86-90%",
+      "level": "2",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "answers.oxygen_saturation", "op": ">=", "value": 86},
+        {"field": "answers.oxygen_saturation", "op": "<=", "value": 90}
+      ]
+    },
+    {
+      "id": "vital_spo2_critical",
+      "description": "Saturation en oxygène critique <86%",
+      "description_en": "Critical oxygen saturation <86%",
+      "level": "1",
+      "band": "red",
+      "priority": 100,
+      "conditions": [
+        {"field": "answers.oxygen_saturation", "op": "<", "value": 86}
+      ]
+    },
+    {
+      "id": "vital_temp_high",
+      "description": "Hyperthermie majeure ≥40°C",
+      "description_en": "Major hyperthermia ≥40°C",
+      "level": "2",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "answers.temperature_value", "op": ">=", "value": 40}
+      ]
+    },
+    {
+      "id": "vital_temp_low",
+      "description": "Hypothermie sévère ≤35.2°C",
+      "description_en": "Severe hypothermia ≤35.2°C",
+      "level": "2",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "answers.temperature_value", "op": "<=", "value": 35.2}
+      ]
+    },
+    {
+      "id": "vital_gcs_low",
+      "description": "Score de Glasgow altéré 9-13",
+      "description_en": "Altered Glasgow score 9-13",
+      "level": "2",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "answers.glasgow_score", "op": ">=", "value": 9},
+        {"field": "answers.glasgow_score", "op": "<=", "value": 13}
+      ]
+    },
+    {
+      "id": "neurological_deficit",
+      "description": "Déficit neurologique récent (moteur, sensitif, langage)",
+      "description_en": "Recent neurological deficit (motor, sensory, language)",
+      "level": "2",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "answers.neurological_deficit", "op": "is_true", "value": true}
+      ]
+    },
+    {
+      "id": "active_hemorrhage",
+      "description": "Hémorragie extériorisée active",
+      "description_en": "Active external hemorrhage",
+      "level": "2",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "answers.active_hemorrhage", "op": "is_true", "value": true}
+      ]
+    },
+    {
+      "id": "severe_dyspnea",
+      "description": "Dyspnée sévère",
+      "description_en": "Severe dyspnea",
+      "level": "2",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "answers.breathing_severity", "op": "==", "value": "severe"}
+      ]
+    },
+    {
+      "id": "intense_pain",
+      "description": "Douleur intense (≥8/10)",
+      "description_en": "Intense pain (≥8/10)",
+      "level": "2",
+      "band": "red",
+      "priority": 90,
+      "conditions": [
+        {"field": "answers.pain_severity", "op": ">=", "value": 8}
+      ]
+    },
+    {
+      "id": "suicidal_behavior",
+      "description": "Idée ou comportement suicidaire",
+      "description_en": "Suicidal ideation or behavior",
+      "level": "2",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "answers.suicidal_ideation", "op": "is_true", "value": true}
+      ]
+    },
+    {
+      "id": "trauma_high_velocity",
+      "description": "Traumatisme à haute vélocité (abdomen/thorax/cervical)",
+      "description_en": "High velocity trauma (abdomen/thorax/cervical)",
+      "level": "2",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "answers.trauma_high_velocity", "op": "is_true", "value": true}
+      ]
+    },
+    {
+      "id": "chest_pain_with_symptoms",
+      "description": "Douleur thoracique avec essoufflement ou sueurs",
+      "description_en": "Chest pain with shortness of breath or sweating",
+      "level": "2",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "answers.chief_complaint", "op": "==", "value": "chest_discomfort"},
+        {"field": "answers.shortness_breath", "op": "is_true", "value": true}
+      ]
+    },
+    {
+      "id": "infant",
+      "description": "Nourrisson < 2 ans avec pathologie",
+      "description_en": "Infant < 2 years with pathology",
+      "level": "2",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "demographics.age", "op": "<", "value": 2}
+      ]
+    },
+    {
+      "id": "fever_infant_3months",
+      "description": "Fièvre chez nourrisson ≤3 mois",
+      "description_en": "Fever in infant ≤3 months",
+      "level": "2",
+      "band": "red",
+      "priority": 95,
+      "conditions": [
+        {"field": "demographics.age", "op": "<=", "value": 0.25},
+        {"field": "answers.chief_complaint", "op": "==", "value": "fever"}
+      ]
+    },
+    {
+      "id": "vital_spo2_moderate",
+      "description": "Saturation en oxygène modérément basse 91-94%",
+      "description_en": "Moderately low oxygen saturation 91-94%",
+      "level": "3A",
+      "band": "amber",
+      "priority": 70,
+      "conditions": [
+        {"field": "answers.oxygen_saturation", "op": ">=", "value": 91},
+        {"field": "answers.oxygen_saturation", "op": "<=", "value": 94}
+      ]
+    },
+    {
+      "id": "vital_gcs_mild",
+      "description": "Score de Glasgow légèrement altéré (14)",
+      "description_en": "Mildly altered Glasgow score (14)",
+      "level": "3A",
+      "band": "amber",
+      "priority": 70,
+      "conditions": [
+        {"field": "answers.glasgow_score", "op": "==", "value": 14}
+      ]
+    },
+    {
+      "id": "elderly_with_complaint",
+      "description": "Patient âgé > 65 ans (comorbidité)",
+      "description_en": "Elderly patient > 65 years (comorbidity)",
+      "level": "3A",
+      "band": "amber",
+      "priority": 65,
+      "conditions": [
+        {"field": "demographics.age", "op": ">", "value": 65}
+      ]
+    },
+    {
+      "id": "pregnant",
+      "description": "Patiente enceinte (comorbidité)",
+      "description_en": "Pregnant patient (comorbidity)",
+      "level": "3A",
+      "band": "amber",
+      "priority": 65,
+      "conditions": [
+        {"field": "demographics.pregnant", "op": "is_true", "value": true}
+      ]
+    },
+    {
+      "id": "young_child",
+      "description": "Jeune enfant 2-5 ans",
+      "description_en": "Young child 2-5 years",
+      "level": "3A",
+      "band": "amber",
+      "priority": 60,
+      "conditions": [
+        {"field": "demographics.age", "op": ">=", "value": 2},
+        {"field": "demographics.age", "op": "<", "value": 5}
+      ]
+    },
+    {
+      "id": "referred_by_doctor",
+      "description": "Patient adressé par un médecin",
+      "description_en": "Patient referred by a doctor",
+      "level": "3A",
+      "band": "amber",
+      "priority": 65,
+      "conditions": [
+        {"field": "answers.referred_by_doctor", "op": "is_true", "value": true}
+      ]
+    },
+    {
+      "id": "immunocompromised",
+      "description": "Patient immunodéprimé",
+      "description_en": "Immunocompromised patient",
+      "level": "3A",
+      "band": "amber",
+      "priority": 65,
+      "conditions": [
+        {"field": "answers.immunocompromised", "op": "is_true", "value": true}
+      ]
+    },
+    {
+      "id": "chronic_disease",
+      "description": "Maladie chronique en rapport avec le motif",
+      "description_en": "Chronic disease related to chief complaint",
+      "level": "3A",
+      "band": "amber",
+      "priority": 60,
+      "conditions": [
+        {"field": "answers.chronic_disease_related", "op": "is_true", "value": true}
+      ]
+    },
+    {
+      "id": "chest_pain_default",
+      "description": "Douleur thoracique (évaluation cardiaque)",
+      "description_en": "Chest pain (cardiac evaluation needed)",
+      "level": "3B",
+      "band": "amber",
+      "priority": 55,
+      "conditions": [
+        {"field": "answers.chief_complaint", "op": "==", "value": "chest_discomfort"}
+      ]
+    },
+    {
+      "id": "abdominal_pain",
+      "description": "Douleur abdominale",
+      "description_en": "Abdominal pain",
+      "level": "3B",
+      "band": "amber",
+      "priority": 50,
+      "conditions": [
+        {"field": "answers.chief_complaint", "op": "==", "value": "abdominal_pain"}
+      ]
+    },
+    {
+      "id": "headache",
+      "description": "Céphalée",
+      "description_en": "Headache",
+      "level": "3B",
+      "band": "amber",
+      "priority": 50,
+      "conditions": [
+        {"field": "answers.chief_complaint", "op": "==", "value": "headache"}
+      ]
+    },
+    {
+      "id": "malaise",
+      "description": "Malaise",
+      "description_en": "Faintness/Malaise",
+      "level": "3B",
+      "band": "amber",
+      "priority": 50,
+      "conditions": [
+        {"field": "answers.chief_complaint", "op": "==", "value": "malaise"}
+      ]
+    },
+    {
+      "id": "dyspnea_moderate",
+      "description": "Dyspnée modérée",
+      "description_en": "Moderate dyspnea",
+      "level": "3B",
+      "band": "amber",
+      "priority": 55,
+      "conditions": [
+        {"field": "answers.breathing_severity", "op": "==", "value": "moderate"}
+      ]
+    },
+    {
+      "id": "high_fever",
+      "description": "Fièvre élevée 39-40°C",
+      "description_en": "High fever 39-40°C",
+      "level": "3B",
+      "band": "amber",
+      "priority": 50,
+      "conditions": [
+        {"field": "answers.temperature_value", "op": ">=", "value": 39},
+        {"field": "answers.temperature_value", "op": "<", "value": 40}
+      ]
+    },
+    {
+      "id": "moderate_pain",
+      "description": "Douleur modérée (5-7/10)",
+      "description_en": "Moderate pain (5-7/10)",
+      "level": "4",
+      "band": "green",
+      "priority": 30,
+      "conditions": [
+        {"field": "answers.pain_severity", "op": ">=", "value": 5},
+        {"field": "answers.pain_severity", "op": "<", "value": 8}
+      ]
+    },
+    {
+      "id": "wound_simple",
+      "description": "Plaie simple",
+      "description_en": "Simple wound",
+      "level": "4",
+      "band": "green",
+      "priority": 25,
+      "conditions": [
+        {"field": "answers.chief_complaint", "op": "==", "value": "wound"}
+      ]
+    },
+    {
+      "id": "limb_trauma",
+      "description": "Traumatisme d'épaule ou distal de membre",
+      "description_en": "Shoulder or distal limb trauma",
+      "level": "4",
+      "band": "green",
+      "priority": 25,
+      "conditions": [
+        {"field": "answers.chief_complaint", "op": "==", "value": "limb_trauma"}
+      ]
+    },
+    {
+      "id": "mild_fever",
+      "description": "Fièvre modérée 38-39°C",
+      "description_en": "Moderate fever 38-39°C",
+      "level": "5",
+      "band": "green",
+      "priority": 20,
+      "conditions": [
+        {"field": "answers.temperature_value", "op": ">=", "value": 38},
+        {"field": "answers.temperature_value", "op": "<", "value": 39}
+      ]
+    },
+    {
+      "id": "mild_symptoms",
+      "description": "Symptômes bénins ou chroniques stables",
+      "description_en": "Mild or stable chronic symptoms",
+      "level": "5",
+      "band": "green",
+      "priority": 15,
+      "conditions": [
+        {"field": "answers.breathing_severity", "op": "==", "value": "mild"}
+      ]
+    },
+    {
+      "id": "mild_pain",
+      "description": "Douleur légère (1-4/10)",
+      "description_en": "Mild pain (1-4/10)",
+      "level": "5",
+      "band": "green",
+      "priority": 15,
+      "conditions": [
+        {"field": "answers.pain_severity", "op": ">=", "value": 1},
+        {"field": "answers.pain_severity", "op": "<", "value": 5}
+      ]
+    },
+    {
+      "id": "default_level_4",
+      "description": "Pas de facteurs de risque identifiés - évaluation standard",
+      "description_en": "No risk factors identified - standard evaluation",
+      "level": "4",
+      "band": "green",
+      "priority": -50,
+      "conditions": []
+    }
+  ]
+}

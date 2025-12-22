@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -25,10 +26,145 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { GenerateSummaryButton } from "@/components/ui/generate-summary-button";
 import { AnimatedDownloadButton } from "@/components/ui/animated-download-button";
+import { LanguageSelectorDropdown, type Language } from "@/components/ui/language-selector-dropdown";
 import { api, type CaseResponse, type ModelInfo, type CurrentModel } from "@/lib/api";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+
+type LanguageCode = "en" | "fr";
+
+const staffTranslations: Record<LanguageCode, Record<string, string>> = {
+  en: {
+    // Login
+    staffPortal: "Staff Portal",
+    enterPinPrompt: "Enter your PIN to access the staff portal",
+    pin: "PIN",
+    enterPinPlaceholder: "Enter PIN (default: 1234)",
+    signIn: "Sign In",
+    authenticating: "Authenticating...",
+    backToHome: "Back to Home",
+    invalidPin: "Invalid PIN",
+    pleaseEnterPin: "Please enter PIN",
+    // Main
+    reviewCases: "Review and manage patient triage cases",
+    selectAiModel: "Select AI Model",
+    chooseModel: "Choose a model for AI-powered responses",
+    noModelsAvailable: "No models available. Download models first.",
+    modelsNotListed: "Models not listed? Run the download script to add more.",
+    active: "Active",
+    speed: "Speed",
+    refresh: "Refresh",
+    signOut: "Sign Out",
+    // Cases
+    cases: "Cases",
+    search: "Search...",
+    all: "All",
+    red: "Red",
+    amber: "Amber",
+    green: "Green",
+    pending: "Pending",
+    reviewed: "Reviewed",
+    noCasesFound: "No cases found",
+    // Case Details
+    demographics: "Demographics",
+    age: "Age",
+    sex: "Sex",
+    pregnant: "Pregnant",
+    yes: "Yes",
+    no: "No",
+    clinicalSummary: "Clinical Summary",
+    keyFlags: "Key Flags",
+    triggeredRules: "Triggered Rules",
+    updateStatus: "Update Status",
+    discharge: "Discharge",
+    // AI Assistant
+    aiAssistant: "AI Assistant",
+    askAboutCase: "Ask about this case...",
+    ask: "Ask",
+    answer: "Answer",
+    followUpQuestions: "Follow-up Questions",
+    aiReasoning: "AI Reasoning",
+    selectCase: "Select a case from the list to view details",
+    casesAvailable: "case(s) available",
+    failedFetchCases: "Failed to fetch cases",
+    failedGetAnswer: "Failed to get answer",
+    failedUpdateStatus: "Failed to update case status",
+    failedSwitchModel: "Failed to switch model",
+    failedGeneratePdf: "Failed to generate PDF. Please try again.",
+  },
+  fr: {
+    // Login
+    staffPortal: "Portail Personnel",
+    enterPinPrompt: "Entrez votre code PIN pour accéder au portail",
+    pin: "PIN",
+    enterPinPlaceholder: "Entrez le PIN (par défaut: 1234)",
+    signIn: "Connexion",
+    authenticating: "Authentification...",
+    backToHome: "Retour à l'accueil",
+    invalidPin: "PIN invalide",
+    pleaseEnterPin: "Veuillez entrer le PIN",
+    // Main
+    reviewCases: "Examiner et gérer les cas de triage des patients",
+    selectAiModel: "Sélectionner le modèle IA",
+    chooseModel: "Choisissez un modèle pour les réponses assistées par IA",
+    noModelsAvailable: "Aucun modèle disponible. Téléchargez d'abord des modèles.",
+    modelsNotListed: "Modèles non listés ? Exécutez le script de téléchargement.",
+    active: "Actif",
+    speed: "Vitesse",
+    refresh: "Actualiser",
+    signOut: "Déconnexion",
+    // Cases
+    cases: "Cas",
+    search: "Rechercher...",
+    all: "Tous",
+    red: "Rouge",
+    amber: "Orange",
+    green: "Vert",
+    pending: "En attente",
+    reviewed: "Examiné",
+    noCasesFound: "Aucun cas trouvé",
+    // Case Details
+    demographics: "Données démographiques",
+    age: "Âge",
+    sex: "Sexe",
+    pregnant: "Enceinte",
+    yes: "Oui",
+    no: "Non",
+    clinicalSummary: "Résumé clinique",
+    keyFlags: "Points clés",
+    triggeredRules: "Règles déclenchées",
+    updateStatus: "Mettre à jour le statut",
+    discharge: "Sortie",
+    // AI Assistant
+    aiAssistant: "Assistant IA",
+    askAboutCase: "Poser une question sur ce cas...",
+    ask: "Demander",
+    answer: "Réponse",
+    followUpQuestions: "Questions de suivi",
+    aiReasoning: "Raisonnement IA",
+    selectCase: "Sélectionnez un cas dans la liste pour voir les détails",
+    casesAvailable: "cas disponible(s)",
+    failedFetchCases: "Échec de récupération des cas",
+    failedGetAnswer: "Échec de récupération de la réponse",
+    failedUpdateStatus: "Échec de mise à jour du statut",
+    failedSwitchModel: "Échec du changement de modèle",
+    failedGeneratePdf: "Échec de génération du PDF. Veuillez réessayer.",
+  }
+};
 
 export default function StaffPortal() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const langParam = searchParams.get("lang");
+  const language: LanguageCode = (langParam === "fr" || langParam === "en") ? langParam : "en";
+
+  const t = (key: string): string => {
+    return staffTranslations[language]?.[key] || staffTranslations.en[key] || key;
+  };
+
+  const handleLanguageChange = (lang: Language) => {
+    router.push(`/staff?lang=${lang.code}`);
+  };
   const [authenticated, setAuthenticated] = useState(false);
   const [pin, setPin] = useState("");
   const [staffPin, setStaffPin] = useState("");
@@ -66,7 +202,7 @@ export default function StaffPortal() {
 
   const handleAuth = async () => {
     if (!pin) {
-      setError("Please enter PIN");
+      setError(t("pleaseEnterPin"));
       return;
     }
 
@@ -78,7 +214,7 @@ export default function StaffPortal() {
       setStaffPin(pin);
       setAuthenticated(true);
     } catch (err) {
-      setError("Invalid PIN");
+      setError(t("invalidPin"));
     } finally {
       setLoading(false);
     }
@@ -131,7 +267,7 @@ export default function StaffPortal() {
       const response = await api.getCases(staffPin);
       setCases(response.cases);
     } catch (err) {
-      setError("Failed to fetch cases");
+      setError(t("failedFetchCases"));
     }
   };
 
@@ -149,7 +285,7 @@ export default function StaffPortal() {
       setAnswer(response);
       setAskQuestion("");
     } catch (err) {
-      setError("Failed to get answer");
+      setError(t("failedGetAnswer"));
     } finally {
       setLoading(false);
     }
@@ -176,7 +312,7 @@ export default function StaffPortal() {
         setSelectedCase(updated);
       }
     } catch (err) {
-      setError("Failed to update case status");
+      setError(t("failedUpdateStatus"));
     }
   };
 
@@ -194,7 +330,7 @@ export default function StaffPortal() {
       setPdfBlob(blob);
       setShowDownloadButton(true);
     } catch (err) {
-      setError("Failed to generate PDF. Please try again.");
+      setError(t("failedGeneratePdf"));
     } finally {
       setPdfGenerating(false);
     }
@@ -212,33 +348,127 @@ export default function StaffPortal() {
     setShowDownloadButton(false);
   }, [selectedCase?.id]);
 
-  const filteredCases = cases.filter((c) => {
-    const matchesFilter =
-      filter === "all" ||
-      (filter === "red" && c.risk_band === "red") ||
-      (filter === "amber" && c.risk_band === "amber") ||
-      (filter === "green" && c.risk_band === "green") ||
-      (filter === "pending" && c.status === "pending") ||
-      (filter === "reviewed" && c.status === "reviewed");
+  // Priority mapping for sorting (higher = more urgent)
+  const getPriority = (c: CaseResponse): number => {
+    const level = c.answers?._triage_level || "5";
+    const band = c.risk_band;
 
-    const matchesSearch =
-      searchQuery === "" ||
-      c.ticket_id?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.summary?.toLowerCase().includes(searchQuery.toLowerCase());
+    if (language === "fr") {
+      // FRENCH system: 1 > 2 > 3A > 3B > 4 > 5
+      const frenchPriority: Record<string, number> = {
+        "1": 100, "2": 80, "3A": 60, "3B": 50, "4": 30, "5": 10
+      };
+      return frenchPriority[level] || 10;
+    } else {
+      // Manchester system: 1 > 2 > 3 > 4 > 5
+      const manchesterPriority: Record<string, number> = {
+        "1": 100, "2": 80, "3": 60, "4": 40, "5": 20
+      };
+      return manchesterPriority[level] || 20;
+    }
+  };
 
-    return matchesFilter && matchesSearch;
-  });
+  const filteredCases = cases
+    .filter((c) => {
+      const level = c.answers?._triage_level || "5";
+      const matchesFilter =
+        filter === "all" ||
+        // Band-based filters
+        (filter === "red" && c.risk_band === "red") ||
+        (filter === "orange" && c.risk_band === "orange") ||
+        (filter === "amber" && c.risk_band === "amber") ||
+        (filter === "yellow" && c.risk_band === "yellow") ||
+        (filter === "green" && c.risk_band === "green") ||
+        (filter === "blue" && c.risk_band === "blue") ||
+        // Level-based filters (Manchester)
+        (filter === "immediate" && level === "1") ||
+        (filter === "veryUrgent" && level === "2") ||
+        (filter === "urgent" && level === "3") ||
+        (filter === "standard" && level === "4") ||
+        (filter === "nonUrgent" && level === "5") ||
+        // Level-based filters (FRENCH)
+        (filter === "tri1" && level === "1") ||
+        (filter === "tri2" && level === "2") ||
+        (filter === "tri3A" && level === "3A") ||
+        (filter === "tri3B" && level === "3B") ||
+        (filter === "tri4" && level === "4") ||
+        (filter === "tri5" && level === "5") ||
+        // Status filters
+        (filter === "pending" && c.status === "pending") ||
+        (filter === "reviewed" && c.status === "reviewed");
 
-  const getRiskColor = (band: string) => {
-    switch (band) {
-      case "red":
-        return "#dc3545";
-      case "amber":
-        return "#ffc107";
-      case "green":
-        return "#28a745";
-      default:
-        return "#6c757d";
+      const matchesSearch =
+        searchQuery === "" ||
+        c.ticket_id?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        c.summary?.toLowerCase().includes(searchQuery.toLowerCase());
+
+      return matchesFilter && matchesSearch;
+    })
+    .sort((a, b) => getPriority(b) - getPriority(a)); // Sort by priority (most urgent first)
+
+  // Get color based on triage level and system
+  const getRiskColor = (c: CaseResponse): string => {
+    const level = c.answers?._triage_level;
+    const levelInfo = c.answers?._level_info;
+
+    // If we have level info with color, use it
+    if (levelInfo?.color) {
+      return levelInfo.color;
+    }
+
+    // Otherwise use level-based colors
+    if (level) {
+      if (language === "fr") {
+        // FRENCH system colors
+        const frenchColors: Record<string, string> = {
+          "1": "#dc3545",  // Red - Life-threatening
+          "2": "#ff6b35",  // Orange - Severe
+          "3A": "#ffc107", // Yellow - Urgent with comorbidity
+          "3B": "#ffda6b", // Light yellow - Urgent
+          "4": "#28a745",  // Green - Standard
+          "5": "#20c997"   // Teal - Non-urgent
+        };
+        return frenchColors[level] || "#6c757d";
+      } else {
+        // Manchester system colors
+        const manchesterColors: Record<string, string> = {
+          "1": "#dc3545",  // Red - Immediate
+          "2": "#ff6b35",  // Orange - Very Urgent
+          "3": "#ffc107",  // Yellow - Urgent
+          "4": "#28a745",  // Green - Standard
+          "5": "#17a2b8"   // Blue - Non-urgent
+        };
+        return manchesterColors[level] || "#6c757d";
+      }
+    }
+
+    // Fallback to band-based colors
+    const bandColors: Record<string, string> = {
+      "red": "#dc3545",
+      "orange": "#ff6b35",
+      "amber": "#ffc107",
+      "yellow": "#ffc107",
+      "green": "#28a745",
+      "blue": "#17a2b8"
+    };
+    return bandColors[c.risk_band] || "#6c757d";
+  };
+
+  // Get display label for triage level
+  const getLevelLabel = (c: CaseResponse): string => {
+    const level = c.answers?._triage_level;
+    if (!level) return c.risk_band?.toUpperCase() || "N/A";
+
+    if (language === "fr") {
+      const frenchLabels: Record<string, string> = {
+        "1": "Tri 1", "2": "Tri 2", "3A": "Tri 3A", "3B": "Tri 3B", "4": "Tri 4", "5": "Tri 5"
+      };
+      return frenchLabels[level] || level;
+    } else {
+      const manchesterLabels: Record<string, string> = {
+        "1": "P1", "2": "P2", "3": "P3", "4": "P4", "5": "P5"
+      };
+      return manchesterLabels[level] || level;
     }
   };
 
@@ -256,6 +486,13 @@ export default function StaffPortal() {
   if (!authenticated) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex items-center justify-center p-4">
+        {/* Language selector in top-right corner */}
+        <div className="absolute top-6 right-30 z-30">
+          <LanguageSelectorDropdown
+            value={language}
+            onChange={handleLanguageChange}
+          />
+        </div>
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -265,10 +502,10 @@ export default function StaffPortal() {
             <CardHeader>
               <div className="flex items-center gap-2 mb-4">
                 <Lock className="h-8 w-8 text-blue-600" />
-                <h1 className="text-2xl font-bold">Staff Portal</h1>
+                <h1 className="text-2xl font-bold">{t("staffPortal")}</h1>
               </div>
               <p className="text-gray-600 dark:text-gray-400">
-                Enter your PIN to access the staff portal
+                {t("enterPinPrompt")}
               </p>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -280,24 +517,24 @@ export default function StaffPortal() {
               )}
 
               <div>
-                <label className="block text-sm font-medium mb-2">PIN</label>
+                <label className="block text-sm font-medium mb-2">{t("pin")}</label>
                 <Input
                   type="password"
                   value={pin}
                   onChange={(e) => setPin(e.target.value)}
-                  placeholder="Enter PIN (default: 1234)"
+                  placeholder={t("enterPinPlaceholder")}
                   onKeyPress={(e) => e.key === "Enter" && handleAuth()}
                 />
               </div>
 
               <Button onClick={handleAuth} disabled={loading} className="w-full">
-                {loading ? "Authenticating..." : "Sign In"}
+                {loading ? t("authenticating") : t("signIn")}
               </Button>
 
               <Link href="/">
                 <Button variant="ghost" className="w-full">
                   <ArrowLeft className="mr-2 h-4 w-4" />
-                  Back to Home
+                  {t("backToHome")}
                 </Button>
               </Link>
             </CardContent>
@@ -313,15 +550,15 @@ export default function StaffPortal() {
         <div className="flex justify-between items-center mb-8">
           <div>
             <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
-              Staff Portal
+              {t("staffPortal")}
             </h1>
             <p className="text-gray-600 dark:text-gray-400">
-              Review and manage patient triage cases
+              {t("reviewCases")}
             </p>
           </div>
           <div className="flex gap-2 items-center mr-14">
             {/* Model Selector */}
-            <div className="relative">
+            <div className="relative mr-4">
               <Button
                 onClick={() => setShowModelSelector(!showModelSelector)}
                 variant="outline"
@@ -343,16 +580,16 @@ export default function StaffPortal() {
                 <div className="absolute right-0 top-full mt-2 w-96 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 z-50 max-h-[500px] overflow-y-auto">
                   <div className="p-3 border-b border-gray-200 dark:border-gray-700">
                     <h3 className="font-semibold text-gray-900 dark:text-white">
-                      Select AI Model
+                      {t("selectAiModel")}
                     </h3>
                     <p className="text-xs text-gray-500 mt-1">
-                      Choose a model for AI-powered responses
+                      {t("chooseModel")}
                     </p>
                   </div>
                   <div className="p-2">
                     {models.filter(m => m.is_available).length === 0 ? (
                       <p className="text-sm text-gray-500 p-3 text-center">
-                        No models available. Download models first.
+                        {t("noModelsAvailable")}
                       </p>
                     ) : (
                       models.filter(m => m.is_available).map((model) => (
@@ -374,7 +611,7 @@ export default function StaffPortal() {
                                 </span>
                                 {model.is_loaded && (
                                   <span className="text-xs bg-blue-500 text-white px-2 py-0.5 rounded">
-                                    Active
+                                    {t("active")}
                                   </span>
                                 )}
                               </div>
@@ -388,7 +625,7 @@ export default function StaffPortal() {
                                 </span>
                                 <span className={`flex items-center gap-1 ${getSpeedColor(model.speed_rating)}`}>
                                   <Zap className="h-3 w-3" />
-                                  Speed: {model.speed_rating}/10
+                                  {t("speed")}: {model.speed_rating}/10
                                 </span>
                                 <span className={`flex items-center gap-1 ${getQualityColor(model.quality_rating)}`}>
                                   Quality: {model.quality_rating}/10
@@ -412,15 +649,19 @@ export default function StaffPortal() {
                   </div>
                   <div className="p-3 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 rounded-b-lg">
                     <p className="text-xs text-gray-500">
-                      Models not listed? Run the download script to add more.
+                      {t("modelsNotListed")}
                     </p>
                   </div>
                 </div>
               )}
             </div>
 
+            <LanguageSelectorDropdown
+              value={language}
+              onChange={handleLanguageChange}
+            />
             <Button onClick={fetchCases} variant="outline">
-              Refresh
+              {t("refresh")}
             </Button>
             <Button
               onClick={() => {
@@ -430,7 +671,7 @@ export default function StaffPortal() {
               }}
               variant="outline"
             >
-              Sign Out
+              {t("signOut")}
             </Button>
           </div>
         </div>
@@ -452,7 +693,7 @@ export default function StaffPortal() {
           <div className="space-y-4">
             <Card className="h-fit lg:h-[calc(100vh-180px)] flex flex-col">
               <CardHeader className="pb-3">
-                <h2 className="text-lg font-semibold">Cases</h2>
+                <h2 className="text-lg font-semibold">{t("cases")}</h2>
               </CardHeader>
               <CardContent className="space-y-3 flex-1 overflow-hidden flex flex-col">
                 {/* Search */}
@@ -461,25 +702,69 @@ export default function StaffPortal() {
                   <Input
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search..."
+                    placeholder={t("search")}
                     className="pl-9 h-9 text-sm"
                   />
                 </div>
 
-                {/* Filters - Compact */}
+                {/* Priority Level Filters - Based on triage system */}
                 <div className="flex gap-1 flex-wrap">
-                  {["all", "red", "amber", "green"].map((f) => (
-                    <Button
-                      key={f}
-                      size="sm"
-                      onClick={() => setFilter(f)}
-                      variant={filter === f ? "default" : "outline"}
-                      className="capitalize h-7 px-2 text-xs"
-                    >
-                      {f}
-                    </Button>
-                  ))}
+                  <Button
+                    size="sm"
+                    onClick={() => setFilter("all")}
+                    variant={filter === "all" ? "default" : "outline"}
+                    className="h-7 px-2 text-xs"
+                  >
+                    {t("all")}
+                  </Button>
+                  {language === "fr" ? (
+                    // FRENCH system levels
+                    <>
+                      {[
+                        { key: "tri1", label: "Tri 1", color: "#dc3545" },
+                        { key: "tri2", label: "Tri 2", color: "#ff6b35" },
+                        { key: "tri3A", label: "3A", color: "#ffc107" },
+                        { key: "tri3B", label: "3B", color: "#ffda6b" },
+                        { key: "tri4", label: "Tri 4", color: "#28a745" },
+                        { key: "tri5", label: "Tri 5", color: "#20c997" },
+                      ].map((f) => (
+                        <Button
+                          key={f.key}
+                          size="sm"
+                          onClick={() => setFilter(f.key)}
+                          variant={filter === f.key ? "default" : "outline"}
+                          className="h-7 px-2 text-xs"
+                          style={filter === f.key ? { backgroundColor: f.color, borderColor: f.color } : {}}
+                        >
+                          {f.label}
+                        </Button>
+                      ))}
+                    </>
+                  ) : (
+                    // Manchester system levels
+                    <>
+                      {[
+                        { key: "immediate", label: "P1", color: "#dc3545" },
+                        { key: "veryUrgent", label: "P2", color: "#ff6b35" },
+                        { key: "urgent", label: "P3", color: "#ffc107" },
+                        { key: "standard", label: "P4", color: "#28a745" },
+                        { key: "nonUrgent", label: "P5", color: "#17a2b8" },
+                      ].map((f) => (
+                        <Button
+                          key={f.key}
+                          size="sm"
+                          onClick={() => setFilter(f.key)}
+                          variant={filter === f.key ? "default" : "outline"}
+                          className="h-7 px-2 text-xs"
+                          style={filter === f.key ? { backgroundColor: f.color, borderColor: f.color } : {}}
+                        >
+                          {f.label}
+                        </Button>
+                      ))}
+                    </>
+                  )}
                 </div>
+                {/* Status Filters */}
                 <div className="flex gap-1 flex-wrap">
                   {["pending", "reviewed"].map((f) => (
                     <Button
@@ -487,9 +772,9 @@ export default function StaffPortal() {
                       size="sm"
                       onClick={() => setFilter(f)}
                       variant={filter === f ? "default" : "outline"}
-                      className="capitalize h-7 px-2 text-xs"
+                      className="h-7 px-2 text-xs"
                     >
-                      {f}
+                      {t(f)}
                     </Button>
                   ))}
                 </div>
@@ -498,7 +783,7 @@ export default function StaffPortal() {
                 <div className="space-y-2 flex-1 overflow-y-auto pr-1">
                   {filteredCases.length === 0 ? (
                     <p className="text-gray-500 text-center py-4 text-sm">
-                      No cases found
+                      {t("noCasesFound")}
                     </p>
                   ) : (
                     filteredCases.map((c) => (
@@ -512,10 +797,12 @@ export default function StaffPortal() {
                           <span className="font-medium text-sm truncate">{c.ticket_id}</span>
                           <div className="flex items-center gap-1.5 flex-shrink-0">
                             {getStatusIcon(c.status)}
-                            <div
-                              className="w-2.5 h-2.5 rounded-full"
-                              style={{ backgroundColor: getRiskColor(c.risk_band) }}
-                            />
+                            <span
+                              className="text-xs font-semibold px-1.5 py-0.5 rounded text-white"
+                              style={{ backgroundColor: getRiskColor(c) }}
+                            >
+                              {getLevelLabel(c)}
+                            </span>
                           </div>
                         </div>
                         <span className="text-xs text-gray-500 truncate w-full">
@@ -551,29 +838,29 @@ export default function StaffPortal() {
                         </p>
                       </div>
                       <div
-                        className="px-3 py-1 rounded-full text-white text-sm font-semibold uppercase"
-                        style={{ backgroundColor: getRiskColor(selectedCase.risk_band) }}
+                        className="px-3 py-1 rounded-full text-white text-sm font-semibold"
+                        style={{ backgroundColor: getRiskColor(selectedCase) }}
                       >
-                        {selectedCase.risk_band}
+                        {getLevelLabel(selectedCase)}
                       </div>
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-4 flex-1 overflow-y-auto">
                     {/* Demographics */}
                     <div>
-                      <h3 className="font-semibold text-sm mb-2">Demographics</h3>
+                      <h3 className="font-semibold text-sm mb-2">{t("demographics")}</h3>
                       <div className="bg-gray-50 dark:bg-gray-800 p-3 rounded text-sm">
-                        <p>Age: {selectedCase.demographics?.age || "N/A"}</p>
-                        <p className="capitalize">Sex: {selectedCase.demographics?.sex || "N/A"}</p>
+                        <p>{t("age")}: {selectedCase.demographics?.age || "N/A"}</p>
+                        <p className="capitalize">{t("sex")}: {selectedCase.demographics?.sex || "N/A"}</p>
                         {selectedCase.demographics?.pregnant !== undefined && (
-                          <p>Pregnant: {selectedCase.demographics.pregnant ? "Yes" : "No"}</p>
+                          <p>{t("pregnant")}: {selectedCase.demographics.pregnant ? t("yes") : t("no")}</p>
                         )}
                       </div>
                     </div>
 
                     {/* Summary */}
                     <div>
-                      <h3 className="font-semibold text-sm mb-2">Clinical Summary</h3>
+                      <h3 className="font-semibold text-sm mb-2">{t("clinicalSummary")}</h3>
                       <p className="text-sm text-gray-700 dark:text-gray-300">
                         {selectedCase.summary}
                       </p>
@@ -582,7 +869,7 @@ export default function StaffPortal() {
                     {/* Key Flags */}
                     {selectedCase.key_flags && selectedCase.key_flags.length > 0 && (
                       <div>
-                        <h3 className="font-semibold text-sm mb-2">Key Flags</h3>
+                        <h3 className="font-semibold text-sm mb-2">{t("keyFlags")}</h3>
                         <ul className="list-disc list-inside space-y-0.5 text-sm">
                           {selectedCase.key_flags.map((flag, index) => (
                             <li key={index} className="text-gray-700 dark:text-gray-300">
@@ -596,7 +883,7 @@ export default function StaffPortal() {
                     {/* Triggered Rules */}
                     {selectedCase.triggered_rules && selectedCase.triggered_rules.length > 0 && (
                       <div>
-                        <h3 className="font-semibold text-sm mb-2">Triggered Rules</h3>
+                        <h3 className="font-semibold text-sm mb-2">{t("triggeredRules")}</h3>
                         <div className="space-y-2">
                           {selectedCase.triggered_rules.map((rule: any, index: number) => (
                             <div
@@ -615,7 +902,7 @@ export default function StaffPortal() {
 
                     {/* Status Update */}
                     <div className="border-t pt-4">
-                      <h3 className="font-semibold text-sm mb-3">Update Status</h3>
+                      <h3 className="font-semibold text-sm mb-3">{t("updateStatus")}</h3>
                       <div className="flex gap-2">
                         <Button
                           onClick={() => handleUpdateStatus(selectedCase.id, "reviewed")}
@@ -625,7 +912,7 @@ export default function StaffPortal() {
                           disabled={selectedCase.status === "reviewed"}
                         >
                           <CheckCircle className="mr-1.5 h-3.5 w-3.5" />
-                          Reviewed
+                          {t("reviewed")}
                         </Button>
                         <Button
                           onClick={() => handleUpdateStatus(selectedCase.id, "discharged")}
@@ -633,7 +920,7 @@ export default function StaffPortal() {
                           size="sm"
                           className="flex-1"
                         >
-                          Discharge
+                          {t("discharge")}
                         </Button>
                       </div>
                     </div>
@@ -655,7 +942,7 @@ export default function StaffPortal() {
                       <div className="flex items-center gap-3">
                         <h2 className="text-lg font-semibold flex items-center gap-2">
                           <Brain className="h-5 w-5 text-purple-600" />
-                          AI Assistant
+                          {t("aiAssistant")}
                         </h2>
                       </div>
                       {currentModel && (
@@ -695,7 +982,7 @@ export default function StaffPortal() {
                       <Input
                         value={askQuestion}
                         onChange={(e) => setAskQuestion(e.target.value)}
-                        placeholder="Ask about this case..."
+                        placeholder={t("askAboutCase")}
                         className="h-9 text-sm"
                         onKeyDown={(e) => e.key === "Enter" && handleAskQuestion()}
                       />
@@ -705,7 +992,7 @@ export default function StaffPortal() {
                         size="sm"
                         className="px-3"
                       >
-                        {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Ask"}
+                        {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : t("ask")}
                       </Button>
                     </div>
 
@@ -719,7 +1006,7 @@ export default function StaffPortal() {
                               <MessageSquare className="h-4 w-4 text-blue-600 mt-0.5 flex-shrink-0" />
                               <div className="flex-1">
                                 <h4 className="text-xs font-semibold text-blue-700 dark:text-blue-300 mb-1">
-                                  Answer
+                                  {t("answer")}
                                 </h4>
                                 <div className="text-sm text-gray-800 dark:text-gray-200 leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5">
                                   <ReactMarkdown remarkPlugins={[remarkGfm]}>
@@ -736,7 +1023,7 @@ export default function StaffPortal() {
                           <div className="bg-green-50 dark:bg-green-900/20 p-3 rounded-lg border border-green-200 dark:border-green-800">
                             <h4 className="text-xs font-semibold text-green-700 dark:text-green-300 mb-2 flex items-center gap-1">
                               <AlertCircle className="h-3.5 w-3.5" />
-                              Follow-up Questions
+                              {t("followUpQuestions")}
                             </h4>
                             <ul className="space-y-1.5">
                               {answer.suggested_questions.map((q, idx) => (
@@ -768,7 +1055,7 @@ export default function StaffPortal() {
                               )}
                               <Brain className="h-3.5 w-3.5 text-purple-600" />
                               <span className="text-xs font-medium text-purple-700 dark:text-purple-300">
-                                AI Reasoning
+                                {t("aiReasoning")}
                               </span>
                             </button>
                             {showReasoning && (
@@ -805,10 +1092,10 @@ export default function StaffPortal() {
                     <Search className="h-12 w-12 mx-auto opacity-50" />
                   </div>
                   <p className="text-gray-500 text-lg font-medium">
-                    Select a case from the list to view details
+                    {t("selectCase")}
                   </p>
                   <p className="text-gray-400 text-sm mt-2">
-                    {filteredCases.length} case{filteredCases.length !== 1 ? "s" : ""} available
+                    {filteredCases.length} {t("casesAvailable")}
                   </p>
                 </CardContent>
               </Card>
