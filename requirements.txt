@@ -47,6 +47,21 @@ aiofiles==23.2.1
 reportlab>=4.0.0
 
 # =============================================================================
+# DrBERT / HuggingFace Transformers (Optional - for French medical BERT)
+# =============================================================================
+# Install for DrBERT support:
+#   pip install transformers accelerate torch
+#
+# Note: torch will auto-detect GPU (CUDA/ROCm/MPS)
+# DrBERT auto-splits between GPU and CPU based on available VRAM
+transformers>=4.35.0
+accelerate>=0.25.0
+# torch is installed separately based on your hardware:
+#   CPU only:  pip install torch
+#   CUDA:      pip install torch --index-url https://download.pytorch.org/whl/cu121
+#   ROCm:      pip install torch --index-url https://download.pytorch.org/whl/rocm5.6
+
+# =============================================================================
 # Development tools
 # =============================================================================
 python-multipart==0.0.6

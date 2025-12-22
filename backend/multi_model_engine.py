@@ -90,11 +90,54 @@ class MultiModelEngine:
         self._current_model: Optional[LoadedModel] = None
         self._lock = threading.RLock()
         self._total_inferences = 0
-        self.n_gpu_layers = int(os.environ.get("N_GPU_LAYERS", "-1"))
         self.n_threads = int(os.environ.get("N_THREADS", "6"))
+
+        # Auto-detect GPU layers if not explicitly set
+        env_gpu_layers = os.environ.get("N_GPU_LAYERS")
+        if env_gpu_layers is not None:
+            self.n_gpu_layers = int(env_gpu_layers)
+            self._auto_gpu = False
+        else:
+            self.n_gpu_layers = self._detect_optimal_gpu_layers()
+            self._auto_gpu = True
 
         if auto_load:
             self._try_load_default_model()
+
+    def _detect_optimal_gpu_layers(self) -> int:
+        """Auto-detect optimal GPU layers based on available VRAM."""
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                return 0
+
+            torch.cuda.init()
+            props = torch.cuda.get_device_properties(0)
+            total_mb = props.total_memory // (1024 * 1024)
+            reserved = torch.cuda.memory_reserved(0) // (1024 * 1024)
+            free_mb = total_mb - reserved
+
+            print(f"  GPU detected: {props.name} ({free_mb}MB free / {total_mb}MB total)")
+
+            # Conservative layer allocation based on free VRAM
+            if free_mb > 6000:
+                return -1  # All layers on GPU
+            elif free_mb > 4000:
+                return 35
+            elif free_mb > 2000:
+                return 20
+            elif free_mb > 1000:
+                return 10
+            elif free_mb > 500:
+                return 5
+            else:
+                return 0
+
+        except ImportError:
+            return 0
+        except Exception as e:
+            logger.warning(f"GPU detection failed: {e}")
+            return 0
 
     # =========================================================================
     # MODEL LOADING
@@ -122,12 +165,27 @@ class MultiModelEngine:
             if self._current_model and self._current_model.model_id == model_id: return True
             self.unload_model()
             try:
+                # Determine GPU layers: use auto-detected if available, else config recommendation
+                if self._auto_gpu and self.n_gpu_layers > 0:
+                    # Auto mode: use detected layers, but cap to model's recommendation
+                    gpu_layers = min(self.n_gpu_layers, config.recommended_gpu_layers) if config.recommended_gpu_layers > 0 else self.n_gpu_layers
+                else:
+                    # Manual mode or no GPU: use config or env setting
+                    gpu_layers = config.recommended_gpu_layers if config.recommended_gpu_layers > 0 else self.n_gpu_layers
+
+                # Handle -1 (all layers)
+                if self.n_gpu_layers == -1:
+                    gpu_layers = -1
+
                 print(f"Loading {config.name}...")
+                print(f"  GPU layers: {gpu_layers}, CPU threads: {self.n_threads}")
+
                 instance = Llama(
                     model_path=path, n_ctx=4096, n_threads=self.n_threads,
-                    n_gpu_layers=config.recommended_gpu_layers or self.n_gpu_layers, verbose=False
+                    n_gpu_layers=gpu_layers, verbose=False
                 )
                 self._current_model = LoadedModel(model_id, config, instance, datetime.now())
+                self._current_gpu_layers = gpu_layers
                 return True
             except Exception as e:
                 print(f"Load failed: {e}")
@@ -746,13 +804,18 @@ class MultiModelEngine:
 
     def get_engine_stats(self) -> Dict:
         config = self._current_model.config if self._current_model else None
+        gpu_layers = getattr(self, '_current_gpu_layers', 0)
         return {
             "llama_available": LLAMA_AVAILABLE,
             "model_loaded": config.name if config else "None",
             "model_id": config.id if config else None,
             "current_model": config.name if config else None,
             "total_inferences": self._total_inferences,
-            "uses_json_grammar": self._supports_json_grammar
+            "uses_json_grammar": self._supports_json_grammar,
+            "gpu_layers": gpu_layers,
+            "auto_gpu": self._auto_gpu,
+            "detected_gpu_layers": self.n_gpu_layers,
+            "cpu_threads": self.n_threads
         }
 
 # =============================================================================
