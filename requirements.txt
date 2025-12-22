@@ -62,6 +62,14 @@ accelerate>=0.25.0
 #   ROCm:      pip install torch --index-url https://download.pytorch.org/whl/rocm5.6
 
 # =============================================================================
+# French Pivot RAG (Protocol Retrieval-Augmented Generation)
+# =============================================================================
+# ChromaDB - Local vector database for semantic search
+chromadb>=0.4.22
+# Sentence Transformers - Alternative embedding model (optional, DrBERT uses transformers)
+sentence-transformers>=2.2.2
+
+# =============================================================================
 # Development tools
 # =============================================================================
 python-multipart==0.0.6

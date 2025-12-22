@@ -40,6 +40,29 @@ TRIAGE_CHAT_SCHEMA = {
     "required": ["reasoning", "answer", "follow_up_questions"]
 }
 
+# French Pivot: Schema for symptom translation to French medical terminology
+FRENCH_PIVOT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "french_terms": {"type": "string", "description": "Symptoms in French medical terminology"},
+        "medical_category": {"type": "string", "description": "Medical category (e.g., cardiac, respiratory)"},
+        "urgency_indicators": {"type": "array", "items": {"type": "string"}}
+    },
+    "required": ["french_terms", "medical_category"]
+}
+
+# RAG-grounded response schema
+RAG_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "reasoning": {"type": "string"},
+        "answer": {"type": "string"},
+        "protocol_applied": {"type": "string"},
+        "follow_up_questions": {"type": "array", "items": {"type": "string"}}
+    },
+    "required": ["reasoning", "answer", "protocol_applied", "follow_up_questions"]
+}
+
 MEDICAL_REPORT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -92,6 +115,9 @@ class MultiModelEngine:
         self._total_inferences = 0
         self.n_threads = int(os.environ.get("N_THREADS", "6"))
 
+        # DrBERT engine reference for RAG (set externally)
+        self._drbert_engine: Optional[Any] = None
+
         # Auto-detect GPU layers if not explicitly set
         env_gpu_layers = os.environ.get("N_GPU_LAYERS")
         if env_gpu_layers is not None:
@@ -103,6 +129,18 @@ class MultiModelEngine:
 
         if auto_load:
             self._try_load_default_model()
+
+    def set_drbert_engine(self, drbert_engine):
+        """Set the DrBERT engine for RAG operations."""
+        self._drbert_engine = drbert_engine
+
+    @property
+    def rag_available(self) -> bool:
+        """Check if RAG is available (DrBERT loaded and vector store ready)."""
+        return (
+            self._drbert_engine is not None and
+            self._drbert_engine.rag_ready
+        )
 
     def _detect_optimal_gpu_layers(self) -> int:
         """Auto-detect optimal GPU layers based on available VRAM."""
@@ -765,6 +803,321 @@ class MultiModelEngine:
         return sections
 
     # =========================================================================
+    # FRENCH PIVOT RAG PIPELINE
+    # =========================================================================
+
+    def _pivot_to_french(self, patient_context: Dict[str, Any], user_query: str) -> Dict[str, Any]:
+        """
+        Step 1 of French Pivot: Translate symptoms to French medical terminology.
+
+        Uses the LLM to extract and translate symptoms from any language
+        to precise French medical terms for DrBERT semantic search.
+
+        Args:
+            patient_context: Patient clinical state
+            user_query: Original user question (any language)
+
+        Returns:
+            Dict with french_terms, medical_category, urgency_indicators
+        """
+        if not self._current_model:
+            return {"french_terms": "", "medical_category": "general", "urgency_indicators": []}
+
+        # Build a concise patient summary
+        card = self._flatten_patient_data(patient_context)
+
+        system_prompt = (
+            "You are a medical terminology expert. Your task is to extract symptoms "
+            "from the patient data and translate them to PRECISE French medical terminology.\n\n"
+            "RULES:\n"
+            "- Output ONLY the French medical terms, not translations of general text\n"
+            "- Use standard French medical vocabulary (as used in SFMU/HAS protocols)\n"
+            "- Be specific: 'Douleur thoracique constrictive' not just 'douleur'\n"
+            "- Include relevant modifiers (acute, chronic, severity, location)\n\n"
+            "Examples:\n"
+            "- 'chest pain' → 'Douleur thoracique'\n"
+            "- 'difficulty breathing' → 'Dyspnée'\n"
+            "- 'high fever with chills' → 'Fièvre élevée avec frissons'\n"
+            "- 'sudden severe headache' → 'Céphalée brutale intense'\n\n"
+        )
+
+        # Construct user prompt
+        user_prompt = (
+            f"PATIENT DATA:\n{card}\n\n"
+            f"USER QUERY: {user_query}\n\n"
+            "Extract the key symptoms and translate to French medical terms. "
+            "Also identify the medical category (cardiac, respiratory, neurological, etc.).\n\n"
+            "Respond with:\n"
+            "FRENCH_TERMS: [French medical terminology for symptoms]\n"
+            "CATEGORY: [medical category]\n"
+            "URGENCY: [any urgency indicators, comma-separated]"
+        )
+
+        with self._lock:
+            try:
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ]
+
+                output = self._current_model.instance.create_chat_completion(
+                    messages=messages,
+                    max_tokens=300,
+                    temperature=0.1,
+                    stop=["<|im_end|>", "<|im_start|>", "</s>", "<|eot_id|>"]
+                )
+
+                raw = output['choices'][0]['message']['content']
+                log_llm_output(raw, context="FRENCH_PIVOT")
+
+                # Parse the response
+                french_terms = ""
+                category = "general"
+                urgency = []
+
+                for line in raw.split('\n'):
+                    line = line.strip()
+                    if line.upper().startswith("FRENCH_TERMS:"):
+                        french_terms = line.split(":", 1)[1].strip()
+                    elif line.upper().startswith("CATEGORY:"):
+                        category = line.split(":", 1)[1].strip().lower()
+                    elif line.upper().startswith("URGENCY:"):
+                        urgency_str = line.split(":", 1)[1].strip()
+                        urgency = [u.strip() for u in urgency_str.split(",") if u.strip()]
+
+                return {
+                    "french_terms": french_terms,
+                    "medical_category": category,
+                    "urgency_indicators": urgency
+                }
+
+            except Exception as e:
+                logger.error(f"French pivot error: {e}")
+                return {"french_terms": "", "medical_category": "general", "urgency_indicators": []}
+
+    def _build_rag_system_prompt(self,
+                                  patient_card: str,
+                                  protocol_text: str,
+                                  protocol_metadata: Dict[str, Any],
+                                  user_language: str = "en") -> str:
+        """
+        Build system prompt with retrieved French protocol as ground truth.
+
+        Args:
+            patient_card: Flattened patient data
+            protocol_text: Retrieved French protocol text
+            protocol_metadata: Protocol metadata (title, source, etc.)
+            user_language: User's language for response
+
+        Returns:
+            Complete system prompt with protocol injection
+        """
+        language_instruction = {
+            "en": "Respond in English.",
+            "fr": "Répondez en français.",
+            "es": "Responda en español.",
+            "ar": "أجب بالعربية."
+        }.get(user_language, "Respond in English.")
+
+        protocol_title = protocol_metadata.get("title", "Medical Protocol")
+        protocol_source = protocol_metadata.get("source", "SFMU/HAS")
+
+        return (
+            "You are a medical triage assistant. You MUST use the FRENCH PROTOCOL below "
+            "as your SOURCE OF TRUTH for medical decisions.\n\n"
+            "═══════════════════════════════════════════════════════════════\n"
+            f"📋 OFFICIAL PROTOCOL: {protocol_title}\n"
+            f"📚 Source: {protocol_source}\n"
+            "═══════════════════════════════════════════════════════════════\n"
+            f"{protocol_text}\n"
+            "═══════════════════════════════════════════════════════════════\n\n"
+            f"PATIENT DATA:\n{patient_card}\n\n"
+            "STRICT RULES:\n"
+            "1. Base your reasoning ONLY on the protocol above.\n"
+            "2. Quote specific protocol text when relevant.\n"
+            "3. Apply the protocol's triage criteria to this patient.\n"
+            "4. If the protocol doesn't cover this case, say so explicitly.\n"
+            "5. DO NOT invent information not in the protocol or patient data.\n\n"
+            "WRITING STYLE:\n"
+            "- For reasoning: Use medical terminology, reference the protocol.\n"
+            "- For answer: Use simple, reassuring language for the patient.\n"
+            "- For questions: Ask specific questions to assess urgency.\n\n"
+            f"LANGUAGE: {language_instruction}\n"
+        )
+
+    def query_with_rag(self,
+                       patient_context: Dict[str, Any],
+                       user_query: str,
+                       user_language: str = "en",
+                       n_protocols: int = 1) -> Dict[str, Any]:
+        """
+        Query with French Pivot RAG Pipeline.
+
+        The full pipeline:
+        1. PIVOT: LLM translates symptoms → French medical terms
+        2. RETRIEVE: DrBERT searches ChromaDB with French terms
+        3. SYNTHESIZE: LLM generates response grounded in French protocol
+
+        Args:
+            patient_context: Clinical state dictionary
+            user_query: User's question (any language)
+            user_language: User's preferred response language
+            n_protocols: Number of protocols to retrieve
+
+        Returns:
+            Response with answer, reasoning, protocol_applied, citations
+        """
+        # Check if RAG is available
+        if not self.rag_available:
+            logger.warning("RAG not available. Falling back to standard generation.")
+            return self._generate_structured_fallback(patient_context, user_query)
+
+        # === STEP 1: PIVOT TO FRENCH ===
+        pivot_result = self._pivot_to_french(patient_context, user_query)
+        french_query = pivot_result.get("french_terms", "")
+        medical_category = pivot_result.get("medical_category", "general")
+
+        if not french_query:
+            # Fallback: use original query if pivot fails
+            french_query = user_query
+            logger.warning("French pivot produced empty result, using original query")
+
+        log_llm_output(
+            f"French Terms: {french_query}\nCategory: {medical_category}",
+            context="PIVOT_RESULT"
+        )
+
+        # === STEP 2: RETRIEVE FROM DRBERT ===
+        protocols = self._drbert_engine.search_protocols(
+            french_query=french_query,
+            n_results=n_protocols,
+            category=medical_category if medical_category != "general" else None
+        )
+
+        if not protocols:
+            logger.warning("No protocols found. Falling back to standard generation.")
+            return self._generate_structured_fallback(patient_context, user_query)
+
+        best_protocol = protocols[0]
+        protocol_text = best_protocol.get("text", "")
+        protocol_metadata = best_protocol.get("metadata", {})
+
+        log_llm_output(
+            f"Protocol: {protocol_metadata.get('title', 'Unknown')}\n"
+            f"Score: {best_protocol.get('relevance_score', 0):.3f}\n"
+            f"Text Preview: {protocol_text[:200]}...",
+            context="RETRIEVED_PROTOCOL"
+        )
+
+        # === STEP 3: SYNTHESIZE WITH GROUNDED PROMPT ===
+        patient_card = self._flatten_patient_data(patient_context)
+        rag_system_prompt = self._build_rag_system_prompt(
+            patient_card=patient_card,
+            protocol_text=protocol_text,
+            protocol_metadata=protocol_metadata,
+            user_language=user_language
+        )
+
+        # Use appropriate output format based on model
+        use_json = self._supports_json_grammar
+
+        if use_json:
+            rag_system_prompt += (
+                "\n\nRespond with ONLY valid JSON:\n"
+                '{"reasoning": "...", "answer": "...", "protocol_applied": "...", "follow_up_questions": ["...", "..."]}'
+            )
+        else:
+            # Styled output for non-JSON models
+            rag_system_prompt += (
+                "\n\nRespond using ONLY these headers:\n\n"
+                "## Reasoning\n[Your clinical analysis based on the protocol]\n\n"
+                "## Answer\n[Your response to the patient]\n\n"
+                "## Protocol Applied\n[Which protocol section you used]\n\n"
+                "## Questions\n- [Follow-up question 1]\n- [Follow-up question 2]"
+            )
+
+        with self._lock:
+            try:
+                messages = [
+                    {"role": "system", "content": rag_system_prompt},
+                    {"role": "user", "content": user_query}
+                ]
+
+                gen_kwargs = {
+                    "messages": messages,
+                    "max_tokens": 1500,
+                    "temperature": 0.1,
+                    "top_p": 0.90,
+                    "repeat_penalty": 1.1,
+                    "stop": ["<|im_end|>", "<|im_start|>", "</s>", "<|eot_id|>"]
+                }
+
+                if use_json:
+                    gen_kwargs["response_format"] = {
+                        "type": "json_object",
+                        "schema": RAG_RESPONSE_SCHEMA
+                    }
+
+                output = self._current_model.instance.create_chat_completion(**gen_kwargs)
+                raw = output['choices'][0]['message']['content']
+                log_llm_output(raw, context="RAG_SYNTHESIS")
+
+                # Parse response
+                if use_json:
+                    clean_json = self._clean_json_output(raw)
+                    try:
+                        parsed = json.loads(clean_json)
+                    except json.JSONDecodeError:
+                        parsed = self._parse_rag_output(raw)
+                else:
+                    parsed = self._parse_rag_output(raw)
+
+                self._total_inferences += 1
+
+                # Build final response
+                return {
+                    "answer": parsed.get("answer", ""),
+                    "reasoning": parsed.get("reasoning", ""),
+                    "protocol_applied": parsed.get("protocol_applied", protocol_metadata.get("title", "")),
+                    "follow_up_questions": parsed.get("follow_up_questions", [])[:3],
+                    "french_query_used": french_query,
+                    "protocol_relevance": best_protocol.get("relevance_score", 0),
+                    "protocol_source": protocol_metadata.get("source", "SFMU/HAS"),
+                    "rag_used": True,
+                    "model_used": self._current_model.config.name if self._current_model else "Unknown"
+                }
+
+            except Exception as e:
+                logger.error(f"RAG synthesis error: {e}")
+                return self._generate_structured_fallback(patient_context, user_query)
+
+    def _parse_rag_output(self, raw_str: str) -> Dict[str, Any]:
+        """Parse RAG output with protocol_applied field."""
+        data = self._parse_adaptive_output(raw_str)
+
+        # Extract protocol_applied if present
+        protocol_match = re.search(
+            r'#{1,3}\s*Protocol(?:\s+Applied)?\s*\n(.*?)(?=#{1,3}|$)',
+            raw_str, re.DOTALL | re.IGNORECASE
+        )
+        if protocol_match:
+            data["protocol_applied"] = protocol_match.group(1).strip()
+        else:
+            data["protocol_applied"] = ""
+
+        return data
+
+    def _generate_structured_fallback(self, patient_context: Dict[str, Any], user_query: str) -> Dict[str, Any]:
+        """Fallback to standard generation when RAG is unavailable."""
+        result = self._generate_structured(patient_context, user_query)
+        result["rag_used"] = False
+        result["protocol_applied"] = ""
+        result["french_query_used"] = ""
+        result["protocol_relevance"] = 0
+        result["protocol_source"] = ""
+        return result
+
+    # =========================================================================
     # PUBLIC API
     # =========================================================================
 
@@ -784,20 +1137,66 @@ class MultiModelEngine:
             if rule.get("description", "").lower() in t_low: citations.append(f"Rule: {rule.get('description')}")
         return citations[:5]
 
-    def answer_staff_question(self, question: str, clinical_state: Dict[str, Any], model_id: Optional[str] = None) -> Dict[str, Any]:
-        if model_id: self.switch_model(model_id)
+    def answer_staff_question(self,
+                               question: str,
+                               clinical_state: Dict[str, Any],
+                               model_id: Optional[str] = None,
+                               use_rag: bool = True,
+                               user_language: str = "en") -> Dict[str, Any]:
+        """
+        Answer a staff question about a case.
 
-        response = self._generate_structured(clinical_state, question)
-        citations = self._extract_citations(response.get("answer", ""), clinical_state)
+        Args:
+            question: The question to answer
+            clinical_state: Patient clinical data
+            model_id: Optional model to switch to
+            use_rag: Whether to use RAG if available (default: True)
+            user_language: Language for response
 
-        return {
-            "answer": response.get("answer", ""),
-            "reasoning": response.get("reasoning", ""),
-            "suggested_questions": response.get("follow_up_questions", []),
-            "has_reasoning": True,
-            "cited_data": citations,
-            "model_used": self._current_model.config.name if self._current_model else "System"
-        }
+        Returns:
+            Response dictionary with answer, reasoning, citations, etc.
+        """
+        if model_id:
+            self.switch_model(model_id)
+
+        # Use RAG if available and requested
+        if use_rag and self.rag_available:
+            response = self.query_with_rag(
+                patient_context=clinical_state,
+                user_query=question,
+                user_language=user_language
+            )
+            citations = self._extract_citations(response.get("answer", ""), clinical_state)
+
+            return {
+                "answer": response.get("answer", ""),
+                "reasoning": response.get("reasoning", ""),
+                "suggested_questions": response.get("follow_up_questions", []),
+                "has_reasoning": True,
+                "cited_data": citations,
+                "model_used": response.get("model_used", "Unknown"),
+                "rag_used": response.get("rag_used", False),
+                "protocol_applied": response.get("protocol_applied", ""),
+                "protocol_source": response.get("protocol_source", ""),
+                "french_query_used": response.get("french_query_used", "")
+            }
+        else:
+            # Standard generation without RAG
+            response = self._generate_structured(clinical_state, question)
+            citations = self._extract_citations(response.get("answer", ""), clinical_state)
+
+            return {
+                "answer": response.get("answer", ""),
+                "reasoning": response.get("reasoning", ""),
+                "suggested_questions": response.get("follow_up_questions", []),
+                "has_reasoning": True,
+                "cited_data": citations,
+                "model_used": self._current_model.config.name if self._current_model else "System",
+                "rag_used": False,
+                "protocol_applied": "",
+                "protocol_source": "",
+                "french_query_used": ""
+            }
 
     def get_available_models(self) -> List[Dict]:
         return [{**model_to_dict(c), "is_available": self._model_exists(c.id), "is_loaded": (self._current_model and self._current_model.model_id == c.id)} for c in get_all_models()]
@@ -805,7 +1204,8 @@ class MultiModelEngine:
     def get_engine_stats(self) -> Dict:
         config = self._current_model.config if self._current_model else None
         gpu_layers = getattr(self, '_current_gpu_layers', 0)
-        return {
+
+        stats = {
             "llama_available": LLAMA_AVAILABLE,
             "model_loaded": config.name if config else "None",
             "model_id": config.id if config else None,
@@ -815,8 +1215,19 @@ class MultiModelEngine:
             "gpu_layers": gpu_layers,
             "auto_gpu": self._auto_gpu,
             "detected_gpu_layers": self.n_gpu_layers,
-            "cpu_threads": self.n_threads
+            "cpu_threads": self.n_threads,
+            # RAG status
+            "rag_available": self.rag_available,
+            "drbert_connected": self._drbert_engine is not None
         }
+
+        # Add DrBERT stats if connected
+        if self._drbert_engine:
+            drbert_stats = self._drbert_engine.get_engine_stats()
+            stats["drbert_model"] = drbert_stats.get("model_loaded")
+            stats["vector_store"] = drbert_stats.get("vector_store", {})
+
+        return stats
 
 # =============================================================================
 # SINGLETON

@@ -30,7 +30,10 @@ from pdf_generator import generate_medical_report_pdf
 from triage_engine import TriageEngine, RiskEngine
 from multi_model_engine import MultiModelEngine, get_engine
 from model_registry import get_all_models, get_model_config, model_to_dict
-from drbert_engine import DrBERTEngine, get_drbert_engine, DRBERT_MODELS
+from drbert_engine import (
+    DrBERTEngine, get_drbert_engine, DRBERT_MODELS,
+    Protocol, CHROMADB_AVAILABLE
+)
 from model_downloader import (
     detect_gpu_capabilities,
     download_and_load_model,
@@ -112,6 +115,28 @@ class ModelSwitchRequest(BaseModel):
 class StaffAskRequestWithModel(BaseModel):
     question: str
     model_id: Optional[str] = None
+    use_rag: bool = True
+
+
+# Protocol ingestion models
+class ProtocolInput(BaseModel):
+    title: str
+    text: str
+    source: str = "SFMU/HAS"
+    category: str = "general"
+    priority_level: Optional[str] = None
+    keywords: List[str] = []
+    metadata: Dict[str, Any] = {}
+
+
+class ProtocolIngestRequest(BaseModel):
+    protocols: List[ProtocolInput]
+
+
+class ProtocolSearchRequest(BaseModel):
+    query: str
+    n_results: int = 3
+    category: Optional[str] = None
 
 # =============================================================================
 # Application Lifecycle
@@ -165,6 +190,15 @@ async def lifespan(app: FastAPI):
     # Initialize DrBERT engine (lazy load - doesn't load model by default)
     drbert_engine = get_drbert_engine(reinitialize=True)
     print(f"  DrBERT engine initialized (load on demand)")
+
+    # Connect DrBERT to MultiModelEngine for RAG support
+    reasoning_engine.set_drbert_engine(drbert_engine)
+    if CHROMADB_AVAILABLE:
+        vs_stats = drbert_engine.get_vector_store_stats()
+        protocol_count = vs_stats.get("total_protocols", 0)
+        print(f"  VectorStore: {protocol_count} protocols indexed")
+    else:
+        print(f"  VectorStore: ChromaDB not available")
 
     print("Triage MVP ready!")
     print(f"   Patient interface: http://localhost:8000/")
@@ -582,7 +616,13 @@ async def get_case(case_id: str, _: bool = Depends(verify_staff_pin)):
 
 @app.post("/staff/case/{case_id}/ask", response_model=StaffAskResponse)
 async def staff_ask(case_id: str, request: StaffAskRequestWithModel, _: bool = Depends(verify_staff_pin)):
-    """Staff helper - ask questions about a case with optional model selection."""
+    """
+    Staff helper - ask questions about a case with optional model selection.
+
+    Now supports French Pivot RAG:
+    - If DrBERT is loaded and protocols are indexed, uses RAG for grounded answers
+    - Set use_rag=false to force standard LLM response without protocol grounding
+    """
     case = db.get_case(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -597,11 +637,17 @@ async def staff_ask(case_id: str, request: StaffAskRequestWithModel, _: bool = D
         "summary": case.summary
     }
 
-    # Use reasoning engine to answer (with optional model selection)
+    # Determine user language from session if available
+    session = db.get_session(case.session_id) if case.session_id else None
+    user_language = session.language if session else "en"
+
+    # Use reasoning engine to answer (with optional model selection and RAG)
     result = reasoning_engine.answer_staff_question(
         request.question,
         clinical_state,
-        model_id=request.model_id
+        model_id=request.model_id,
+        use_rag=request.use_rag,
+        user_language=user_language
     )
 
     return StaffAskResponse(
@@ -882,6 +928,165 @@ async def drbert_fill_mask(request: Dict[str, Any]):
         return {"predictions": predictions}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Protocol RAG Endpoints (French Pivot Architecture)
+# =============================================================================
+
+@app.post("/admin/protocols/ingest", dependencies=[Depends(verify_staff_pin)])
+async def ingest_protocols(request: ProtocolIngestRequest):
+    """
+    Ingest French medical protocols into the vector store.
+
+    Requires:
+    - DrBERT model loaded (/drbert/load/{model_id})
+    - ChromaDB available
+
+    Request body:
+    {
+        "protocols": [
+            {
+                "title": "Protocole Douleur Thoracique",
+                "text": "En cas de douleur thoracique...",
+                "source": "SFMU",
+                "category": "cardiac",
+                "priority_level": "1",
+                "keywords": ["douleur", "thorax", "coeur"]
+            }
+        ]
+    }
+    """
+    if not drbert_engine.is_loaded:
+        raise HTTPException(
+            status_code=400,
+            detail="DrBERT model not loaded. Call /drbert/load/{model_id} first."
+        )
+
+    if not drbert_engine.vector_store_available:
+        raise HTTPException(
+            status_code=400,
+            detail="Vector store not available. Ensure ChromaDB is installed."
+        )
+
+    # Convert Pydantic models to dicts
+    protocols_data = [p.model_dump() for p in request.protocols]
+
+    result = drbert_engine.ingest_protocols(protocols_data)
+
+    if not result.get("success", False):
+        raise HTTPException(status_code=500, detail=result.get("error", "Ingestion failed"))
+
+    return {
+        "success": True,
+        "added": result.get("added", 0),
+        "skipped": result.get("skipped", 0),
+        "total_in_store": result.get("total_in_store", 0),
+        "errors": result.get("errors", [])
+    }
+
+
+@app.post("/admin/protocols/search")
+async def search_protocols(request: ProtocolSearchRequest):
+    """
+    Search protocols using French query text.
+
+    For best results, query should be in French medical terminology.
+    Use the LLM French Pivot to translate symptoms before searching.
+
+    Request body:
+    {
+        "query": "Douleur thoracique constrictive",
+        "n_results": 3,
+        "category": "cardiac"  // optional
+    }
+    """
+    if not drbert_engine.is_loaded:
+        raise HTTPException(
+            status_code=400,
+            detail="DrBERT model not loaded. Call /drbert/load/{model_id} first."
+        )
+
+    if not drbert_engine.vector_store_available:
+        raise HTTPException(
+            status_code=400,
+            detail="Vector store not available. Ensure ChromaDB is installed."
+        )
+
+    results = drbert_engine.search_protocols(
+        french_query=request.query,
+        n_results=request.n_results,
+        category=request.category
+    )
+
+    return {
+        "query": request.query,
+        "results": results,
+        "count": len(results)
+    }
+
+
+@app.get("/admin/protocols/stats")
+async def get_protocol_stats():
+    """Get vector store statistics."""
+    if not drbert_engine.vector_store_available:
+        return {
+            "available": False,
+            "message": "Vector store not available. Ensure ChromaDB is installed."
+        }
+
+    return drbert_engine.get_vector_store_stats()
+
+
+@app.delete("/admin/protocols/clear", dependencies=[Depends(verify_staff_pin)])
+async def clear_protocols():
+    """Clear all protocols from the vector store."""
+    if not drbert_engine.vector_store_available:
+        raise HTTPException(
+            status_code=400,
+            detail="Vector store not available."
+        )
+
+    success = drbert_engine.clear_protocols()
+
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to clear protocols")
+
+    return {"success": True, "message": "All protocols cleared"}
+
+
+@app.get("/rag/status")
+async def get_rag_status():
+    """
+    Get the status of the French Pivot RAG pipeline.
+
+    Returns information about:
+    - LLM model status
+    - DrBERT model status
+    - Vector store status
+    - Overall RAG readiness
+    """
+    llm_stats = reasoning_engine.get_engine_stats()
+    drbert_stats = drbert_engine.get_engine_stats() if drbert_engine else {}
+
+    return {
+        "rag_available": reasoning_engine.rag_available,
+        "llm": {
+            "loaded": llm_stats.get("model_loaded") != "None",
+            "model": llm_stats.get("model_loaded"),
+            "supports_json_grammar": llm_stats.get("uses_json_grammar", False)
+        },
+        "drbert": {
+            "loaded": drbert_engine.is_loaded if drbert_engine else False,
+            "model": drbert_stats.get("model_loaded"),
+            "rag_ready": drbert_engine.rag_ready if drbert_engine else False
+        },
+        "vector_store": drbert_stats.get("vector_store", {"available": False}),
+        "message": (
+            "RAG pipeline ready" if reasoning_engine.rag_available
+            else "Load DrBERT and ingest protocols to enable RAG"
+        )
+    }
 
 # =============================================================================
 # Model Download Endpoints (Unified for GGUF and DrBERT)

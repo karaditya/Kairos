@@ -1,22 +1,30 @@
 """
-DrBERT Engine - French Medical BERT with Smart GPU/CPU Split
+DrBERT Engine - French Medical BERT with Smart GPU/CPU Split + ChromaDB Vector Store
 
 Loads DrBERT models (4GB/7GB training data variants) with automatic
 memory distribution between GPU and CPU for laptop compatibility.
+
+FRENCH PIVOT RAG ARCHITECTURE:
+- Ingests French medical protocols into ChromaDB vector store
+- Provides semantic search over protocols using DrBERT embeddings
+- Enables multilingual queries via LLM translation to French
 
 Use cases:
 - Medical entity extraction (NER)
 - Symptom classification
 - French biomedical embeddings
 - Fill-mask for medical terms
+- Protocol semantic search (RAG)
 """
 
 import os
 import gc
 import threading
 import logging
+import hashlib
+import json
 from typing import Dict, List, Any, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -27,9 +35,11 @@ logger = logging.getLogger(__name__)
 
 TRANSFORMERS_AVAILABLE = False
 TORCH_AVAILABLE = False
+CHROMADB_AVAILABLE = False
+SENTENCE_TRANSFORMERS_AVAILABLE = False
 
 def _check_dependencies():
-    global TRANSFORMERS_AVAILABLE, TORCH_AVAILABLE
+    global TRANSFORMERS_AVAILABLE, TORCH_AVAILABLE, CHROMADB_AVAILABLE, SENTENCE_TRANSFORMERS_AVAILABLE
     try:
         import torch
         TORCH_AVAILABLE = True
@@ -38,6 +48,16 @@ def _check_dependencies():
     try:
         from transformers import AutoModel, AutoTokenizer
         TRANSFORMERS_AVAILABLE = True
+    except ImportError:
+        pass
+    try:
+        import chromadb
+        CHROMADB_AVAILABLE = True
+    except ImportError:
+        pass
+    try:
+        from sentence_transformers import SentenceTransformer
+        SENTENCE_TRANSFORMERS_AVAILABLE = True
     except ImportError:
         pass
 
@@ -170,6 +190,284 @@ def compute_device_map(model_size_mb: int, gpu_free_mb: int) -> Dict[str, Any]:
 
 
 # =============================================================================
+# Protocol Data Structures
+# =============================================================================
+
+@dataclass
+class Protocol:
+    """A French medical protocol for triage."""
+    id: str
+    title: str
+    text: str
+    source: str = "SFMU/HAS"
+    category: str = "general"
+    priority_level: Optional[str] = None  # "1" to "5" or color
+    keywords: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+# =============================================================================
+# ChromaDB Vector Store for Protocol Retrieval
+# =============================================================================
+
+class ProtocolVectorStore:
+    """
+    ChromaDB-backed vector store for French medical protocols.
+
+    Uses DrBERT embeddings for semantic search over protocol texts.
+    Designed for the French Pivot RAG architecture.
+    """
+
+    def __init__(self,
+                 persist_directory: str,
+                 collection_name: str = "french_protocols",
+                 embedding_function: Optional[Any] = None):
+        """
+        Initialize the vector store.
+
+        Args:
+            persist_directory: Path to store ChromaDB data
+            collection_name: Name of the collection
+            embedding_function: Custom embedding function (uses DrBERT if None)
+        """
+        self.persist_directory = persist_directory
+        self.collection_name = collection_name
+        self._embedding_fn = embedding_function
+        self._client = None
+        self._collection = None
+        self._lock = threading.RLock()
+
+        self._initialize_store()
+
+    def _initialize_store(self):
+        """Initialize ChromaDB client and collection."""
+        if not CHROMADB_AVAILABLE:
+            logger.warning("ChromaDB not available. Protocol storage disabled.")
+            return
+
+        try:
+            import chromadb
+            from chromadb.config import Settings
+
+            # Create persist directory if needed
+            os.makedirs(self.persist_directory, exist_ok=True)
+
+            # Initialize persistent client
+            self._client = chromadb.PersistentClient(
+                path=self.persist_directory,
+                settings=Settings(
+                    anonymized_telemetry=False,
+                    allow_reset=True
+                )
+            )
+
+            # Get or create collection
+            self._collection = self._client.get_or_create_collection(
+                name=self.collection_name,
+                metadata={"description": "French medical protocols for triage"}
+            )
+
+            logger.info(f"VectorStore initialized: {self._collection.count()} protocols")
+
+        except Exception as e:
+            logger.error(f"Failed to initialize ChromaDB: {e}")
+            self._client = None
+            self._collection = None
+
+    @property
+    def is_available(self) -> bool:
+        """Check if vector store is available."""
+        return self._collection is not None
+
+    def set_embedding_function(self, fn):
+        """Set the embedding function (typically from DrBERTEngine)."""
+        self._embedding_fn = fn
+
+    def _generate_id(self, protocol: Protocol) -> str:
+        """Generate deterministic ID for a protocol."""
+        content = f"{protocol.title}:{protocol.text[:200]}:{protocol.source}"
+        return hashlib.md5(content.encode()).hexdigest()
+
+    def ingest_protocols(self, protocols: List[Protocol], batch_size: int = 32) -> Dict[str, Any]:
+        """
+        Ingest protocols into the vector store.
+
+        Args:
+            protocols: List of Protocol objects
+            batch_size: Number of protocols to process at once
+
+        Returns:
+            Summary of ingestion results
+        """
+        if not self.is_available:
+            return {"success": False, "error": "Vector store not available"}
+
+        if not self._embedding_fn:
+            return {"success": False, "error": "No embedding function set. Load DrBERT first."}
+
+        with self._lock:
+            added = 0
+            skipped = 0
+            errors = []
+
+            for i in range(0, len(protocols), batch_size):
+                batch = protocols[i:i + batch_size]
+
+                try:
+                    # Prepare batch data
+                    ids = [self._generate_id(p) for p in batch]
+                    documents = [p.text for p in batch]
+                    metadatas = [
+                        {
+                            "title": p.title,
+                            "source": p.source,
+                            "category": p.category,
+                            "priority_level": p.priority_level or "",
+                            "keywords": ",".join(p.keywords),
+                            **{k: str(v) for k, v in p.metadata.items()}
+                        }
+                        for p in batch
+                    ]
+
+                    # Generate embeddings using DrBERT
+                    embeddings = self._embedding_fn(documents)
+
+                    # Check for existing IDs
+                    existing = set()
+                    try:
+                        result = self._collection.get(ids=ids)
+                        existing = set(result["ids"]) if result["ids"] else set()
+                    except Exception:
+                        pass
+
+                    # Filter out existing
+                    new_ids = []
+                    new_docs = []
+                    new_metas = []
+                    new_embeds = []
+
+                    for j, pid in enumerate(ids):
+                        if pid not in existing:
+                            new_ids.append(pid)
+                            new_docs.append(documents[j])
+                            new_metas.append(metadatas[j])
+                            new_embeds.append(embeddings[j])
+                        else:
+                            skipped += 1
+
+                    # Add new protocols
+                    if new_ids:
+                        self._collection.add(
+                            ids=new_ids,
+                            documents=new_docs,
+                            metadatas=new_metas,
+                            embeddings=new_embeds
+                        )
+                        added += len(new_ids)
+
+                except Exception as e:
+                    errors.append(str(e))
+                    logger.error(f"Batch ingestion error: {e}")
+
+            return {
+                "success": len(errors) == 0,
+                "added": added,
+                "skipped": skipped,
+                "total": len(protocols),
+                "total_in_store": self._collection.count(),
+                "errors": errors[:5] if errors else []
+            }
+
+    def search(self,
+               query: str,
+               n_results: int = 3,
+               category_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Search protocols using semantic similarity.
+
+        Args:
+            query: French query text (should be in French for best results!)
+            n_results: Number of results to return
+            category_filter: Optional category filter
+
+        Returns:
+            List of matching protocols with scores
+        """
+        if not self.is_available:
+            return []
+
+        if not self._embedding_fn:
+            logger.warning("No embedding function. Cannot search.")
+            return []
+
+        with self._lock:
+            try:
+                # Generate query embedding
+                query_embedding = self._embedding_fn([query])[0]
+
+                # Build where clause if filtering
+                where = None
+                if category_filter:
+                    where = {"category": category_filter}
+
+                # Search
+                results = self._collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=n_results,
+                    where=where,
+                    include=["documents", "metadatas", "distances"]
+                )
+
+                # Format results
+                protocols = []
+                if results and results["ids"] and results["ids"][0]:
+                    for i, doc_id in enumerate(results["ids"][0]):
+                        protocols.append({
+                            "id": doc_id,
+                            "text": results["documents"][0][i] if results["documents"] else "",
+                            "metadata": results["metadatas"][0][i] if results["metadatas"] else {},
+                            "distance": results["distances"][0][i] if results["distances"] else 0.0,
+                            "relevance_score": 1.0 - (results["distances"][0][i] / 2.0) if results["distances"] else 0.5
+                        })
+
+                return protocols
+
+            except Exception as e:
+                logger.error(f"Search error: {e}")
+                return []
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get vector store statistics."""
+        if not self.is_available:
+            return {"available": False}
+
+        return {
+            "available": True,
+            "collection_name": self.collection_name,
+            "total_protocols": self._collection.count(),
+            "persist_directory": self.persist_directory
+        }
+
+    def clear(self) -> bool:
+        """Clear all protocols from the store."""
+        if not self.is_available:
+            return False
+
+        with self._lock:
+            try:
+                # Delete and recreate collection
+                self._client.delete_collection(self.collection_name)
+                self._collection = self._client.create_collection(
+                    name=self.collection_name,
+                    metadata={"description": "French medical protocols for triage"}
+                )
+                return True
+            except Exception as e:
+                logger.error(f"Clear error: {e}")
+                return False
+
+
+# =============================================================================
 # DrBERT Engine
 # =============================================================================
 
@@ -194,18 +492,44 @@ class DrBERTEngine:
     - Medical text embeddings
     - Fill-mask for French medical terms
     - Entity extraction (with fine-tuned models)
+    - ChromaDB vector store for protocol retrieval (RAG)
     """
 
-    def __init__(self, cache_dir: Optional[str] = None, auto_load: bool = False):
+    def __init__(self,
+                 cache_dir: Optional[str] = None,
+                 vector_db_dir: Optional[str] = None,
+                 auto_load: bool = False):
         self.cache_dir = cache_dir or os.path.join(
             os.path.dirname(__file__), "..", "models", "drbert_cache"
+        )
+        self.vector_db_dir = vector_db_dir or os.path.join(
+            os.path.dirname(__file__), "..", "data", "vector_db"
         )
         self._current_model: Optional[LoadedDrBERT] = None
         self._lock = threading.RLock()
         self._total_inferences = 0
 
+        # Initialize vector store
+        self._vector_store: Optional[ProtocolVectorStore] = None
+        self._init_vector_store()
+
         if auto_load and TRANSFORMERS_AVAILABLE:
             self._try_load_default()
+
+    def _init_vector_store(self):
+        """Initialize the protocol vector store."""
+        if CHROMADB_AVAILABLE:
+            try:
+                self._vector_store = ProtocolVectorStore(
+                    persist_directory=self.vector_db_dir,
+                    collection_name="french_protocols"
+                )
+                logger.info(f"VectorStore initialized at {self.vector_db_dir}")
+            except Exception as e:
+                logger.error(f"Failed to initialize VectorStore: {e}")
+                self._vector_store = None
+        else:
+            logger.warning("ChromaDB not available. Vector store disabled.")
 
     def _try_load_default(self):
         """Attempt to load the recommended DrBERT model."""
@@ -314,6 +638,11 @@ class DrBERTEngine:
                     device_map=device_map,
                     loaded_at=datetime.now()
                 )
+
+                # Link embedding function to vector store
+                if self._vector_store:
+                    self._vector_store.set_embedding_function(self.get_embeddings)
+                    print(f"  VectorStore linked to DrBERT embeddings")
 
                 print(f"  {config.name} loaded successfully!")
                 return True
@@ -515,6 +844,119 @@ class DrBERTEngine:
         return cosine_sim(embeddings[0], embeddings[1])
 
     # =========================================================================
+    # Protocol RAG Methods (French Pivot Architecture)
+    # =========================================================================
+
+    def ingest_protocols(self,
+                         protocols: List[Dict[str, Any]],
+                         batch_size: int = 32) -> Dict[str, Any]:
+        """
+        Ingest French medical protocols into the vector store.
+
+        Args:
+            protocols: List of protocol dicts with keys:
+                - title: Protocol title
+                - text: Full protocol text (in French)
+                - source: Source (e.g., "SFMU", "HAS")
+                - category: Category (e.g., "cardiac", "trauma")
+                - priority_level: Optional priority level
+                - keywords: Optional list of keywords
+            batch_size: Batch size for embedding generation
+
+        Returns:
+            Ingestion result summary
+        """
+        if not self._vector_store:
+            return {"success": False, "error": "Vector store not available"}
+
+        if not self._current_model:
+            return {"success": False, "error": "DrBERT model not loaded. Load model first."}
+
+        # Convert dicts to Protocol objects
+        protocol_objs = []
+        for p in protocols:
+            protocol_objs.append(Protocol(
+                id=p.get("id", ""),
+                title=p.get("title", "Untitled"),
+                text=p.get("text", ""),
+                source=p.get("source", "SFMU/HAS"),
+                category=p.get("category", "general"),
+                priority_level=p.get("priority_level"),
+                keywords=p.get("keywords", []),
+                metadata=p.get("metadata", {})
+            ))
+
+        return self._vector_store.ingest_protocols(protocol_objs, batch_size)
+
+    def search_protocols(self,
+                         french_query: str,
+                         n_results: int = 3,
+                         category: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Search protocols using French query text.
+
+        IMPORTANT: Query MUST be in French for best results!
+        Use the LLM to translate user input to French before calling this.
+
+        Args:
+            french_query: Query in French (e.g., "Douleur thoracique constrictive")
+            n_results: Number of results to return
+            category: Optional category filter
+
+        Returns:
+            List of matching protocols with relevance scores
+        """
+        if not self._vector_store:
+            logger.warning("Vector store not available for search")
+            return []
+
+        if not self._current_model:
+            logger.warning("DrBERT not loaded. Cannot search protocols.")
+            return []
+
+        return self._vector_store.search(
+            query=french_query,
+            n_results=n_results,
+            category_filter=category
+        )
+
+    def get_best_protocol(self, french_query: str, category: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Get the single best matching protocol for a French query.
+
+        Args:
+            french_query: Query in French
+            category: Optional category filter
+
+        Returns:
+            Best matching protocol or None
+        """
+        results = self.search_protocols(french_query, n_results=1, category=category)
+        return results[0] if results else None
+
+    def get_vector_store_stats(self) -> Dict[str, Any]:
+        """Get vector store statistics."""
+        if not self._vector_store:
+            return {"available": False, "error": "Vector store not initialized"}
+        return self._vector_store.get_stats()
+
+    def clear_protocols(self) -> bool:
+        """Clear all protocols from vector store."""
+        if not self._vector_store:
+            return False
+        return self._vector_store.clear()
+
+    @property
+    def vector_store_available(self) -> bool:
+        """Check if vector store is available for RAG."""
+        return self._vector_store is not None and self._vector_store.is_available
+
+    @property
+    def rag_ready(self) -> bool:
+        """Check if RAG pipeline is ready (model loaded + vector store available)."""
+        return self.is_loaded and self.vector_store_available
+
+    # =========================================================================
     # Status & Info
     # =========================================================================
 
@@ -537,15 +979,26 @@ class DrBERTEngine:
         """Get engine statistics."""
         total_mb, free_mb, cuda_avail = get_gpu_memory_info()
 
-        return {
+        stats = {
             "transformers_available": TRANSFORMERS_AVAILABLE,
             "torch_available": TORCH_AVAILABLE,
+            "chromadb_available": CHROMADB_AVAILABLE,
             "cuda_available": cuda_avail,
             "gpu_total_mb": total_mb,
             "gpu_free_mb": free_mb,
             "model_loaded": self._current_model.config.name if self._current_model else None,
             "total_inferences": self._total_inferences,
+            "rag_ready": self.rag_ready,
         }
+
+        # Add vector store stats
+        if self._vector_store:
+            vs_stats = self._vector_store.get_stats()
+            stats["vector_store"] = vs_stats
+        else:
+            stats["vector_store"] = {"available": False}
+
+        return stats
 
 
 # =============================================================================
@@ -557,6 +1010,7 @@ _drbert_instance: Optional[DrBERTEngine] = None
 
 def get_drbert_engine(
     cache_dir: Optional[str] = None,
+    vector_db_dir: Optional[str] = None,
     reinitialize: bool = False
 ) -> DrBERTEngine:
     """Get or create DrBERT engine singleton."""
@@ -565,6 +1019,26 @@ def get_drbert_engine(
     if _drbert_instance is None or reinitialize:
         if _drbert_instance and reinitialize:
             _drbert_instance.unload_model()
-        _drbert_instance = DrBERTEngine(cache_dir=cache_dir, auto_load=False)
+        _drbert_instance = DrBERTEngine(
+            cache_dir=cache_dir,
+            vector_db_dir=vector_db_dir,
+            auto_load=False
+        )
 
     return _drbert_instance
+
+
+# =============================================================================
+# Exports
+# =============================================================================
+
+__all__ = [
+    "DrBERTEngine",
+    "DrBERTConfig",
+    "DRBERT_MODELS",
+    "Protocol",
+    "ProtocolVectorStore",
+    "get_drbert_engine",
+    "TRANSFORMERS_AVAILABLE",
+    "CHROMADB_AVAILABLE",
+]
