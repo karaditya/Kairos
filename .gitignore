@@ -70,5 +70,3 @@ coverage/
 *.tmp
 *.temp
 *.logs
-
-.next/
