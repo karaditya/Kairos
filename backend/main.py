@@ -29,6 +29,7 @@ from pdf_generator import generate_medical_report_pdf
 from triage_engine import TriageEngine, RiskEngine
 from multi_model_engine import MultiModelEngine, get_engine
 from model_registry import get_all_models, get_model_config, model_to_dict
+from drbert_engine import DrBERTEngine, get_drbert_engine, DRBERT_MODELS
 
 # =============================================================================
 # Configuration
@@ -113,11 +114,12 @@ db: Database = None
 triage_engine: TriageEngine = None
 risk_engine: RiskEngine = None
 reasoning_engine: MultiModelEngine = None
+drbert_engine: DrBERTEngine = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize components on startup, cleanup on shutdown."""
-    global db, triage_engine, risk_engine, reasoning_engine
+    global db, triage_engine, risk_engine, reasoning_engine, drbert_engine
 
     print("Starting Offline Triage MVP...")
 
@@ -152,6 +154,10 @@ async def lifespan(app: FastAPI):
     available = [m for m in reasoning_engine.get_available_models() if m.get("is_available")]
     print(f"  Available models: {len(available)}")
 
+    # Initialize DrBERT engine (lazy load - doesn't load model by default)
+    drbert_engine = get_drbert_engine(reinitialize=True)
+    print(f"  DrBERT engine initialized (load on demand)")
+
     print("Triage MVP ready!")
     print(f"   Patient interface: http://localhost:8000/")
     print(f"   Staff interface: http://localhost:8000/staff")
@@ -162,6 +168,8 @@ async def lifespan(app: FastAPI):
     print("Shutting down...")
     if reasoning_engine:
         reasoning_engine.unload_model()
+    if drbert_engine:
+        drbert_engine.unload_model()
 
 # =============================================================================
 # FastAPI Application
@@ -672,6 +680,139 @@ async def switch_model(request: ModelSwitchRequest):
 async def get_model_stats():
     """Get engine statistics (staff only)."""
     return reasoning_engine.get_engine_stats()
+
+# =============================================================================
+# DrBERT Endpoints (French Medical BERT)
+# =============================================================================
+
+@app.get("/drbert/models")
+async def list_drbert_models():
+    """List available DrBERT models."""
+    return {
+        "models": drbert_engine.get_available_models(),
+        "current": drbert_engine.get_current_model(),
+        "stats": drbert_engine.get_engine_stats()
+    }
+
+@app.post("/drbert/load/{model_id}")
+async def load_drbert_model(model_id: str):
+    """
+    Load a DrBERT model with automatic GPU/CPU distribution.
+    Models: drbert-4gb, drbert-7gb, drbert-4gb-pubmed
+    """
+    if model_id not in DRBERT_MODELS:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown model: {model_id}. Available: {list(DRBERT_MODELS.keys())}"
+        )
+
+    success = drbert_engine.load_model(model_id)
+    if not success:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to load model. Check if transformers is installed."
+        )
+
+    return {
+        "success": True,
+        "model": drbert_engine.get_current_model(),
+        "stats": drbert_engine.get_engine_stats()
+    }
+
+@app.post("/drbert/unload")
+async def unload_drbert_model():
+    """Unload current DrBERT model to free memory."""
+    drbert_engine.unload_model()
+    return {"success": True, "message": "Model unloaded"}
+
+@app.post("/drbert/embeddings")
+async def get_drbert_embeddings(request: Dict[str, Any]):
+    """
+    Get embeddings for French medical texts.
+
+    Request body:
+    {
+        "texts": ["Le patient présente une douleur thoracique", ...],
+        "pooling": "mean"  // optional: mean, cls, max
+    }
+    """
+    if not drbert_engine.is_loaded:
+        raise HTTPException(status_code=400, detail="No DrBERT model loaded. Call /drbert/load/{model_id} first.")
+
+    texts = request.get("texts", [])
+    if not texts:
+        raise HTTPException(status_code=400, detail="No texts provided")
+
+    pooling = request.get("pooling", "mean")
+
+    try:
+        embeddings = drbert_engine.get_embeddings(texts, pooling=pooling)
+        return {
+            "embeddings": embeddings,
+            "dimension": len(embeddings[0]) if embeddings else 0,
+            "count": len(embeddings)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/drbert/similarity")
+async def compute_drbert_similarity(request: Dict[str, Any]):
+    """
+    Compute semantic similarity between two French medical texts.
+
+    Request body:
+    {
+        "text1": "Le patient souffre de dyspnée",
+        "text2": "Difficulté respiratoire signalée"
+    }
+    """
+    if not drbert_engine.is_loaded:
+        raise HTTPException(status_code=400, detail="No DrBERT model loaded. Call /drbert/load/{model_id} first.")
+
+    text1 = request.get("text1", "")
+    text2 = request.get("text2", "")
+
+    if not text1 or not text2:
+        raise HTTPException(status_code=400, detail="Both text1 and text2 required")
+
+    try:
+        similarity = drbert_engine.compute_similarity(text1, text2)
+        return {
+            "similarity": similarity,
+            "text1": text1[:100],
+            "text2": text2[:100]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/drbert/fill-mask")
+async def drbert_fill_mask(request: Dict[str, Any]):
+    """
+    Fill masked token in French medical text.
+
+    Request body:
+    {
+        "text": "Le patient est atteint d'une <mask> cardiaque",
+        "top_k": 5
+    }
+    """
+    if not drbert_engine.is_loaded:
+        raise HTTPException(status_code=400, detail="No DrBERT model loaded. Call /drbert/load/{model_id} first.")
+
+    text = request.get("text", "")
+    if not text:
+        raise HTTPException(status_code=400, detail="No text provided")
+
+    if "<mask>" not in text.lower():
+        raise HTTPException(status_code=400, detail="Text must contain <mask> token")
+
+    top_k = request.get("top_k", 5)
+
+    try:
+        predictions = drbert_engine.fill_mask(text, top_k=top_k)
+        return {"predictions": predictions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # =============================================================================
 # Helper Functions
