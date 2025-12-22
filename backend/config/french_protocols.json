@@ -1,0 +1,82 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "source": "SFMU/HAS Guidelines (Simplified)",
+    "language": "fr",
+    "last_updated": "2024-01-01"
+  },
+  "protocols": [
+    {
+      "id": "proto-chest-pain",
+      "title": "Douleur Thoracique - Protocole de Triage",
+      "text": "DOULEUR THORACIQUE (Douleur thoracique, oppression, serrement)\n\nCritères de gravité immédiats (Niveau 1 - SAUV):\n- Arrêt cardio-respiratoire\n- Détresse respiratoire majeure (SpO2 < 90%)\n- État de choc (TAS < 90 mmHg, marbrures)\n- Troubles de conscience\n\nCritères d'urgence élevée (Niveau 2):\n- Douleur thoracique typique: constrictive, rétrosternale, irradiant au bras gauche ou mâchoire\n- Facteurs de risque cardiovasculaire (diabète, HTA, tabac, dyslipidémie)\n- Âge > 50 ans avec douleur thoracique récente\n- Dyspnée associée\n- Sudation, nausées\n\nCritères d'urgence modérée (Niveau 3):\n- Douleur thoracique atypique\n- Douleur reproduite à la palpation\n- Contexte anxieux sans facteur de risque\n\nActions immédiates:\n- ECG dans les 10 minutes\n- Monitoring continu si niveau 1-2\n- Voie veineuse périphérique",
+      "category": "cardiac",
+      "source": "SFMU",
+      "priority_level": "1-2",
+      "keywords": ["douleur thoracique", "infarctus", "SCA", "oppression", "coeur"]
+    },
+    {
+      "id": "proto-dyspnea",
+      "title": "Dyspnée Aiguë - Protocole de Triage",
+      "text": "DYSPNÉE AIGUË (Difficulté respiratoire, essoufflement, gêne respiratoire)\n\nCritères de gravité immédiats (Niveau 1 - SAUV):\n- Arrêt respiratoire imminent\n- Cyanose\n- Épuisement respiratoire\n- SpO2 < 85% sous air ambiant\n- Troubles de conscience\n- Impossibilité de parler\n\nCritères d'urgence élevée (Niveau 2):\n- SpO2 90-94% sous air ambiant\n- Fréquence respiratoire > 25/min\n- Tirage intercostal ou sus-claviculaire\n- Position tripode spontanée\n- Orthopnée\n- Wheezing audible\n\nCritères d'urgence modérée (Niveau 3):\n- Dyspnée d'effort isolée\n- SpO2 > 95%\n- Pas de signe de lutte\n\nActions immédiates:\n- Oxygénothérapie si SpO2 < 94%\n- Position demi-assise\n- Aérosols si bronchospasme",
+      "category": "respiratory",
+      "source": "SFMU",
+      "priority_level": "1-2",
+      "keywords": ["dyspnée", "essoufflement", "respiration", "poumon", "asthme"]
+    },
+    {
+      "id": "proto-headache",
+      "title": "Céphalée Aiguë - Protocole de Triage",
+      "text": "CÉPHALÉE AIGUË (Mal de tête, migraine, céphalée brutale)\n\nCritères de gravité immédiats (Niveau 1 - SAUV):\n- Céphalée brutale en coup de tonnerre (thunderclap)\n- Troubles de conscience\n- Déficit neurologique focal\n- Syndrome méningé avec purpura\n- Convulsions\n\nCritères d'urgence élevée (Niveau 2):\n- Céphalée brutale sans signe de gravité immédiate\n- Syndrome méningé (raideur nuque, photophobie)\n- Fièvre > 38.5°C associée\n- Vomissements en jet\n- Céphalée post-traumatique < 24h\n- Première céphalée après 50 ans\n\nCritères d'urgence modérée (Niveau 3):\n- Céphalée habituelle avec caractères migraineux\n- Céphalée de tension\n- Pas de signe neurologique\n\nActions immédiates:\n- Examen neurologique complet\n- TDM cérébrale en urgence si céphalée brutale\n- PL si syndrome méningé",
+      "category": "neurological",
+      "source": "SFMU",
+      "priority_level": "1-2",
+      "keywords": ["céphalée", "mal de tête", "migraine", "neurologique", "méningite"]
+    },
+    {
+      "id": "proto-abdominal-pain",
+      "title": "Douleur Abdominale - Protocole de Triage",
+      "text": "DOULEUR ABDOMINALE (Mal au ventre, douleur gastrique, colique)\n\nCritères de gravité immédiats (Niveau 1 - SAUV):\n- État de choc (TAS < 90, tachycardie > 120)\n- Défense ou contracture abdominale généralisée\n- Hématémèse ou méléna abondant\n- Abdomen aigu chirurgical évident\n\nCritères d'urgence élevée (Niveau 2):\n- Douleur intense EVA > 7/10\n- Défense localisée (fosse iliaque droite, hypochondre droit)\n- Vomissements répétés\n- Arrêt des matières et des gaz\n- Fièvre > 38.5°C avec douleur abdominale\n- Grossesse avec douleur pelvienne\n\nCritères d'urgence modérée (Niveau 3):\n- Douleur modérée sans signe de gravité\n- Transit conservé\n- Pas de fièvre\n\nActions immédiates:\n- Évaluation chirurgicale si abdomen aigu\n- Biologie: NFS, CRP, lipase\n- Imagerie selon orientation clinique",
+      "category": "abdominal",
+      "source": "SFMU",
+      "priority_level": "1-2",
+      "keywords": ["douleur abdominale", "ventre", "appendicite", "colique", "gastrique"]
+    },
+    {
+      "id": "proto-fever",
+      "title": "Fièvre - Protocole de Triage",
+      "text": "FIÈVRE (Hyperthermie, température élevée, frissons)\n\nCritères de gravité immédiats (Niveau 1 - SAUV):\n- Sepsis sévère: hypotension, marbrures, oligurie\n- Purpura fébrile (purpura fulminans)\n- Troubles de conscience\n- Détresse respiratoire fébrile\n\nCritères d'urgence élevée (Niveau 2):\n- Fièvre > 39°C avec frissons\n- Terrain fragilisé (immunodépression, splénectomie)\n- Retour de zone d'endémie palustre\n- Syndrome méningé\n- Douleur lombaire fébrile (pyélonéphrite)\n- Fièvre chez nourrisson < 3 mois\n\nCritères d'urgence modérée (Niveau 3):\n- Fièvre isolée bien tolérée\n- Syndrome grippal sans complication\n- Infection ORL banale\n\nActions immédiates:\n- Hémocultures si fièvre > 38.5°C\n- Bilan infectieux: NFS, CRP, PCT\n- Frottis sanguin si retour de zone impaludée",
+      "category": "infectious",
+      "source": "SFMU",
+      "priority_level": "1-2",
+      "keywords": ["fièvre", "température", "infection", "sepsis", "frissons"]
+    },
+    {
+      "id": "proto-trauma",
+      "title": "Traumatisme - Protocole de Triage",
+      "text": "TRAUMATISME (Blessure, accident, chute, AVP)\n\nCritères de gravité immédiats (Niveau 1 - SAUV):\n- Polytraumatisme\n- Traumatisme crânien avec troubles de conscience\n- Traumatisme thoracique avec détresse respiratoire\n- Traumatisme abdominal avec état de choc\n- Amputation\n- Brûlure > 20% surface corporelle\n\nCritères d'urgence élevée (Niveau 2):\n- Traumatisme crânien avec perte de connaissance initiale\n- Fracture ouverte\n- Luxation visible\n- Traumatisme facial avec épistaxis\n- Plaie profonde\n\nCritères d'urgence modérée (Niveau 3):\n- Traumatisme des membres sans déformation\n- Contusion simple\n- Plaie superficielle\n- Entorse\n\nActions immédiates:\n- Immobilisation rachidienne si mécanisme à risque\n- Bilan lésionnel complet (body scan si polytrauma)\n- Antalgie adaptée",
+      "category": "trauma",
+      "source": "SFMU",
+      "priority_level": "1-2",
+      "keywords": ["traumatisme", "blessure", "accident", "fracture", "chute"]
+    },
+    {
+      "id": "proto-allergy",
+      "title": "Réaction Allergique - Protocole de Triage",
+      "text": "RÉACTION ALLERGIQUE (Allergie, urticaire, oedème, choc anaphylactique)\n\nCritères de gravité immédiats (Niveau 1 - SAUV):\n- Choc anaphylactique: hypotension, tachycardie, marbrures\n- Œdème de Quincke avec dyspnée\n- Bronchospasme sévère\n- Trouble de conscience\n\nCritères d'urgence élevée (Niveau 2):\n- Œdème facial ou labial sans dyspnée\n- Urticaire géant (> 50% surface corporelle)\n- Antécédent d'anaphylaxie\n- Exposition à allergène connu à haut risque\n\nCritères d'urgence modérée (Niveau 3):\n- Urticaire localisée\n- Prurit isolé\n- Réaction cutanée sans atteinte muqueuse\n\nActions immédiates:\n- Adrénaline IM si anaphylaxie (0.3-0.5 mg)\n- Corticoïdes IV\n- Antihistaminiques\n- Remplissage vasculaire si hypotension",
+      "category": "allergy",
+      "source": "SFMU",
+      "priority_level": "1-2",
+      "keywords": ["allergie", "anaphylaxie", "urticaire", "oedème", "choc"]
+    },
+    {
+      "id": "proto-psychiatric",
+      "title": "Urgence Psychiatrique - Protocole de Triage",
+      "text": "URGENCE PSYCHIATRIQUE (Agitation, délire, tentative de suicide, anxiété aiguë)\n\nCritères de gravité immédiats (Niveau 1 - SAUV):\n- Tentative de suicide avec lésions graves\n- Intoxication médicamenteuse volontaire\n- Agitation violente avec risque hétéro-agressif\n- Confusion avec cause organique probable\n\nCritères d'urgence élevée (Niveau 2):\n- Idées suicidaires actives avec plan\n- Agitation modérée\n- Syndrome délirant aigu\n- Sevrage alcoolique ou toxique\n- Attaque de panique sévère\n\nCritères d'urgence modérée (Niveau 3):\n- Anxiété modérée\n- Demande de renouvellement de traitement\n- Troubles du comportement mineurs\n\nActions immédiates:\n- Sécurisation du patient et de l'environnement\n- Éliminer cause organique\n- Contention si nécessaire (prescription médicale)\n- Évaluation psychiatrique",
+      "category": "psychiatric",
+      "source": "SFMU",
+      "priority_level": "1-2",
+      "keywords": ["psychiatrie", "suicide", "agitation", "anxiété", "délire"]
+    }
+  ]
+}

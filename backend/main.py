@@ -15,11 +15,14 @@ import os
 import json
 import uuid
 import hashlib
+import logging
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Depends, Header
+
+logger = logging.getLogger(__name__)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
@@ -32,7 +35,7 @@ from multi_model_engine import MultiModelEngine, get_engine
 from model_registry import get_all_models, get_model_config, model_to_dict
 from drbert_engine import (
     DrBERTEngine, get_drbert_engine, DRBERT_MODELS,
-    Protocol, CHROMADB_AVAILABLE
+    Protocol, PatientCase, CHROMADB_AVAILABLE
 )
 from model_downloader import (
     detect_gpu_capabilities,
@@ -193,10 +196,66 @@ async def lifespan(app: FastAPI):
 
     # Connect DrBERT to MultiModelEngine for RAG support
     reasoning_engine.set_drbert_engine(drbert_engine)
+
+    # Set up auto-ingestion callback for DrBERT
+    def auto_ingest_patients():
+        """Auto-ingest all patient cases when DrBERT loads."""
+        if not drbert_engine.case_store_available:
+            return
+
+        # Check if cases already indexed
+        case_stats = drbert_engine.get_case_store_stats()
+        existing_count = case_stats.get("total_cases", 0)
+
+        # Get all cases from database
+        all_cases = db.list_cases()
+        if not all_cases:
+            print(f"  No patient cases to index")
+            return
+
+        # Convert to format for indexing
+        cases_to_index = []
+        for case in all_cases:
+            # Build symptoms text from answers
+            symptoms_parts = []
+            answers = case.answers or {}
+            for key, val in answers.items():
+                if not key.startswith("_"):
+                    if isinstance(val, bool):
+                        if val:
+                            symptoms_parts.append(key.replace("_", " "))
+                    elif val:
+                        symptoms_parts.append(f"{key.replace('_', ' ')}: {val}")
+
+            symptoms_text = ", ".join(symptoms_parts) if symptoms_parts else case.summary or ""
+
+            cases_to_index.append({
+                "case_id": case.id,
+                "session_id": case.session_id,
+                "chief_complaint": answers.get("chief_complaint", "unknown"),
+                "symptoms_text": symptoms_text,
+                "risk_band": case.risk_band,
+                "demographics": case.demographics or {}
+            })
+
+        # Index all cases
+        if cases_to_index:
+            print(f"  Auto-indexing {len(cases_to_index)} patient cases...")
+            result = drbert_engine.index_patient_cases_batch(cases_to_index)
+            if result.get("success"):
+                print(f"  Indexed {result.get('added', 0)} new cases (skipped {result.get('skipped', 0)} existing)")
+            else:
+                print(f"  Case indexing failed: {result.get('error', 'Unknown')}")
+
+    # Register the callback
+    drbert_engine.set_on_load_callback(auto_ingest_patients)
+
     if CHROMADB_AVAILABLE:
         vs_stats = drbert_engine.get_vector_store_stats()
         protocol_count = vs_stats.get("total_protocols", 0)
-        print(f"  VectorStore: {protocol_count} protocols indexed")
+        case_stats = drbert_engine.get_case_store_stats()
+        case_count = case_stats.get("total_cases", 0)
+        print(f"  VectorStore: {protocol_count} protocols, {case_count} patient cases indexed")
     else:
         print(f"  VectorStore: ChromaDB not available")
 
@@ -475,6 +534,29 @@ async def get_summary(session_id: str):
         status="pending"
     )
     db.create_case(case)
+
+    # Auto-index case if DrBERT is loaded
+    if drbert_engine and drbert_engine.is_loaded and drbert_engine.case_store_available:
+        try:
+            symptoms_parts = []
+            for key, val in session.answers.items():
+                if not key.startswith("_"):
+                    if isinstance(val, bool) and val:
+                        symptoms_parts.append(key.replace("_", " "))
+                    elif val:
+                        symptoms_parts.append(f"{key.replace('_', ' ')}: {val}")
+            symptoms_text_indexed = ", ".join(symptoms_parts) if symptoms_parts else summary_text
+
+            drbert_engine.index_patient_case(
+                case_id=case.id,
+                session_id=session_id,
+                chief_complaint=session.answers.get("chief_complaint", "unknown"),
+                symptoms_text=symptoms_text_indexed,
+                risk_band=risk_band,
+                demographics=session.demographics
+            )
+        except Exception as e:
+            logger.warning(f"Failed to auto-index case: {e}")
 
     return SummaryResponse(
         session_id=session_id,

@@ -206,6 +206,18 @@ class Protocol:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class PatientCase:
+    """A patient case for similar case lookup."""
+    case_id: str
+    session_id: str
+    chief_complaint: str
+    symptoms_text: str  # Flattened symptoms in French
+    risk_band: str
+    demographics: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
 # =============================================================================
 # ChromaDB Vector Store for Protocol Retrieval
 # =============================================================================
@@ -467,6 +479,232 @@ class ProtocolVectorStore:
                 return False
 
 
+class PatientCaseVectorStore:
+    """
+    ChromaDB-backed vector store for patient case histories.
+
+    Used to find similar past cases for new patients.
+    Stores symptom summaries in French for DrBERT semantic search.
+    """
+
+    def __init__(self,
+                 persist_directory: str,
+                 collection_name: str = "patient_cases",
+                 embedding_function: Optional[Any] = None):
+        self.persist_directory = persist_directory
+        self.collection_name = collection_name
+        self._embedding_fn = embedding_function
+        self._client = None
+        self._collection = None
+        self._lock = threading.RLock()
+
+        self._initialize_store()
+
+    def _initialize_store(self):
+        """Initialize ChromaDB client and collection."""
+        if not CHROMADB_AVAILABLE:
+            logger.warning("ChromaDB not available. Patient case storage disabled.")
+            return
+
+        try:
+            import chromadb
+            from chromadb.config import Settings
+
+            os.makedirs(self.persist_directory, exist_ok=True)
+
+            self._client = chromadb.PersistentClient(
+                path=self.persist_directory,
+                settings=Settings(
+                    anonymized_telemetry=False,
+                    allow_reset=True
+                )
+            )
+
+            self._collection = self._client.get_or_create_collection(
+                name=self.collection_name,
+                metadata={"description": "Patient case histories for similar case lookup"}
+            )
+
+            logger.info(f"PatientCaseStore initialized: {self._collection.count()} cases")
+
+        except Exception as e:
+            logger.error(f"Failed to initialize PatientCaseStore: {e}")
+            self._client = None
+            self._collection = None
+
+    @property
+    def is_available(self) -> bool:
+        return self._collection is not None
+
+    def set_embedding_function(self, fn):
+        self._embedding_fn = fn
+
+    def add_case(self, case: PatientCase) -> bool:
+        """Add a single patient case to the store."""
+        if not self.is_available or not self._embedding_fn:
+            return False
+
+        with self._lock:
+            try:
+                # Check if already exists
+                existing = self._collection.get(ids=[case.case_id])
+                if existing and existing["ids"]:
+                    return True  # Already indexed
+
+                # Generate embedding
+                embedding = self._embedding_fn([case.symptoms_text])[0]
+
+                self._collection.add(
+                    ids=[case.case_id],
+                    documents=[case.symptoms_text],
+                    embeddings=[embedding],
+                    metadatas=[{
+                        "session_id": case.session_id,
+                        "chief_complaint": case.chief_complaint,
+                        "risk_band": case.risk_band,
+                        "age": str(case.demographics.get("age", "")),
+                        "sex": case.demographics.get("sex", ""),
+                        **{k: str(v) for k, v in case.metadata.items()}
+                    }]
+                )
+                return True
+
+            except Exception as e:
+                logger.error(f"Failed to add case: {e}")
+                return False
+
+    def add_cases_batch(self, cases: List[PatientCase], batch_size: int = 32) -> Dict[str, Any]:
+        """Add multiple patient cases in batch."""
+        if not self.is_available:
+            return {"success": False, "error": "Store not available"}
+
+        if not self._embedding_fn:
+            return {"success": False, "error": "No embedding function set"}
+
+        with self._lock:
+            added = 0
+            skipped = 0
+            errors = []
+
+            for i in range(0, len(cases), batch_size):
+                batch = cases[i:i + batch_size]
+
+                try:
+                    # Check existing
+                    ids = [c.case_id for c in batch]
+                    existing = set()
+                    try:
+                        result = self._collection.get(ids=ids)
+                        existing = set(result["ids"]) if result["ids"] else set()
+                    except Exception:
+                        pass
+
+                    # Filter new cases
+                    new_cases = [c for c in batch if c.case_id not in existing]
+                    skipped += len(batch) - len(new_cases)
+
+                    if not new_cases:
+                        continue
+
+                    # Generate embeddings
+                    texts = [c.symptoms_text for c in new_cases]
+                    embeddings = self._embedding_fn(texts)
+
+                    # Add to collection
+                    self._collection.add(
+                        ids=[c.case_id for c in new_cases],
+                        documents=texts,
+                        embeddings=embeddings,
+                        metadatas=[{
+                            "session_id": c.session_id,
+                            "chief_complaint": c.chief_complaint,
+                            "risk_band": c.risk_band,
+                            "age": str(c.demographics.get("age", "")),
+                            "sex": c.demographics.get("sex", "")
+                        } for c in new_cases]
+                    )
+                    added += len(new_cases)
+
+                except Exception as e:
+                    errors.append(str(e))
+                    logger.error(f"Batch add error: {e}")
+
+            return {
+                "success": len(errors) == 0,
+                "added": added,
+                "skipped": skipped,
+                "total_in_store": self._collection.count(),
+                "errors": errors[:5]
+            }
+
+    def find_similar_cases(self,
+                           symptoms_french: str,
+                           n_results: int = 5,
+                           risk_band_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Find similar past cases based on symptoms."""
+        if not self.is_available or not self._embedding_fn:
+            return []
+
+        with self._lock:
+            try:
+                query_embedding = self._embedding_fn([symptoms_french])[0]
+
+                where = None
+                if risk_band_filter:
+                    where = {"risk_band": risk_band_filter}
+
+                results = self._collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=n_results,
+                    where=where,
+                    include=["documents", "metadatas", "distances"]
+                )
+
+                cases = []
+                if results and results["ids"] and results["ids"][0]:
+                    for i, case_id in enumerate(results["ids"][0]):
+                        cases.append({
+                            "case_id": case_id,
+                            "symptoms_text": results["documents"][0][i] if results["documents"] else "",
+                            "metadata": results["metadatas"][0][i] if results["metadatas"] else {},
+                            "distance": results["distances"][0][i] if results["distances"] else 0.0,
+                            "similarity": 1.0 - (results["distances"][0][i] / 2.0) if results["distances"] else 0.5
+                        })
+
+                return cases
+
+            except Exception as e:
+                logger.error(f"Similar case search error: {e}")
+                return []
+
+    def get_stats(self) -> Dict[str, Any]:
+        if not self.is_available:
+            return {"available": False}
+
+        return {
+            "available": True,
+            "collection_name": self.collection_name,
+            "total_cases": self._collection.count(),
+            "persist_directory": self.persist_directory
+        }
+
+    def clear(self) -> bool:
+        if not self.is_available:
+            return False
+
+        with self._lock:
+            try:
+                self._client.delete_collection(self.collection_name)
+                self._collection = self._client.create_collection(
+                    name=self.collection_name,
+                    metadata={"description": "Patient case histories for similar case lookup"}
+                )
+                return True
+            except Exception as e:
+                logger.error(f"Clear error: {e}")
+                return False
+
+
 # =============================================================================
 # DrBERT Engine
 # =============================================================================
@@ -498,6 +736,7 @@ class DrBERTEngine:
     def __init__(self,
                  cache_dir: Optional[str] = None,
                  vector_db_dir: Optional[str] = None,
+                 protocols_file: Optional[str] = None,
                  auto_load: bool = False):
         self.cache_dir = cache_dir or os.path.join(
             os.path.dirname(__file__), "..", "models", "drbert_cache"
@@ -505,31 +744,47 @@ class DrBERTEngine:
         self.vector_db_dir = vector_db_dir or os.path.join(
             os.path.dirname(__file__), "..", "data", "vector_db"
         )
+        self.protocols_file = protocols_file or os.path.join(
+            os.path.dirname(__file__), "config", "french_protocols.json"
+        )
         self._current_model: Optional[LoadedDrBERT] = None
         self._lock = threading.RLock()
         self._total_inferences = 0
 
-        # Initialize vector store
+        # Initialize vector stores
         self._vector_store: Optional[ProtocolVectorStore] = None
-        self._init_vector_store()
+        self._case_store: Optional[PatientCaseVectorStore] = None
+        self._init_vector_stores()
+
+        # Callback for auto-ingestion (set by main.py)
+        self._on_load_callback: Optional[Any] = None
 
         if auto_load and TRANSFORMERS_AVAILABLE:
             self._try_load_default()
 
-    def _init_vector_store(self):
-        """Initialize the protocol vector store."""
+    def _init_vector_stores(self):
+        """Initialize both protocol and patient case vector stores."""
         if CHROMADB_AVAILABLE:
             try:
                 self._vector_store = ProtocolVectorStore(
                     persist_directory=self.vector_db_dir,
                     collection_name="french_protocols"
                 )
-                logger.info(f"VectorStore initialized at {self.vector_db_dir}")
+                self._case_store = PatientCaseVectorStore(
+                    persist_directory=self.vector_db_dir,
+                    collection_name="patient_cases"
+                )
+                logger.info(f"VectorStores initialized at {self.vector_db_dir}")
             except Exception as e:
-                logger.error(f"Failed to initialize VectorStore: {e}")
+                logger.error(f"Failed to initialize VectorStores: {e}")
                 self._vector_store = None
+                self._case_store = None
         else:
-            logger.warning("ChromaDB not available. Vector store disabled.")
+            logger.warning("ChromaDB not available. Vector stores disabled.")
+
+    def set_on_load_callback(self, callback):
+        """Set callback to run after model loads (for auto-ingestion)."""
+        self._on_load_callback = callback
 
     def _try_load_default(self):
         """Attempt to load the recommended DrBERT model."""
@@ -639,12 +894,27 @@ class DrBERTEngine:
                     loaded_at=datetime.now()
                 )
 
-                # Link embedding function to vector store
+                # Link embedding function to vector stores
                 if self._vector_store:
                     self._vector_store.set_embedding_function(self.get_embeddings)
-                    print(f"  VectorStore linked to DrBERT embeddings")
+                if self._case_store:
+                    self._case_store.set_embedding_function(self.get_embeddings)
+
+                if self._vector_store or self._case_store:
+                    print(f"  VectorStores linked to DrBERT embeddings")
+
+                # Auto-load protocols from file if available
+                self._auto_load_protocols()
 
                 print(f"  {config.name} loaded successfully!")
+
+                # Run callback for auto-ingestion of patient cases
+                if self._on_load_callback:
+                    try:
+                        self._on_load_callback()
+                    except Exception as e:
+                        logger.error(f"On-load callback error: {e}")
+
                 return True
 
             except Exception as e:
@@ -844,6 +1114,47 @@ class DrBERTEngine:
         return cosine_sim(embeddings[0], embeddings[1])
 
     # =========================================================================
+    # Auto-Load Protocols from File
+    # =========================================================================
+
+    def _auto_load_protocols(self):
+        """Auto-load protocols from JSON file if available and store is empty."""
+        if not self._vector_store or not self._vector_store.is_available:
+            return
+
+        # Check if protocols already loaded
+        stats = self._vector_store.get_stats()
+        if stats.get("total_protocols", 0) > 0:
+            print(f"  Protocols already indexed: {stats['total_protocols']}")
+            return
+
+        # Try to load from file
+        if not os.path.exists(self.protocols_file):
+            print(f"  No protocols file found at {self.protocols_file}")
+            return
+
+        try:
+            with open(self.protocols_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            protocols = data.get("protocols", [])
+            if not protocols:
+                print(f"  Protocols file empty")
+                return
+
+            print(f"  Auto-loading {len(protocols)} protocols from file...")
+            result = self.ingest_protocols(protocols)
+
+            if result.get("success"):
+                print(f"  Loaded {result.get('added', 0)} protocols")
+            else:
+                print(f"  Protocol load failed: {result.get('error', 'Unknown')}")
+
+        except Exception as e:
+            logger.error(f"Failed to auto-load protocols: {e}")
+            print(f"  Failed to load protocols: {e}")
+
+    # =========================================================================
     # Protocol RAG Methods (French Pivot Architecture)
     # =========================================================================
 
@@ -957,6 +1268,122 @@ class DrBERTEngine:
         return self.is_loaded and self.vector_store_available
 
     # =========================================================================
+    # Patient Case Indexing Methods
+    # =========================================================================
+
+    def index_patient_case(self,
+                           case_id: str,
+                           session_id: str,
+                           chief_complaint: str,
+                           symptoms_text: str,
+                           risk_band: str,
+                           demographics: Dict[str, Any] = None) -> bool:
+        """
+        Index a single patient case for similar case lookup.
+
+        Args:
+            case_id: Unique case identifier
+            session_id: Session ID
+            chief_complaint: Main complaint
+            symptoms_text: Symptoms summary (ideally in French)
+            risk_band: Risk level (red/amber/green)
+            demographics: Patient demographics
+
+        Returns:
+            True if indexed successfully
+        """
+        if not self._case_store:
+            return False
+
+        case = PatientCase(
+            case_id=case_id,
+            session_id=session_id,
+            chief_complaint=chief_complaint,
+            symptoms_text=symptoms_text,
+            risk_band=risk_band,
+            demographics=demographics or {}
+        )
+
+        return self._case_store.add_case(case)
+
+    def index_patient_cases_batch(self,
+                                   cases: List[Dict[str, Any]],
+                                   batch_size: int = 32) -> Dict[str, Any]:
+        """
+        Index multiple patient cases in batch.
+
+        Args:
+            cases: List of case dicts with keys:
+                - case_id, session_id, chief_complaint
+                - symptoms_text (French preferred)
+                - risk_band, demographics
+            batch_size: Batch size for processing
+
+        Returns:
+            Result summary
+        """
+        if not self._case_store:
+            return {"success": False, "error": "Case store not available"}
+
+        if not self._current_model:
+            return {"success": False, "error": "DrBERT model not loaded"}
+
+        case_objs = []
+        for c in cases:
+            case_objs.append(PatientCase(
+                case_id=c.get("case_id", ""),
+                session_id=c.get("session_id", ""),
+                chief_complaint=c.get("chief_complaint", ""),
+                symptoms_text=c.get("symptoms_text", ""),
+                risk_band=c.get("risk_band", ""),
+                demographics=c.get("demographics", {}),
+                metadata=c.get("metadata", {})
+            ))
+
+        return self._case_store.add_cases_batch(case_objs, batch_size)
+
+    def find_similar_cases(self,
+                           symptoms_french: str,
+                           n_results: int = 5,
+                           risk_band: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Find similar past patient cases.
+
+        Args:
+            symptoms_french: Symptoms in French (use LLM pivot if needed)
+            n_results: Number of results
+            risk_band: Optional filter by risk band
+
+        Returns:
+            List of similar cases with similarity scores
+        """
+        if not self._case_store or not self._current_model:
+            return []
+
+        return self._case_store.find_similar_cases(
+            symptoms_french=symptoms_french,
+            n_results=n_results,
+            risk_band_filter=risk_band
+        )
+
+    def get_case_store_stats(self) -> Dict[str, Any]:
+        """Get patient case store statistics."""
+        if not self._case_store:
+            return {"available": False}
+        return self._case_store.get_stats()
+
+    def clear_patient_cases(self) -> bool:
+        """Clear all patient cases from store."""
+        if not self._case_store:
+            return False
+        return self._case_store.clear()
+
+    @property
+    def case_store_available(self) -> bool:
+        """Check if patient case store is available."""
+        return self._case_store is not None and self._case_store.is_available
+
+    # =========================================================================
     # Status & Info
     # =========================================================================
 
@@ -991,12 +1418,17 @@ class DrBERTEngine:
             "rag_ready": self.rag_ready,
         }
 
-        # Add vector store stats
+        # Add protocol vector store stats
         if self._vector_store:
-            vs_stats = self._vector_store.get_stats()
-            stats["vector_store"] = vs_stats
+            stats["vector_store"] = self._vector_store.get_stats()
         else:
             stats["vector_store"] = {"available": False}
+
+        # Add patient case store stats
+        if self._case_store:
+            stats["case_store"] = self._case_store.get_stats()
+        else:
+            stats["case_store"] = {"available": False}
 
         return stats
 
@@ -1037,7 +1469,9 @@ __all__ = [
     "DrBERTConfig",
     "DRBERT_MODELS",
     "Protocol",
+    "PatientCase",
     "ProtocolVectorStore",
+    "PatientCaseVectorStore",
     "get_drbert_engine",
     "TRANSFORMERS_AVAILABLE",
     "CHROMADB_AVAILABLE",
