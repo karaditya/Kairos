@@ -530,15 +530,24 @@ class MultiModelEngine:
             fallback = re.sub(r'^\s*\d+\.?\s*QUESTIONS\s*$', '', fallback, flags=re.MULTILINE)
             data["answer"] = self._strip_instruction_echoes(fallback.strip())
 
-            potential_questions = re.findall(r'(?:^|\n)\s*[-*]\s*(.+?)\??\s*$', data["answer"])
-            if potential_questions and len(potential_questions) <= 5:
-                qs_candidates = [q for q in potential_questions if "?" in q or "question" in q.lower()]
-                if qs_candidates:
-                    data["follow_up_questions"].extend(qs_candidates[:3])
+        # 9. EXTRACT QUESTIONS FROM ANSWER IF NONE FOUND
+        if not data["follow_up_questions"] and data["answer"]:
+            # Look for bullet points that look like questions
+            question_lines = re.findall(r'[-*•]\s*([^-*•\n]+\?)', data["answer"])
+            if question_lines:
+                data["follow_up_questions"] = [q.strip() for q in question_lines[:3]]
+                # Remove questions from answer to avoid duplication
+                for q in question_lines:
+                    data["answer"] = data["answer"].replace(f"- {q}", "").replace(f"* {q}", "").replace(f"• {q}", "")
+                data["answer"] = re.sub(r'\n{3,}', '\n\n', data["answer"]).strip()
 
-        # 9. Failsafe
+        # 10. Failsafe
         if not data["answer"]:
             data["answer"] = "Analysis complete. Please review the patient data."
+
+        # 11. Ensure follow_up_questions is always a list
+        if not isinstance(data["follow_up_questions"], list):
+            data["follow_up_questions"] = []
 
         return data
 
@@ -618,14 +627,44 @@ class MultiModelEngine:
         return text
 
     def _validate_response_schema(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Validates and sanitizes the response schema.
+        Ensures follow_up_questions always has at least 3 valid questions.
+        Preserves protocol_applied for RAG responses.
+        """
         defaults = ["Is the pain worsening?", "Any fever?", "History of heart issues?", "Any nausea?", "Short of breath?"]
         questions = data.get("follow_up_questions", [])
-        if not isinstance(questions, list): questions = []
-        valid_qs = [q for q in questions if isinstance(q, str) and len(q) > 5]
+        if not isinstance(questions, list):
+            questions = []
+
+        # Clean and validate questions
+        valid_qs = []
+        for q in questions:
+            if isinstance(q, str) and len(q.strip()) > 5:
+                # Ensure question ends with ?
+                cleaned_q = q.strip()
+                if not cleaned_q.endswith("?"):
+                    cleaned_q += "?"
+                valid_qs.append(cleaned_q)
+
+        # Fill with defaults if not enough
         while len(valid_qs) < 3:
             choice = random.choice(defaults)
-            if choice not in valid_qs: valid_qs.append(choice)
+            if choice not in valid_qs:
+                valid_qs.append(choice)
+
         data["follow_up_questions"] = valid_qs[:3]
+
+        # Ensure other fields exist
+        if "answer" not in data or not data["answer"]:
+            data["answer"] = "Analysis complete. Please review the patient data."
+        if "reasoning" not in data:
+            data["reasoning"] = ""
+
+        # Preserve protocol_applied if present (RAG responses)
+        if "protocol_applied" not in data:
+            data["protocol_applied"] = ""
+
         return data
 
     # =========================================================================
@@ -953,16 +992,25 @@ class MultiModelEngine:
         if use_json:
             rag_system_prompt += (
                 "\n\nRespond with ONLY valid JSON:\n"
-                '{"reasoning": "...", "answer": "...", "protocol_applied": "...", "follow_up_questions": ["...", "..."]}'
+                '{"reasoning": "clinical analysis", "answer": "response to patient", '
+                '"protocol_applied": "protocol name/section used", '
+                '"follow_up_questions": ["question 1?", "question 2?"]}'
             )
         else:
-            # Styled output for non-JSON models
+            # Styled output for non-JSON models - use clear delimiters
             rag_system_prompt += (
-                "\n\nRespond using ONLY these headers:\n\n"
-                "## Reasoning\n[Your clinical analysis based on the protocol]\n\n"
-                "## Answer\n[Your response to the patient]\n\n"
-                "## Protocol Applied\n[Which protocol section you used]\n\n"
-                "## Questions\n- [Follow-up question 1]\n- [Follow-up question 2]"
+                "\n\nYou MUST format your response using these EXACT headers (include the ## symbols):\n\n"
+                "## Reasoning\n"
+                "Your clinical analysis based on the protocol. Reference specific protocol criteria.\n\n"
+                "## Answer\n"
+                "Your response to the staff member in simple terms. Explain the triage decision.\n\n"
+                "## Protocol Applied\n"
+                "The specific protocol name and section you used for this assessment.\n\n"
+                "## Questions\n"
+                "- First follow-up question to ask the patient?\n"
+                "- Second follow-up question to ask the patient?\n"
+                "- Third follow-up question to ask the patient?\n\n"
+                "IMPORTANT: Use EXACTLY these headers. Do not change or omit them."
             )
 
         with self._lock:
@@ -1009,12 +1057,15 @@ class MultiModelEngine:
 
                 self._total_inferences += 1
 
+                # Validate and ensure follow_up_questions has at least 3 items
+                validated = self._validate_response_schema(parsed)
+
                 # Build final response
                 return {
-                    "answer": parsed.get("answer", ""),
-                    "reasoning": parsed.get("reasoning", ""),
-                    "protocol_applied": parsed.get("protocol_applied", protocol_title),
-                    "follow_up_questions": parsed.get("follow_up_questions", [])[:3],
+                    "answer": validated.get("answer", ""),
+                    "reasoning": validated.get("reasoning", ""),
+                    "protocol_applied": validated.get("protocol_applied", protocol_title),
+                    "follow_up_questions": validated.get("follow_up_questions", [])[:3],
                     "search_query_used": search_query,
                     "protocol_relevance": protocols[0].get("relevance_score", 0) if protocols else 0,
                     "protocol_source": protocol_metadata.get("source", "SFMU/HAS"),
@@ -1036,25 +1087,135 @@ class MultiModelEngine:
         return cleaned, reasoning
 
     def _parse_rag_output(self, raw_str: str) -> Dict[str, Any]:
-        """Parse RAG output with protocol_applied field."""
+        """
+        Parse RAG output with protocol_applied field.
+        Handles multiple output formats from different model types.
+        """
         # Strip think tags first, extract reasoning
         cleaned, think_reasoning = self._strip_think_tags(raw_str)
 
-        data = self._parse_adaptive_output(cleaned)
+        data = {
+            "reasoning": "",
+            "answer": "",
+            "follow_up_questions": [],
+            "protocol_applied": ""
+        }
 
-        # Use think block as reasoning if no explicit reasoning found
-        if not data.get("reasoning") and think_reasoning:
-            data["reasoning"] = think_reasoning
+        # === TRY JSON FIRST (for models using JSON grammar) ===
+        try:
+            # Check if it looks like JSON
+            json_match = re.search(r'\{[^{}]*"(?:reasoning|answer)"[^{}]*\}', cleaned, re.DOTALL)
+            if json_match or cleaned.strip().startswith('{'):
+                clean_json = self._clean_json_output(cleaned)
+                parsed = json.loads(clean_json)
+                data["reasoning"] = parsed.get("reasoning", "")
+                data["answer"] = parsed.get("answer", "")
+                data["follow_up_questions"] = parsed.get("follow_up_questions", [])
+                data["protocol_applied"] = parsed.get("protocol_applied", "")
 
-        # Extract protocol_applied if present
-        protocol_match = re.search(
-            r'#{1,3}\s*Protocol(?:\s+Applied)?\s*\n(.*?)(?=#{1,3}|$)',
-            cleaned, re.DOTALL | re.IGNORECASE
-        )
-        if protocol_match:
-            data["protocol_applied"] = protocol_match.group(1).strip()
-        else:
-            data["protocol_applied"] = ""
+                # Use think block as reasoning if none in JSON
+                if not data["reasoning"] and think_reasoning:
+                    data["reasoning"] = think_reasoning
+                return data
+        except (json.JSONDecodeError, AttributeError):
+            pass  # Not JSON, continue with regex parsing
+
+        # === REGEX PARSING FOR STYLED OUTPUT ===
+
+        # Pattern 1: Markdown headers (## Reasoning, ## Answer, etc.)
+        reasoning_patterns = [
+            r'#{1,3}\s*Reasoning\s*\n(.*?)(?=#{1,3}\s*(?:Answer|Protocol|Questions)|$)',
+            r'##REASONING##\s*\n?(.*?)(?=##(?:ANSWER|PROTOCOL|QUESTIONS)##|$)',
+            r'(?:^|\n)\s*(?:1\.?\s*)?REASONING[:\s]*\n(.*?)(?=\n\s*(?:2\.?\s*)?(?:ANSWER|PROTOCOL)|$)',
+            r'<reasoning>(.*?)(?:</reasoning>|<answer>|$)',
+        ]
+
+        answer_patterns = [
+            r'#{1,3}\s*Answer\s*\n(.*?)(?=#{1,3}\s*(?:Protocol|Questions)|$)',
+            r'##ANSWER##\s*\n?(.*?)(?=##(?:PROTOCOL|QUESTIONS)##|$)',
+            r'(?:^|\n)\s*(?:2\.?\s*)?ANSWER[:\s]*\n(.*?)(?=\n\s*(?:3\.?\s*)?(?:PROTOCOL|QUESTIONS)|$)',
+            r'<answer>(.*?)(?:</answer>|<protocol|<questions>|$)',
+        ]
+
+        protocol_patterns = [
+            r'#{1,3}\s*Protocol(?:\s+Applied)?\s*\n(.*?)(?=#{1,3}\s*Questions|$)',
+            r'##PROTOCOL(?:\s*APPLIED)?##\s*\n?(.*?)(?=##QUESTIONS##|$)',
+            r'(?:^|\n)\s*(?:3\.?\s*)?PROTOCOL(?:\s+APPLIED)?[:\s]*\n(.*?)(?=\n\s*(?:4\.?\s*)?QUESTIONS|$)',
+            r'<protocol[^>]*>(.*?)(?:</protocol[^>]*>|<questions>|$)',
+            # Also catch "Protocol:" inline
+            r'(?:Protocol(?:\s+Applied)?|Applied Protocol)[:\s]+([^\n]+(?:\n(?![#\d<])[^\n]+)*)',
+        ]
+
+        questions_patterns = [
+            r'#{1,3}\s*(?:Follow[- ]?up\s+)?Questions?\s*\n(.*?)$',
+            r'##QUESTIONS##\s*\n?(.*?)$',
+            r'(?:^|\n)\s*(?:4\.?\s*)?(?:FOLLOW[- ]?UP\s+)?QUESTIONS?[:\s]*\n(.*?)$',
+            r'<questions>(.*?)(?:</questions>|$)',
+        ]
+
+        # Try each pattern for each field
+        for pattern in reasoning_patterns:
+            match = re.search(pattern, cleaned, re.DOTALL | re.IGNORECASE)
+            if match:
+                data["reasoning"] = self._strip_instruction_echoes(match.group(1).strip())
+                break
+
+        for pattern in answer_patterns:
+            match = re.search(pattern, cleaned, re.DOTALL | re.IGNORECASE)
+            if match:
+                data["answer"] = self._strip_instruction_echoes(match.group(1).strip())
+                break
+
+        for pattern in protocol_patterns:
+            match = re.search(pattern, cleaned, re.DOTALL | re.IGNORECASE)
+            if match:
+                protocol_text = match.group(1).strip()
+                # Clean up protocol text (remove markdown artifacts)
+                protocol_text = re.sub(r'^[-*]\s*', '', protocol_text)
+                protocol_text = re.sub(r'\n[-*]\s*', '\n', protocol_text)
+                data["protocol_applied"] = protocol_text
+                break
+
+        for pattern in questions_patterns:
+            match = re.search(pattern, cleaned, re.DOTALL | re.IGNORECASE)
+            if match:
+                data["follow_up_questions"] = self._extract_questions(match.group(1))
+                break
+
+        # === FALLBACK: Use think content for reasoning ===
+        if not data["reasoning"] and think_reasoning:
+            data["reasoning"] = self._strip_instruction_echoes(think_reasoning[:500])
+
+        # === FALLBACK: If no answer found, use assimilation ===
+        if not data["answer"]:
+            # Remove already-extracted content from cleaned text
+            fallback = cleaned
+            fallback = re.sub(r'<[^>]+>', '', fallback)
+            fallback = re.sub(r'#{1,3}\s*(?:Reasoning|Protocol|Questions)[^\n]*\n', '', fallback, flags=re.IGNORECASE)
+            fallback = re.sub(r'##[A-Z]+##', '', fallback)
+
+            # Remove reasoning and protocol content we already extracted
+            if data["reasoning"]:
+                fallback = fallback.replace(data["reasoning"], "")
+            if data["protocol_applied"]:
+                fallback = fallback.replace(data["protocol_applied"], "")
+
+            data["answer"] = self._strip_instruction_echoes(fallback.strip())
+
+        # === EXTRACT QUESTIONS FROM ANSWER IF NONE FOUND ===
+        if not data["follow_up_questions"] and data["answer"]:
+            # Look for bullet points that are questions
+            question_lines = re.findall(r'[-*•]\s*([^-*•\n]+\?)', data["answer"])
+            if question_lines:
+                data["follow_up_questions"] = [q.strip() for q in question_lines[:3]]
+                # Remove questions from answer
+                for q in question_lines:
+                    data["answer"] = data["answer"].replace(f"- {q}", "").replace(f"* {q}", "").replace(f"• {q}", "")
+                data["answer"] = data["answer"].strip()
+
+        # === FINAL FALLBACK FOR ANSWER ===
+        if not data["answer"]:
+            data["answer"] = "Analysis complete. Please review the patient data."
 
         return data
 
