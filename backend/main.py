@@ -108,6 +108,10 @@ class StaffAskResponse(BaseModel):
     cited_data: List[str]
     model_used: str
     disclaimer: str
+    # RAG-specific fields
+    rag_used: bool = False
+    protocol_applied: Optional[str] = None  # Protocol title if RAG was used
+    protocol_source: Optional[str] = None   # Protocol source (e.g., SFMU/HAS)
 
 class CaseListResponse(BaseModel):
     cases: List[Dict[str, Any]]
@@ -151,6 +155,9 @@ triage_engine: TriageEngine = None
 risk_engine: RiskEngine = None
 reasoning_engine: MultiModelEngine = None
 drbert_engine: DrBERTEngine = None
+
+
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -739,7 +746,11 @@ async def staff_ask(case_id: str, request: StaffAskRequestWithModel, _: bool = D
         suggested_questions=result.get("suggested_questions", []),
         cited_data=result.get("cited_data", []),
         model_used=result.get("model_used", "Unknown"),
-        disclaimer="This is decision support only. Clinical judgment is required for all patient care decisions."
+        disclaimer="This is decision support only. Clinical judgment is required for all patient care decisions.",
+        # RAG-specific fields
+        rag_used=result.get("rag_used", False),
+        protocol_applied=result.get("protocol_applied", None) if result.get("rag_used") else None,
+        protocol_source=result.get("protocol_source", None) if result.get("rag_used") else None
     )
 
 @app.post("/staff/case/{case_id}/status")

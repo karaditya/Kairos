@@ -809,94 +809,34 @@ class MultiModelEngine:
     # FRENCH PIVOT RAG PIPELINE
     # =========================================================================
 
-    def _pivot_to_french(self, patient_context: Dict[str, Any], user_query: str) -> Dict[str, Any]:
+    def _build_search_query(self, patient_context: Dict[str, Any]) -> str:
         """
-        Step 1 of French Pivot: Translate symptoms to French medical terminology.
-
-        Uses the LLM to extract and translate symptoms from any language
-        to precise French medical terms for DrBERT semantic search.
-
-        Args:
-            patient_context: Patient clinical state
-            user_query: Original user question (any language)
-
-        Returns:
-            Dict with french_terms, medical_category, urgency_indicators
+        Build a search query from patient data for DrBERT semantic search.
+        No translation needed - DrBERT handles semantic matching.
         """
-        if not self._current_model:
-            return {"french_terms": "", "medical_category": "general", "urgency_indicators": []}
+        parts = []
 
-        # Build a concise patient summary
-        card = self._flatten_patient_data(patient_context)
+        # Chief complaint
+        chief = patient_context.get("chief_complaint", "")
+        if chief:
+            parts.append(chief)
 
-        system_prompt = (
-            "You are a medical terminology expert. Your task is to extract symptoms "
-            "from the patient data and translate them to PRECISE French medical terminology.\n\n"
-            "RULES:\n"
-            "- Output ONLY the French medical terms, not translations of general text\n"
-            "- Use standard French medical vocabulary (as used in SFMU/HAS protocols)\n"
-            "- Be specific: 'Douleur thoracique constrictive' not just 'douleur'\n"
-            "- Include relevant modifiers (acute, chronic, severity, location)\n\n"
-            "Examples:\n"
-            "- 'chest pain' → 'Douleur thoracique'\n"
-            "- 'difficulty breathing' → 'Dyspnée'\n"
-            "- 'high fever with chills' → 'Fièvre élevée avec frissons'\n"
-            "- 'sudden severe headache' → 'Céphalée brutale intense'\n\n"
-        )
+        # Key symptoms from answers
+        answers = patient_context.get("answers", {})
+        for key, val in answers.items():
+            if key.startswith("_"):
+                continue
+            if isinstance(val, bool) and val:
+                parts.append(key.replace("_", " "))
+            elif val and not isinstance(val, bool):
+                parts.append(f"{key.replace('_', ' ')}: {val}")
 
-        # Construct user prompt
-        user_prompt = (
-            f"PATIENT DATA:\n{card}\n\n"
-            f"USER QUERY: {user_query}\n\n"
-            "Extract the key symptoms and translate to French medical terms. "
-            "Also identify the medical category (cardiac, respiratory, neurological, etc.).\n\n"
-            "Respond with:\n"
-            "FRENCH_TERMS: [French medical terminology for symptoms]\n"
-            "CATEGORY: [medical category]\n"
-            "URGENCY: [any urgency indicators, comma-separated]"
-        )
+        # Risk band context
+        risk = patient_context.get("risk_band", "")
+        if risk:
+            parts.append(f"risk: {risk}")
 
-        with self._lock:
-            try:
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ]
-
-                output = self._current_model.instance.create_chat_completion(
-                    messages=messages,
-                    max_tokens=300,
-                    temperature=0.1,
-                    stop=["<|im_end|>", "<|im_start|>", "</s>", "<|eot_id|>"]
-                )
-
-                raw = output['choices'][0]['message']['content']
-                log_llm_output(raw, context="FRENCH_PIVOT")
-
-                # Parse the response
-                french_terms = ""
-                category = "general"
-                urgency = []
-
-                for line in raw.split('\n'):
-                    line = line.strip()
-                    if line.upper().startswith("FRENCH_TERMS:"):
-                        french_terms = line.split(":", 1)[1].strip()
-                    elif line.upper().startswith("CATEGORY:"):
-                        category = line.split(":", 1)[1].strip().lower()
-                    elif line.upper().startswith("URGENCY:"):
-                        urgency_str = line.split(":", 1)[1].strip()
-                        urgency = [u.strip() for u in urgency_str.split(",") if u.strip()]
-
-                return {
-                    "french_terms": french_terms,
-                    "medical_category": category,
-                    "urgency_indicators": urgency
-                }
-
-            except Exception as e:
-                logger.error(f"French pivot error: {e}")
-                return {"french_terms": "", "medical_category": "general", "urgency_indicators": []}
+        return " ".join(parts)[:500]  # Limit length
 
     def _build_rag_system_prompt(self,
                                   patient_card: str,
@@ -954,63 +894,49 @@ class MultiModelEngine:
                        user_language: str = "en",
                        n_protocols: int = 1) -> Dict[str, Any]:
         """
-        Query with French Pivot RAG Pipeline.
+        Query with RAG Pipeline.
 
-        The full pipeline:
-        1. PIVOT: LLM translates symptoms → French medical terms
-        2. RETRIEVE: DrBERT searches ChromaDB with French terms
-        3. SYNTHESIZE: LLM generates response grounded in French protocol
+        The pipeline:
+        1. BUILD: Extract symptoms from patient data
+        2. RETRIEVE: DrBERT searches ChromaDB semantically
+        3. SYNTHESIZE: LLM generates response grounded in protocol
 
-        Args:
-            patient_context: Clinical state dictionary
-            user_query: User's question (any language)
-            user_language: User's preferred response language
-            n_protocols: Number of protocols to retrieve
-
-        Returns:
-            Response with answer, reasoning, protocol_applied, citations
+        Returns: {answer, follow_up_questions, protocol, reasoning}
         """
         # Check if RAG is available
         if not self.rag_available:
             logger.warning("RAG not available. Falling back to standard generation.")
             return self._generate_structured_fallback(patient_context, user_query)
 
-        # === STEP 1: PIVOT TO FRENCH ===
-        pivot_result = self._pivot_to_french(patient_context, user_query)
-        french_query = pivot_result.get("french_terms", "")
-        medical_category = pivot_result.get("medical_category", "general")
+        # === STEP 1: BUILD SEARCH QUERY ===
+        search_query = self._build_search_query(patient_context)
 
-        if not french_query:
-            # Fallback: use original query if pivot fails
-            french_query = user_query
-            logger.warning("French pivot produced empty result, using original query")
-
-        log_llm_output(
-            f"French Terms: {french_query}\nCategory: {medical_category}",
-            context="PIVOT_RESULT"
-        )
+        log_llm_output(f"Search Query: {search_query}", context="DRBERT_QUERY")
 
         # === STEP 2: RETRIEVE FROM DRBERT ===
         protocols = self._drbert_engine.search_protocols(
-            french_query=french_query,
-            n_results=n_protocols,
-            category=medical_category if medical_category != "general" else None
+            french_query=search_query,
+            n_results=n_protocols
         )
 
-        if not protocols:
-            logger.warning("No protocols found. Falling back to standard generation.")
-            return self._generate_structured_fallback(patient_context, user_query)
+        protocol_text = ""
+        protocol_metadata = {}
+        protocol_title = ""
 
-        best_protocol = protocols[0]
-        protocol_text = best_protocol.get("text", "")
-        protocol_metadata = best_protocol.get("metadata", {})
+        if protocols:
+            best_protocol = protocols[0]
+            protocol_text = best_protocol.get("text", "")
+            protocol_metadata = best_protocol.get("metadata", {})
+            protocol_title = protocol_metadata.get("title", "")
 
-        log_llm_output(
-            f"Protocol: {protocol_metadata.get('title', 'Unknown')}\n"
-            f"Score: {best_protocol.get('relevance_score', 0):.3f}\n"
-            f"Text Preview: {protocol_text[:200]}...",
-            context="RETRIEVED_PROTOCOL"
-        )
+            log_llm_output(
+                f"Protocol: {protocol_title}\n"
+                f"Score: {best_protocol.get('relevance_score', 0):.3f}\n"
+                f"Text Preview: {protocol_text[:200]}...",
+                context="RETRIEVED_PROTOCOL"
+            )
+        else:
+            log_llm_output("No protocols found", context="RETRIEVED_PROTOCOL")
 
         # === STEP 3: SYNTHESIZE WITH GROUNDED PROMPT ===
         patient_card = self._flatten_patient_data(patient_context)
@@ -1087,10 +1013,10 @@ class MultiModelEngine:
                 return {
                     "answer": parsed.get("answer", ""),
                     "reasoning": parsed.get("reasoning", ""),
-                    "protocol_applied": parsed.get("protocol_applied", protocol_metadata.get("title", "")),
+                    "protocol_applied": parsed.get("protocol_applied", protocol_title),
                     "follow_up_questions": parsed.get("follow_up_questions", [])[:3],
-                    "french_query_used": french_query,
-                    "protocol_relevance": best_protocol.get("relevance_score", 0),
+                    "search_query_used": search_query,
+                    "protocol_relevance": protocols[0].get("relevance_score", 0) if protocols else 0,
                     "protocol_source": protocol_metadata.get("source", "SFMU/HAS"),
                     "rag_used": True,
                     "model_used": self._current_model.config.name if self._current_model else "Unknown"
@@ -1136,8 +1062,8 @@ class MultiModelEngine:
         """Fallback to standard generation when RAG is unavailable."""
         result = self._generate_structured(patient_context, user_query)
         result["rag_used"] = False
-        result["protocol_applied"] = ""
-        result["french_query_used"] = ""
+        result["protocol_applied"] = ""  # No protocol when LLM fallback is used
+        result["search_query_used"] = ""
         result["protocol_relevance"] = 0
         result["protocol_source"] = ""
         return result
@@ -1203,10 +1129,10 @@ class MultiModelEngine:
                 "rag_used": response.get("rag_used", False),
                 "protocol_applied": response.get("protocol_applied", ""),
                 "protocol_source": response.get("protocol_source", ""),
-                "french_query_used": response.get("french_query_used", "")
+                "search_query_used": response.get("search_query_used", "")
             }
         else:
-            # Standard generation without RAG
+            # Standard generation without RAG (LLM fallback)
             response = self._generate_structured(clinical_state, question)
             citations = self._extract_citations(response.get("answer", ""), clinical_state)
 
@@ -1218,9 +1144,9 @@ class MultiModelEngine:
                 "cited_data": citations,
                 "model_used": self._current_model.config.name if self._current_model else "System",
                 "rag_used": False,
-                "protocol_applied": "",
+                "protocol_applied": "",  # No protocol when LLM fallback is used
                 "protocol_source": "",
-                "french_query_used": ""
+                "search_query_used": ""
             }
 
     def get_available_models(self) -> List[Dict]:

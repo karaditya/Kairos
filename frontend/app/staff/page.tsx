@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import ReactMarkdown from "react-markdown";
@@ -22,6 +22,8 @@ import {
   MessageSquare,
   Download,
   Sparkles,
+  FileText,
+  Database,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -86,6 +88,10 @@ const staffTranslations: Record<LanguageCode, Record<string, string>> = {
     answer: "Answer",
     followUpQuestions: "Follow-up Questions",
     aiReasoning: "AI Reasoning",
+    protocol: "Protocol Applied",
+    protocolSource: "Source",
+    ragBadge: "RAG",
+    llmFallback: "LLM Fallback",
     selectCase: "Select a case from the list to view details",
     casesAvailable: "case(s) available",
     failedFetchCases: "Failed to fetch cases",
@@ -144,6 +150,10 @@ const staffTranslations: Record<LanguageCode, Record<string, string>> = {
     answer: "Réponse",
     followUpQuestions: "Questions de suivi",
     aiReasoning: "Raisonnement IA",
+    protocol: "Protocole Appliqué",
+    protocolSource: "Source",
+    ragBadge: "RAG",
+    llmFallback: "LLM Standard",
     selectCase: "Sélectionnez un cas dans la liste pour voir les détails",
     casesAvailable: "cas disponible(s)",
     failedFetchCases: "Échec de récupération des cas",
@@ -154,7 +164,7 @@ const staffTranslations: Record<LanguageCode, Record<string, string>> = {
   }
 };
 
-export default function StaffPortal() {
+function StaffPortalContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const langParam = searchParams.get("lang");
@@ -187,6 +197,10 @@ export default function StaffPortal() {
     cited_data: string[];
     model_used: string;
     disclaimer: string;
+    // RAG-specific fields
+    rag_used: boolean;
+    protocol_applied: string | null;
+    protocol_source: string | null;
   } | null>(null);
   const [showReasoning, setShowReasoning] = useState(false);
 
@@ -1219,6 +1233,21 @@ export default function StaffPortal() {
                     {/* AI Response */}
                     {answer && (
                       <div className="space-y-3">
+                        {/* RAG/LLM Badge */}
+                        <div className="flex items-center gap-2">
+                          {answer.rag_used ? (
+                            <span className="inline-flex items-center gap-1 text-xs bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 px-2 py-1 rounded-full">
+                              <Database className="h-3 w-3" />
+                              {t("ragBadge")}
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-xs bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 px-2 py-1 rounded-full">
+                              <Brain className="h-3 w-3" />
+                              {t("llmFallback")}
+                            </span>
+                          )}
+                        </div>
+
                         {/* Main Answer */}
                         {answer.answer && answer.answer.trim() && (
                           <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded-lg border border-blue-200 dark:border-blue-800">
@@ -1233,6 +1262,28 @@ export default function StaffPortal() {
                                     {answer.answer}
                                   </ReactMarkdown>
                                 </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Protocol Applied (only shown when RAG is used) */}
+                        {answer.rag_used && answer.protocol_applied && (
+                          <div className="bg-amber-50 dark:bg-amber-900/20 p-3 rounded-lg border border-amber-200 dark:border-amber-800">
+                            <div className="flex items-start gap-2">
+                              <FileText className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" />
+                              <div className="flex-1">
+                                <h4 className="text-xs font-semibold text-amber-700 dark:text-amber-300 mb-1">
+                                  {t("protocol")}
+                                </h4>
+                                <p className="text-sm text-gray-800 dark:text-gray-200 font-medium">
+                                  {answer.protocol_applied}
+                                </p>
+                                {answer.protocol_source && (
+                                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                    {t("protocolSource")}: {answer.protocol_source}
+                                  </p>
+                                )}
                               </div>
                             </div>
                           </div>
@@ -1324,5 +1375,17 @@ export default function StaffPortal() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function StaffPortal() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+      </div>
+    }>
+      <StaffPortalContent />
+    </Suspense>
   );
 }

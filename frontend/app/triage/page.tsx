@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { ArrowLeft, ArrowRight, CheckCircle, AlertCircle, FileText, Loader2 } from "lucide-react";
@@ -14,7 +14,7 @@ import Link from "next/link";
 
 type Step = "demographics" | "complaint" | "triage" | "summary";
 
-export default function TriagePage() {
+function TriagePageContent() {
   const searchParams = useSearchParams();
   const langParam = searchParams.get("lang");
   const initialLanguage: LanguageCode = (langParam === "fr" || langParam === "en") ? langParam : "en";
@@ -589,5 +589,17 @@ export default function TriagePage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function TriagePage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 py-12 px-4 flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+      </div>
+    }>
+      <TriagePageContent />
+    </Suspense>
   );
 }

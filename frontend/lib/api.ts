@@ -331,6 +331,10 @@ export const api = {
     cited_data: string[];
     model_used: string;
     disclaimer: string;
+    // RAG-specific fields
+    rag_used: boolean;
+    protocol_applied: string | null;
+    protocol_source: string | null;
   }> {
     const response = await fetch(
       `${API_BASE_URL}/staff/case/${caseId}/ask`,
