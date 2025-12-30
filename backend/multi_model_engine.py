@@ -26,6 +26,7 @@ from model_registry import (
 )
 from response_validator import TriageResponseValidator, validate_triage_response
 from retry_handler import GenerationRetryHandler
+from translation_engine import get_translation_engine, TranslationEngine
 
 # =============================================================================
 # JSON SCHEMAS (for models that support JSON grammar)
@@ -118,6 +119,9 @@ class MultiModelEngine:
 
         # DrBERT engine reference for RAG (set externally)
         self._drbert_engine: Optional[Any] = None
+
+        # Translation engine for French pivot RAG (lazy loaded)
+        self._translation_engine: Optional[TranslationEngine] = None
 
         # Auto-detect GPU layers if not explicitly set
         env_gpu_layers = os.environ.get("N_GPU_LAYERS")
@@ -1016,7 +1020,9 @@ class MultiModelEngine:
     def _build_search_query(self, patient_context: Dict[str, Any]) -> str:
         """
         Build a search query from patient data for DrBERT semantic search.
-        No translation needed - DrBERT handles semantic matching.
+
+        Uses MarianMT to translate English query to French for proper matching
+        against French medical protocols in the vector database.
         """
         parts = []
 
@@ -1032,6 +1038,11 @@ class MultiModelEngine:
                 continue
             if isinstance(val, bool) and val:
                 parts.append(key.replace("_", " "))
+            elif isinstance(val, dict):
+                # Extract label or value from dict-style answers
+                label = val.get("label") or val.get("value") or ""
+                if label:
+                    parts.append(f"{key.replace('_', ' ')}: {label}")
             elif val and not isinstance(val, bool):
                 parts.append(f"{key.replace('_', ' ')}: {val}")
 
@@ -1040,7 +1051,19 @@ class MultiModelEngine:
         if risk:
             parts.append(f"risk: {risk}")
 
-        return " ".join(parts)[:500]  # Limit length
+        english_query = " ".join(parts)[:500]  # Limit length
+
+        # Translate to French for DrBERT matching
+        try:
+            if self._translation_engine is None:
+                self._translation_engine = get_translation_engine()
+
+            french_query = self._translation_engine.translate_medical_query(english_query)
+            logger.info(f"Query translation: '{english_query[:80]}...' -> '{french_query[:80]}...'")
+            return french_query
+        except Exception as e:
+            logger.warning(f"Translation failed, using English query: {e}")
+            return english_query
 
     def _build_rag_system_prompt(self,
                                   patient_card: str,
@@ -1085,9 +1108,25 @@ class MultiModelEngine:
             "3. Apply the protocol's triage criteria to this patient.\n"
             "4. If the protocol doesn't cover this case, say so explicitly.\n"
             "5. DO NOT invent information not in the protocol or patient data.\n\n"
+            "OUTPUT FORMAT - Use these EXACT markdown headers:\n\n"
+            "## Reasoning\n"
+            "[Your clinical analysis referencing the protocol]\n\n"
+            "## Answer\n"
+            "[Start with a brief greeting and acknowledgment]\n\n"
+            "**Your reported symptoms:**\n"
+            "- [Symptom 1 from patient data]\n"
+            "- [Symptom 2 from patient data]\n"
+            "- [Additional symptoms as bullets]\n\n"
+            "[End with reassurance and what happens next]\n\n"
+            "## Protocol Applied\n"
+            "[Name of the protocol used]\n\n"
+            "## Questions\n"
+            "1. [First follow-up question?]\n"
+            "2. [Second follow-up question?]\n"
+            "3. [Third follow-up question?]\n\n"
             "WRITING STYLE:\n"
             "- For reasoning: Use medical terminology, reference the protocol.\n"
-            "- For answer: Use simple, reassuring language for the patient.\n"
+            "- For answer: Use simple, reassuring language. LIST SYMPTOMS AS BULLETS.\n"
             "- For questions: Ask specific questions to assess urgency.\n\n"
             f"LANGUAGE: {language_instruction}\n"
         )
@@ -1296,9 +1335,10 @@ class MultiModelEngine:
         ]
 
         answer_patterns = [
-            r'#{1,3}\s*Answer\s*\n(.*?)(?=#{1,3}\s*(?:Protocol|Questions)|$)',
-            r'##ANSWER##\s*\n?(.*?)(?=##(?:PROTOCOL|QUESTIONS)##|$)',
-            r'(?:^|\n)\s*(?:2\.?\s*)?ANSWER[:\s]*\n(.*?)(?=\n\s*(?:3\.?\s*)?(?:PROTOCOL|QUESTIONS)|$)',
+            # Handle "## Protocol Applied" (with space) as well as "## Protocol"
+            r'#{1,3}\s*Answer\s*\n(.*?)(?=#{1,3}\s*(?:Protocol(?:\s+Applied)?|Questions)|$)',
+            r'##ANSWER##\s*\n?(.*?)(?=##(?:PROTOCOL(?:\s*APPLIED)?|QUESTIONS)##|$)',
+            r'(?:^|\n)\s*(?:2\.?\s*)?ANSWER[:\s]*\n(.*?)(?=\n\s*(?:3\.?\s*)?(?:PROTOCOL(?:\s+APPLIED)?|QUESTIONS)|$)',
             r'<answer>(.*?)(?:</answer>|<protocol|<questions>|$)',
         ]
 
@@ -1356,8 +1396,9 @@ class MultiModelEngine:
             # Remove already-extracted content from cleaned text
             fallback = cleaned
             fallback = re.sub(r'<[^>]+>', '', fallback)
-            fallback = re.sub(r'#{1,3}\s*(?:Reasoning|Protocol|Questions)[^\n]*\n', '', fallback, flags=re.IGNORECASE)
-            fallback = re.sub(r'##[A-Z]+##', '', fallback)
+            # Handle "Protocol Applied" as well as just "Protocol"
+            fallback = re.sub(r'#{1,3}\s*(?:Reasoning|Protocol(?:\s+Applied)?|Questions)[^\n]*\n', '', fallback, flags=re.IGNORECASE)
+            fallback = re.sub(r'##[A-Z]+(?:\s*APPLIED)?##', '', fallback)
 
             # Remove reasoning and protocol content we already extracted
             if data["reasoning"]:

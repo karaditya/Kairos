@@ -434,12 +434,20 @@ class ProtocolVectorStore:
                 protocols = []
                 if results and results["ids"] and results["ids"][0]:
                     for i, doc_id in enumerate(results["ids"][0]):
+                        distance = results["distances"][0][i] if results["distances"] else 0.0
+
+                        # Convert L2 distance to relevance score (0.0 - 1.0)
+                        # For normalized embeddings: L2 = sqrt(2 * (1 - cosine_sim))
+                        # So: relevance = 1 - (L2^2 / 2), clamped to [0, 1]
+                        # This formula works better than linear 1 - (d/2) for large distances
+                        relevance = max(0.0, min(1.0, 1.0 - (distance * distance / 4.0)))
+
                         protocols.append({
                             "id": doc_id,
                             "text": results["documents"][0][i] if results["documents"] else "",
                             "metadata": results["metadatas"][0][i] if results["metadatas"] else {},
-                            "distance": results["distances"][0][i] if results["distances"] else 0.0,
-                            "relevance_score": 1.0 - (results["distances"][0][i] / 2.0) if results["distances"] else 0.5
+                            "distance": distance,
+                            "relevance_score": relevance
                         })
 
                 return protocols
