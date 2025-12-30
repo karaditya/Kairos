@@ -13,7 +13,6 @@ import gc
 import threading
 import logging
 import re
-import random
 import json
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
@@ -23,8 +22,10 @@ logger = logging.getLogger(__name__)
 LLM_LOG_PATH = os.path.join(os.path.dirname(__file__), "backend.log")
 
 from model_registry import (
-    SUPPORTED_MODELS, ModelConfig, get_model_config, get_all_models, model_to_dict, DEFAULT_MODEL_ID, PromptStyle,
+    SUPPORTED_MODELS, ModelConfig, get_model_config, get_all_models, model_to_dict, DEFAULT_MODEL_ID, PromptStyle, GrammarStrategy,
 )
+from response_validator import TriageResponseValidator, validate_triage_response
+from retry_handler import GenerationRetryHandler
 
 # =============================================================================
 # JSON SCHEMAS (for models that support JSON grammar)
@@ -253,15 +254,168 @@ class MultiModelEngine:
     def _supports_json_grammar(self) -> bool:
         """
         Determine if current model works well with JSON grammar.
-        DeepSeek (THINK_TAGS) uses <think> internally - JSON grammar breaks its reasoning.
-        Llama/SmolLM (SIMPLE) can struggle with strict JSON.
-        STRUCTURED models (Gemma, Phi, etc.) handle JSON grammar well.
+        Uses grammar_strategy from model config for more nuanced control.
         """
         if not self._current_model:
             return False
-        style = self._current_model.config.prompt_style
-        # Only STRUCTURED models reliably support JSON grammar
-        return style == PromptStyle.STRUCTURED
+        strategy = self._get_grammar_strategy()
+        # STRICT_JSON and GUIDED_JSON support grammar; THINK_THEN_JSON needs special handling
+        return strategy in [GrammarStrategy.STRICT_JSON, GrammarStrategy.GUIDED_JSON]
+
+    def _get_grammar_strategy(self) -> GrammarStrategy:
+        """
+        Get the appropriate grammar strategy for the current model.
+        Returns the model's configured strategy or FALLBACK if no model loaded.
+        """
+        if not self._current_model:
+            return GrammarStrategy.FALLBACK
+        return self._current_model.config.grammar_strategy
+
+    def _handle_think_then_json(self, raw_output: str) -> Dict[str, Any]:
+        """
+        Special handler for DeepSeek R1 and similar models that use <think> tags.
+        Extracts the thinking content first, then parses the remaining JSON.
+
+        Strategy:
+        1. Extract <think>...</think> content for internal reasoning
+        2. Remove think tags from output
+        3. Try to parse remaining as JSON
+        4. Fall back to regex parsing if JSON fails
+        5. Inject think content as internal_reasoning field
+        """
+        # Extract think content
+        think_content = ""
+        think_match = re.search(r'<think(?:ing)?>(.*?)</think(?:ing)?>', raw_output, flags=re.DOTALL)
+        if think_match:
+            think_content = think_match.group(1).strip()
+
+        # Remove think tags from output
+        clean_output = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', raw_output, flags=re.DOTALL).strip()
+
+        # Try to parse as JSON
+        result = None
+        if clean_output:
+            # Look for JSON object in the output
+            json_match = re.search(r'\{[\s\S]*\}', clean_output)
+            if json_match:
+                try:
+                    json_str = self._repair_json(json_match.group(0))
+                    result = json.loads(json_str)
+                except json.JSONDecodeError:
+                    pass
+
+        # Fall back to regex parsing if JSON failed
+        if not result:
+            result = self._parse_adaptive_output(raw_output)
+
+        # Inject think content as internal reasoning if we have it
+        if think_content:
+            # Use think content for reasoning if current reasoning is short
+            if not result.get("reasoning") or len(result.get("reasoning", "")) < 50:
+                result["reasoning"] = self._strip_instruction_echoes(think_content[:800])
+            # Also store raw think content
+            result["internal_reasoning"] = think_content
+
+        return result
+
+    def _repair_json(self, json_str: str) -> str:
+        """
+        Attempt to repair common JSON issues from LLM output.
+        """
+        s = json_str.strip()
+
+        # Remove any leading/trailing non-JSON content
+        start = s.find('{')
+        if start > 0:
+            s = s[start:]
+
+        # Try to find matching closing brace
+        brace_count = 0
+        end_pos = -1
+        for i, char in enumerate(s):
+            if char == '{':
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    end_pos = i
+                    break
+
+        if end_pos > 0:
+            s = s[:end_pos + 1]
+
+        # Fix common issues
+        # Unescaped newlines in strings
+        s = re.sub(r'(?<!\\)\n', '\\n', s)
+
+        # Missing closing quote before comma or brace
+        s = re.sub(r'([^"\\])\n\s*([,}\]])', r'\1"\2', s)
+
+        return s
+
+    def _get_context_fallback_questions(self, context: Optional[Dict] = None) -> List[str]:
+        """
+        Generate context-appropriate fallback questions instead of random selection.
+        Uses patient context (chief complaint, risk band) to select relevant questions.
+        """
+        if not context:
+            return [
+                "How long have you been experiencing these symptoms?",
+                "Are you currently taking any medications?",
+                "Do you have any known allergies?"
+            ]
+
+        chief_complaint = str(context.get("chief_complaint", "")).lower()
+        risk_band = context.get("risk_band", "amber")
+
+        # Category-specific questions
+        question_map = {
+            "chest": [
+                "Is the pain getting worse or staying the same?",
+                "Do you have any history of heart problems?",
+                "Are you taking any blood thinners or heart medications?"
+            ],
+            "head": [
+                "Is this the worst headache you've ever had?",
+                "Have you noticed any vision changes or sensitivity to light?",
+                "Have you had any recent head injuries?"
+            ],
+            "abdomen": [
+                "Where exactly is the pain located?",
+                "Have you been able to eat or drink normally?",
+                "When was your last bowel movement?"
+            ],
+            "breath": [
+                "Do you have a history of asthma or lung conditions?",
+                "Are you making any unusual sounds when breathing?",
+                "Have you been exposed to any allergens recently?"
+            ],
+            "fever": [
+                "What is your current temperature?",
+                "How long have you had the fever?",
+                "Have you taken any medication for the fever?"
+            ]
+        }
+
+        # Match complaint to category
+        for keyword, questions in question_map.items():
+            if keyword in chief_complaint:
+                return questions
+
+        # Risk-based fallbacks for high priority
+        if risk_band == "red":
+            return [
+                "Are your symptoms getting worse right now?",
+                "Do you have someone with you?",
+                "Have you called emergency services?"
+            ]
+
+        # Default questions
+        return [
+            "How long have you been experiencing these symptoms?",
+            "Are you currently taking any medications?",
+            "Do you have any known allergies?"
+        ]
 
     def get_current_model(self) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -626,13 +780,16 @@ class MultiModelEngine:
 
         return text
 
-    def _validate_response_schema(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def _validate_response_schema(self, data: Dict[str, Any], context: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Validates and sanitizes the response schema.
         Ensures follow_up_questions always has at least 3 valid questions.
         Preserves protocol_applied for RAG responses.
+
+        Args:
+            data: The parsed response data
+            context: Optional patient context for context-aware fallback questions
         """
-        defaults = ["Is the pain worsening?", "Any fever?", "History of heart issues?", "Any nausea?", "Short of breath?"]
         questions = data.get("follow_up_questions", [])
         if not isinstance(questions, list):
             questions = []
@@ -647,11 +804,14 @@ class MultiModelEngine:
                     cleaned_q += "?"
                 valid_qs.append(cleaned_q)
 
-        # Fill with defaults if not enough
-        while len(valid_qs) < 3:
-            choice = random.choice(defaults)
-            if choice not in valid_qs:
-                valid_qs.append(choice)
+        # Fill with context-aware fallback questions if not enough
+        if len(valid_qs) < 3:
+            fallback_questions = self._get_context_fallback_questions(context)
+            for fallback_q in fallback_questions:
+                if len(valid_qs) >= 3:
+                    break
+                if fallback_q not in valid_qs:
+                    valid_qs.append(fallback_q)
 
         data["follow_up_questions"] = valid_qs[:3]
 
@@ -673,17 +833,19 @@ class MultiModelEngine:
 
     def _generate_structured(self, patient_context: Dict[str, Any], user_query: str) -> Dict[str, Any]:
         """
-        HYBRID GENERATION:
-        - STRUCTURED models (Gemma, Phi): Use JSON grammar for reliable output
-        - THINK_TAGS models (DeepSeek): Use XML styled prompting + regex parsing
-        - SIMPLE models (Llama, SmolLM): Use ##HEADER## prompting + regex parsing
+        HYBRID GENERATION with Grammar Strategy:
+        - STRICT_JSON (Gemma, Phi, Qwen): Use JSON grammar for reliable output
+        - THINK_THEN_JSON (DeepSeek): Extract <think> tags, then parse JSON
+        - GUIDED_JSON (Llama, SmolLM): Use JSON grammar with simpler prompts
+        - FALLBACK: Regex parsing only
         """
         with self._lock:
             if not self._current_model:
                 return {"answer": "Engine Error: Model not loaded.", "reasoning": "", "follow_up_questions": []}
 
             card = self._flatten_patient_data(patient_context)
-            use_json = self._supports_json_grammar
+            grammar_strategy = self._get_grammar_strategy()
+            use_json = grammar_strategy in [GrammarStrategy.STRICT_JSON, GrammarStrategy.GUIDED_JSON]
             sys_prompt = self._construct_adaptive_system_prompt(card, use_json=use_json)
 
             messages = [
@@ -711,11 +873,14 @@ class MultiModelEngine:
 
                 output = self._current_model.instance.create_chat_completion(**gen_kwargs)
                 raw = output['choices'][0]['message']['content']
-                log_llm_output(raw, context=f"OUTPUT ({'JSON Grammar' if use_json else 'Styled'})")
+                log_llm_output(raw, context=f"OUTPUT (Strategy: {grammar_strategy.value})")
 
-                # Parse based on mode
-                if use_json:
-                    # JSON grammar path
+                # Parse based on grammar strategy
+                if grammar_strategy == GrammarStrategy.THINK_THEN_JSON:
+                    # Special handling for DeepSeek - extract think tags first
+                    parsed_data = self._handle_think_then_json(raw)
+                elif use_json:
+                    # JSON grammar path (STRICT_JSON or GUIDED_JSON)
                     clean_json = self._clean_json_output(raw)
                     try:
                         parsed_data = json.loads(clean_json)
@@ -723,11 +888,11 @@ class MultiModelEngine:
                         # Fallback to regex parsing if JSON fails
                         parsed_data = self._parse_adaptive_output(raw)
                 else:
-                    # Styled prompting path (DeepSeek, Llama, SmolLM)
+                    # FALLBACK: Regex parsing only
                     parsed_data = self._parse_adaptive_output(raw)
 
                 self._total_inferences += 1
-                return self._validate_response_schema(parsed_data)
+                return self._validate_response_schema(parsed_data, context=patient_context)
 
             except Exception as e:
                 logger.error(f"Inference error: {e}")

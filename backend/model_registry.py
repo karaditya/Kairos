@@ -36,6 +36,14 @@ class PromptStyle(Enum):
     SIMPLE = "simple"           # Basic models: need simple, direct prompts
 
 
+class GrammarStrategy(Enum):
+    """Strategy for constrained JSON output generation."""
+    STRICT_JSON = "strict_json"       # Full JSON grammar support (Gemma, Phi, Qwen)
+    THINK_THEN_JSON = "think_then_json"  # Extract <think> first, then parse JSON (DeepSeek)
+    GUIDED_JSON = "guided_json"       # JSON grammar with simpler prompts (Llama, SmolLM)
+    FALLBACK = "fallback"             # No grammar, regex parsing only
+
+
 @dataclass
 class ModelConfig:
     """Configuration for a supported model."""
@@ -50,6 +58,7 @@ class ModelConfig:
     quality: ModelQuality                   # Quality tier
     context_length: int                     # Max context window
     prompt_style: PromptStyle = PromptStyle.STRUCTURED  # How model handles prompts
+    grammar_strategy: GrammarStrategy = GrammarStrategy.STRICT_JSON  # JSON output strategy
     recommended_threads: int = 4            # Recommended CPU threads
     recommended_gpu_layers: int = 0         # Recommended GPU layers (0 = CPU only)
     supports_medical: bool = True           # Suitable for medical summarization
@@ -82,6 +91,7 @@ SUPPORTED_MODELS: Dict[str, ModelConfig] = {
         quality=ModelQuality.BASIC,
         context_length=2048,
         prompt_style=PromptStyle.SIMPLE,
+        grammar_strategy=GrammarStrategy.GUIDED_JSON,
         recommended_threads=4,
         recommended_gpu_layers=0,
         quantization="Q4_K_M",
@@ -102,6 +112,8 @@ SUPPORTED_MODELS: Dict[str, ModelConfig] = {
         size_category=ModelSize.MEDIUM,
         quality=ModelQuality.STANDARD,
         context_length=4096,
+        prompt_style=PromptStyle.SIMPLE,
+        grammar_strategy=GrammarStrategy.GUIDED_JSON,
         recommended_threads=6,
         recommended_gpu_layers=20,
         quantization="Q4_K_M",
@@ -151,6 +163,7 @@ SUPPORTED_MODELS: Dict[str, ModelConfig] = {
         quality=ModelQuality.STANDARD,
         context_length=4096,
         prompt_style=PromptStyle.THINK_TAGS,
+        grammar_strategy=GrammarStrategy.THINK_THEN_JSON,
         recommended_threads=4,
         recommended_gpu_layers=10,
         quantization="Q4_K_M",
@@ -172,6 +185,7 @@ SUPPORTED_MODELS: Dict[str, ModelConfig] = {
         quality=ModelQuality.ADVANCED,
         context_length=8192,
         prompt_style=PromptStyle.THINK_TAGS,
+        grammar_strategy=GrammarStrategy.THINK_THEN_JSON,
         recommended_threads=8,
         recommended_gpu_layers=35,
         quantization="Q4_K_M",
@@ -265,6 +279,7 @@ SUPPORTED_MODELS: Dict[str, ModelConfig] = {
         quality=ModelQuality.BASIC,
         context_length=2048,
         prompt_style=PromptStyle.SIMPLE,
+        grammar_strategy=GrammarStrategy.GUIDED_JSON,
         recommended_threads=4,
         recommended_gpu_layers=0,
         quantization="Q4_K_M",
@@ -367,6 +382,8 @@ def model_to_dict(config: ModelConfig) -> Dict:
         "size_category": config.size_category.value,
         "quality": config.quality.value,
         "context_length": config.context_length,
+        "prompt_style": config.prompt_style.value,
+        "grammar_strategy": config.grammar_strategy.value,
         "quantization": config.quantization,
         "speed_rating": config.speed_rating,
         "quality_rating": config.quality_rating,
