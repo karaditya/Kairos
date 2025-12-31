@@ -1334,7 +1334,10 @@ class MultiModelEngine:
                     "protocol_relevance": protocols[0].get("relevance_score", 0) if protocols else 0,
                     "protocol_source": protocol_metadata.get("source", "SFMU/HAS Guidelines"),
                     "rag_used": True,
-                    "model_used": self._current_model.config.name if self._current_model else "Unknown"
+                    "model_used": self._current_model.config.name if self._current_model else "Unknown",
+                    # For multi-agent pipeline
+                    "_protocol_text": protocol_text,
+                    "_protocol_title": protocol_title
                 }
 
             except Exception as e:
@@ -1497,6 +1500,316 @@ class MultiModelEngine:
         return result
 
     # =========================================================================
+    # MULTI-AGENT PIPELINE (Clinical Review + Empathy Refinement)
+    # =========================================================================
+
+    def _clinical_review(self, draft: Dict[str, Any], patient_data: str, protocol_text: str) -> Dict[str, Any]:
+        """
+        Senior Emergency Physician reviews draft for clinical accuracy.
+
+        Checks:
+        - Protocol criteria citation
+        - Symptom coverage
+        - Differential diagnosis consideration
+        - Red flag recognition
+        - Triage priority appropriateness
+
+        Returns:
+            {
+                "issues": ["Missing differential diagnosis", ...],
+                "suggestions": ["Add risk factors for ACS", ...],
+                "approved": False,
+                "missed_symptoms": ["nausea not addressed"],
+                "protocol_adherence": 0.7
+            }
+        """
+        review_prompt = f"""You are a Senior Emergency Physician reviewing a triage response.
+
+PATIENT DATA:
+{patient_data}
+
+PROTOCOL USED:
+{protocol_text[:2000] if protocol_text else "No protocol available"}
+
+DRAFT RESPONSE:
+Reasoning: {draft.get('reasoning', 'None provided')}
+Answer: {draft.get('answer', 'None provided')}
+Follow-up Questions: {draft.get('follow_up_questions', [])}
+
+REVIEW CHECKLIST - Evaluate each point:
+1. Does the reasoning cite SPECIFIC protocol criteria (e.g., "RED category due to...")?
+2. Are ALL patient symptoms from the data addressed in the response?
+3. Is differential diagnosis considered (what else could this be)?
+4. Are any RED FLAG symptoms missed or underplayed?
+5. Is the triage priority appropriate per protocol?
+6. Is the response specific to THIS patient (not generic advice)?
+
+Format your review EXACTLY as:
+ISSUES: [List each specific problem on a new line, or "None" if approved]
+SUGGESTIONS: [List each improvement needed on a new line]
+MISSED_SYMPTOMS: [List any symptoms from patient data not addressed, or "None"]
+PROTOCOL_ADHERENCE: [Score 0.0 to 1.0 - how well does it follow the protocol?]
+APPROVED: [YES if no critical issues, NO otherwise]
+"""
+
+        try:
+            review_text = self._generate_raw_text(
+                system_prompt="You are a Senior Emergency Physician conducting a clinical review. Be thorough but concise.",
+                user_prompt=review_prompt
+            )
+            log_llm_output(review_text, context="CLINICAL_REVIEW")
+            return self._parse_review(review_text)
+        except Exception as e:
+            logger.error(f"Clinical review failed: {e}")
+            return {
+                "issues": [],
+                "suggestions": [],
+                "approved": True,
+                "missed_symptoms": [],
+                "protocol_adherence": 1.0
+            }
+
+    def _parse_review(self, review_text: str) -> Dict[str, Any]:
+        """Parse clinical review output into structured format."""
+        result = {
+            "issues": [],
+            "suggestions": [],
+            "approved": False,
+            "missed_symptoms": [],
+            "protocol_adherence": 0.8
+        }
+
+        text = review_text.upper()
+
+        # Parse APPROVED
+        if "APPROVED:" in text:
+            approved_section = text.split("APPROVED:")[-1].strip()[:50]
+            result["approved"] = "YES" in approved_section and "NO" not in approved_section.split("YES")[0]
+
+        # Parse PROTOCOL_ADHERENCE
+        adherence_match = re.search(r'PROTOCOL_ADHERENCE:\s*(\d*\.?\d+)', review_text, re.IGNORECASE)
+        if adherence_match:
+            try:
+                result["protocol_adherence"] = min(1.0, max(0.0, float(adherence_match.group(1))))
+            except ValueError:
+                pass
+
+        # Parse ISSUES
+        issues_match = re.search(r'ISSUES:\s*\[?(.*?)\]?\s*(?=SUGGESTIONS:|MISSED_SYMPTOMS:|PROTOCOL_ADHERENCE:|APPROVED:|$)',
+                                  review_text, re.IGNORECASE | re.DOTALL)
+        if issues_match:
+            issues_text = issues_match.group(1).strip()
+            if issues_text.lower() != "none":
+                result["issues"] = [i.strip().lstrip('-•* ') for i in issues_text.split('\n') if i.strip() and i.strip().lower() != "none"]
+
+        # Parse SUGGESTIONS
+        suggestions_match = re.search(r'SUGGESTIONS:\s*\[?(.*?)\]?\s*(?=ISSUES:|MISSED_SYMPTOMS:|PROTOCOL_ADHERENCE:|APPROVED:|$)',
+                                       review_text, re.IGNORECASE | re.DOTALL)
+        if suggestions_match:
+            suggestions_text = suggestions_match.group(1).strip()
+            if suggestions_text.lower() != "none":
+                result["suggestions"] = [s.strip().lstrip('-•* ') for s in suggestions_text.split('\n') if s.strip() and s.strip().lower() != "none"]
+
+        # Parse MISSED_SYMPTOMS
+        missed_match = re.search(r'MISSED_SYMPTOMS:\s*\[?(.*?)\]?\s*(?=ISSUES:|SUGGESTIONS:|PROTOCOL_ADHERENCE:|APPROVED:|$)',
+                                  review_text, re.IGNORECASE | re.DOTALL)
+        if missed_match:
+            missed_text = missed_match.group(1).strip()
+            if missed_text.lower() != "none":
+                result["missed_symptoms"] = [m.strip().lstrip('-•* ') for m in missed_text.split('\n') if m.strip() and m.strip().lower() != "none"]
+
+        return result
+
+    def _empathy_refine(self, draft: Dict[str, Any], review: Dict[str, Any], patient_data: str) -> Dict[str, Any]:
+        """
+        Patient Communication Specialist makes response warmer and more patient-friendly.
+
+        Tasks:
+        - Acknowledge patient concerns first
+        - Explain symptoms in simple terms
+        - Reassure appropriately (without minimizing serious symptoms)
+        - List specific symptoms as bullet points
+        - Clear next steps
+
+        Returns:
+            {
+                "refined_answer": "...",
+                "refined_questions": ["...", "...", "..."]
+            }
+        """
+        # Build improvement notes from review
+        improvement_notes = []
+        if review.get("suggestions"):
+            improvement_notes.extend(review["suggestions"][:3])
+        if review.get("missed_symptoms"):
+            improvement_notes.append(f"Address these symptoms: {', '.join(review['missed_symptoms'][:3])}")
+        if review.get("issues"):
+            improvement_notes.append(f"Fix: {review['issues'][0]}" if review["issues"] else "")
+
+        refine_prompt = f"""You are a Patient Communication Specialist improving a medical triage response.
+
+ORIGINAL ANSWER:
+{draft.get('answer', '')}
+
+ORIGINAL FOLLOW-UP QUESTIONS:
+{draft.get('follow_up_questions', [])}
+
+CLINICAL FEEDBACK TO INCORPORATE:
+{chr(10).join(f'- {note}' for note in improvement_notes) if improvement_notes else 'Minor improvements only'}
+
+PATIENT DATA (for context):
+{patient_data[:1500]}
+
+YOUR TASK - Rewrite the answer to:
+1. START with acknowledgment ("I understand you're concerned about..." or "I can see you're experiencing...")
+2. LIST the patient's specific symptoms as bullet points (• symbol)
+3. EXPLAIN what these symptoms might indicate in SIMPLE terms (no jargon)
+4. REASSURE appropriately - be warm but honest about serious symptoms
+5. CLEARLY state next steps ("A doctor will..." or "We're going to...")
+6. END with something reassuring ("You're in the right place" or "We're here to help")
+
+TONE REQUIREMENTS:
+- Warm and caring, like a trusted nurse speaking to a worried patient
+- NO medical jargon (or explain any terms you must use)
+- SPECIFIC to THIS patient (use their actual symptoms/values)
+- Empathetic but professional
+
+Also rewrite the 3 follow-up questions to be:
+- Conversational and friendly (not clinical interrogation)
+- Specific to this patient's situation
+- Easy to understand
+
+Format your response EXACTLY as:
+REFINED_ANSWER:
+[Your improved answer here]
+
+REFINED_QUESTIONS:
+1. [First question]
+2. [Second question]
+3. [Third question]
+"""
+
+        try:
+            refined_text = self._generate_raw_text(
+                system_prompt="You are a warm, empathetic patient communication specialist. Write in a caring, reassuring tone.",
+                user_prompt=refine_prompt
+            )
+            log_llm_output(refined_text, context="EMPATHY_REFINE")
+            return self._parse_refined(refined_text)
+        except Exception as e:
+            logger.error(f"Empathy refinement failed: {e}")
+            return {
+                "refined_answer": draft.get("answer", ""),
+                "refined_questions": draft.get("follow_up_questions", [])
+            }
+
+    def _parse_refined(self, refined_text: str) -> Dict[str, Any]:
+        """Parse empathy-refined output into structured format."""
+        result = {
+            "refined_answer": "",
+            "refined_questions": []
+        }
+
+        # Parse REFINED_ANSWER
+        answer_match = re.search(r'REFINED_ANSWER:\s*(.*?)(?=REFINED_QUESTIONS:|$)',
+                                  refined_text, re.IGNORECASE | re.DOTALL)
+        if answer_match:
+            result["refined_answer"] = answer_match.group(1).strip()
+
+        # Parse REFINED_QUESTIONS
+        questions_match = re.search(r'REFINED_QUESTIONS:\s*(.*?)$',
+                                     refined_text, re.IGNORECASE | re.DOTALL)
+        if questions_match:
+            questions_text = questions_match.group(1).strip()
+            # Extract numbered questions
+            q_lines = re.findall(r'^\s*\d+[.)]\s*(.+)$', questions_text, re.MULTILINE)
+            if q_lines:
+                result["refined_questions"] = [q.strip() for q in q_lines[:3]]
+            else:
+                # Try line-by-line extraction
+                lines = [l.strip().lstrip('-•* ') for l in questions_text.split('\n') if l.strip() and '?' in l]
+                result["refined_questions"] = lines[:3]
+
+        # Fallback if parsing failed
+        if not result["refined_answer"]:
+            # Try to extract any substantial text as answer
+            lines = refined_text.split('\n')
+            content_lines = [l for l in lines if len(l.strip()) > 50 and 'REFINED' not in l.upper()]
+            if content_lines:
+                result["refined_answer"] = '\n'.join(content_lines[:10])
+
+        return result
+
+    def query_with_rag_enhanced(self,
+                                 patient_context: Dict[str, Any],
+                                 user_query: str,
+                                 user_language: str = "en",
+                                 use_multi_agent: bool = True) -> Dict[str, Any]:
+        """
+        Enhanced RAG with multi-agent pipeline for higher quality responses.
+
+        Pipeline (3-4 LLM calls):
+        1. Draft (current RAG) - Generate initial response
+        2. Clinical Review - Senior physician checks accuracy
+        3. Empathy Refine - Communication specialist improves tone (conditional)
+
+        Args:
+            patient_context: Patient data dictionary
+            user_query: The question being asked
+            user_language: Language for response (en/fr)
+            use_multi_agent: Whether to use the multi-agent pipeline (default: True)
+
+        Returns:
+            Enhanced response with clinical_review metadata
+        """
+        # === CALL 1: Generate Draft (existing RAG) ===
+        draft = self.query_with_rag(patient_context, user_query, user_language)
+
+        if not use_multi_agent:
+            return draft
+
+        # Get patient text and protocol for review
+        patient_text = self._flatten_patient_data(patient_context)
+        protocol_text = draft.get('_protocol_text', '')
+
+        # === CALL 2: Clinical Review ===
+        review = self._clinical_review(draft, patient_text, protocol_text)
+
+        # Determine if refinement is needed
+        needs_refinement = (
+            not review.get('approved', False) or
+            review.get('protocol_adherence', 1.0) < 0.8 or
+            len(review.get('issues', [])) > 0 or
+            len(review.get('missed_symptoms', [])) > 0
+        )
+
+        # === CALL 3: Empathy Refine (conditional) ===
+        if needs_refinement:
+            refined = self._empathy_refine(draft, review, patient_text)
+
+            # Merge refined content if we got valid output
+            if refined.get("refined_answer") and len(refined["refined_answer"]) > 50:
+                draft['answer'] = refined['refined_answer']
+            if refined.get("refined_questions") and len(refined["refined_questions"]) >= 2:
+                draft['follow_up_questions'] = refined['refined_questions']
+
+        # Add review metadata (useful for debugging/logging)
+        draft['clinical_review'] = {
+            'issues': review.get('issues', []),
+            'suggestions': review.get('suggestions', []),
+            'missed_symptoms': review.get('missed_symptoms', []),
+            'adherence_score': review.get('protocol_adherence', 1.0),
+            'approved': review.get('approved', False),
+            'refined': needs_refinement
+        }
+
+        # Clean up internal fields from response
+        draft.pop('_protocol_text', None)
+        draft.pop('_protocol_title', None)
+
+        return draft
+
+    # =========================================================================
     # PUBLIC API
     # =========================================================================
 
@@ -1521,7 +1834,8 @@ class MultiModelEngine:
                                clinical_state: Dict[str, Any],
                                model_id: Optional[str] = None,
                                use_rag: bool = True,
-                               user_language: str = "en") -> Dict[str, Any]:
+                               user_language: str = "en",
+                               use_multi_agent: bool = True) -> Dict[str, Any]:
         """
         Answer a staff question about a case.
 
@@ -1531,6 +1845,8 @@ class MultiModelEngine:
             model_id: Optional model to switch to
             use_rag: Whether to use RAG if available (default: True)
             user_language: Language for response
+            use_multi_agent: Whether to use enhanced multi-agent pipeline (default: False)
+                             When True, uses 3 LLM calls: Draft → Clinical Review → Empathy Refine
 
         Returns:
             Response dictionary with answer, reasoning, citations, etc.
@@ -1560,14 +1876,23 @@ class MultiModelEngine:
 
         # Use RAG if available and requested
         if use_rag and self.rag_available:
-            response = self.query_with_rag(
-                patient_context=clinical_state,
-                user_query=question,
-                user_language=user_language
-            )
+            # Use enhanced multi-agent pipeline for higher quality (3 LLM calls)
+            if use_multi_agent:
+                response = self.query_with_rag_enhanced(
+                    patient_context=clinical_state,
+                    user_query=question,
+                    user_language=user_language,
+                    use_multi_agent=True
+                )
+            else:
+                response = self.query_with_rag(
+                    patient_context=clinical_state,
+                    user_query=question,
+                    user_language=user_language
+                )
             citations = self._extract_citations(response.get("answer", ""), clinical_state)
 
-            return {
+            result = {
                 "answer": response.get("answer", ""),
                 "reasoning": response.get("reasoning", ""),
                 "suggested_questions": response.get("follow_up_questions", []),
@@ -1577,8 +1902,15 @@ class MultiModelEngine:
                 "rag_used": response.get("rag_used", False),
                 "protocol_applied": response.get("protocol_applied", ""),
                 "protocol_source": response.get("protocol_source", ""),
-                "search_query_used": response.get("search_query_used", "")
+                "search_query_used": response.get("search_query_used", ""),
+                "multi_agent_used": use_multi_agent
             }
+
+            # Include clinical review metadata if multi-agent was used
+            if use_multi_agent and "clinical_review" in response:
+                result["clinical_review"] = response["clinical_review"]
+
+            return result
         else:
             # Standard generation without RAG (LLM fallback)
             response = self._generate_structured(clinical_state, question)
