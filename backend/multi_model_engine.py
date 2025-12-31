@@ -595,6 +595,26 @@ class MultiModelEngine:
             "Question 3",
             "your clinical analysis here",
             "your patient-friendly response here",
+            # RAG template echoes
+            "First follow-up question to ask the patient",
+            "Second follow-up question to ask the patient",
+            "Third follow-up question to ask the patient",
+            "First follow-up question?",
+            "Second follow-up question?",
+            "Third follow-up question?",
+            "[First follow-up question?]",
+            "[Second follow-up question?]",
+            "[Third follow-up question?]",
+            "[Symptom 1 from patient data]",
+            "[Symptom 2 from patient data]",
+            "[Additional symptoms as bullets]",
+            "[Start with a brief greeting and acknowledgment]",
+            "[End with reassurance and what happens next]",
+            "[Your clinical analysis referencing the protocol]",
+            "[Name of the protocol used]",
+            "[Specific question about symptoms?]",
+            "[Specific question about history?]",
+            "[Specific question about severity?]",
         ]
 
         for placeholder in echoed_placeholders:
@@ -757,8 +777,8 @@ class MultiModelEngine:
         """Robust JSON sanitizer for models using JSON grammar."""
         text = raw_output.strip()
 
-        # Strip <think>...</think> blocks (DeepSeek-R1)
-        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+        # Strip <think>/<thinking> blocks (DeepSeek-R1)
+        text = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', text, flags=re.DOTALL).strip()
 
         # Remove Markdown code blocks
         if text.startswith("```"):
@@ -1017,53 +1037,83 @@ class MultiModelEngine:
     # FRENCH PIVOT RAG PIPELINE
     # =========================================================================
 
+    # Chief complaint → French protocol keyword mapping for fallback
+    COMPLAINT_TO_FRENCH = {
+        "chest": "douleur thoracique",
+        "heart": "douleur thoracique cardiaque",
+        "head": "céphalée mal de tête",
+        "abdomen": "douleur abdominale",
+        "stomach": "douleur abdominale",
+        "breath": "dyspnée essoufflement",
+        "respiratory": "dyspnée respiratoire",
+        "fever": "fièvre température",
+        "trauma": "traumatisme blessure",
+        "allergy": "réaction allergique",
+        "psychiatric": "urgence psychiatrique",
+    }
+
     def _build_search_query(self, patient_context: Dict[str, Any]) -> str:
         """
-        Build a search query from patient data for DrBERT semantic search.
+        Build a SIMPLE, FOCUSED search query for DrBERT semantic search.
 
-        Uses MarianMT to translate English query to French for proper matching
-        against French medical protocols in the vector database.
+        Strategy: Keep query short and focused on medical concepts only.
+        Long, noisy queries create embeddings that don't match protocols.
         """
-        parts = []
+        # 1. Chief complaint is the PRIMARY signal
+        chief = patient_context.get("chief_complaint", "").replace("_", " ").strip()
 
-        # Chief complaint
-        chief = patient_context.get("chief_complaint", "")
-        if chief:
-            parts.append(chief)
-
-        # Key symptoms from answers
+        # 2. Extract only HIGH-SIGNAL symptoms (not all answers)
+        key_symptoms = []
         answers = patient_context.get("answers", {})
-        for key, val in answers.items():
-            if key.startswith("_"):
-                continue
-            if isinstance(val, bool) and val:
-                parts.append(key.replace("_", " "))
-            elif isinstance(val, dict):
-                # Extract label or value from dict-style answers
-                label = val.get("label") or val.get("value") or ""
-                if label:
-                    parts.append(f"{key.replace('_', ' ')}: {label}")
-            elif val and not isinstance(val, bool):
-                parts.append(f"{key.replace('_', ' ')}: {val}")
 
-        # Risk band context
-        risk = patient_context.get("risk_band", "")
-        if risk:
-            parts.append(f"risk: {risk}")
+        # Priority symptoms that help differentiate protocols
+        high_signal_keys = [
+            "shortness_of_breath", "breathing", "dyspnea",
+            "radiating", "radiation",
+            "fever", "temperature",
+            "nausea", "vomiting",
+            "severity", "pain_type",
+            "consciousness", "confusion",
+        ]
 
-        english_query = " ".join(parts)[:500]  # Limit length
+        for key in high_signal_keys:
+            if key in answers:
+                val = answers[key]
+                if isinstance(val, bool) and val:
+                    key_symptoms.append(key.replace("_", " "))
+                elif isinstance(val, dict):
+                    label = val.get("label", "")
+                    if label:
+                        key_symptoms.append(label)
 
-        # Translate to French for DrBERT matching
+        # 3. Build simple English query (max 3 symptoms)
+        symptom_str = " ".join(key_symptoms[:3])
+        english_query = f"{chief} {symptom_str}".strip()
+
+        logger.info(f"Search query (EN): '{english_query}'")
+
+        # 4. Translate to French
         try:
             if self._translation_engine is None:
                 self._translation_engine = get_translation_engine()
 
             french_query = self._translation_engine.translate_medical_query(english_query)
-            logger.info(f"Query translation: '{english_query[:80]}...' -> '{french_query[:80]}...'")
+            logger.info(f"Search query (FR): '{french_query}'")
             return french_query
         except Exception as e:
-            logger.warning(f"Translation failed, using English query: {e}")
-            return english_query
+            logger.warning(f"Translation failed: {e}")
+            # Fallback: Use keyword mapping
+            return self._get_french_fallback_query(chief)
+
+    def _get_french_fallback_query(self, chief_complaint: str) -> str:
+        """Get French query from keyword mapping when translation fails."""
+        chief_lower = chief_complaint.lower()
+        for keyword, french in self.COMPLAINT_TO_FRENCH.items():
+            if keyword in chief_lower:
+                logger.info(f"Using fallback French query: '{french}'")
+                return french
+        # Default fallback
+        return "symptômes médicaux urgence"
 
     def _build_rag_system_prompt(self,
                                   patient_card: str,
@@ -1110,20 +1160,21 @@ class MultiModelEngine:
             "5. DO NOT invent information not in the protocol or patient data.\n\n"
             "OUTPUT FORMAT - Use these EXACT markdown headers:\n\n"
             "## Reasoning\n"
-            "[Your clinical analysis referencing the protocol]\n\n"
+            "Write your clinical analysis here. Reference specific protocol criteria.\n\n"
             "## Answer\n"
-            "[Start with a brief greeting and acknowledgment]\n\n"
+            "Start with a brief greeting, then list the patient's symptoms as bullets:\n\n"
             "**Your reported symptoms:**\n"
-            "- [Symptom 1 from patient data]\n"
-            "- [Symptom 2 from patient data]\n"
-            "- [Additional symptoms as bullets]\n\n"
-            "[End with reassurance and what happens next]\n\n"
+            "- Chest pain (describe type and location)\n"
+            "- Shortness of breath\n"
+            "- (list other symptoms from PATIENT DATA)\n\n"
+            "End with reassurance about next steps.\n\n"
             "## Protocol Applied\n"
-            "[Name of the protocol used]\n\n"
+            "State which protocol you used (e.g., 'Douleur Thoracique - Niveau 2').\n\n"
             "## Questions\n"
-            "1. [First follow-up question?]\n"
-            "2. [Second follow-up question?]\n"
-            "3. [Third follow-up question?]\n\n"
+            "Ask 3 specific follow-up questions to assess urgency. Examples:\n"
+            "1. How long have you had this pain?\n"
+            "2. Have you experienced this before?\n"
+            "3. Are you taking any medications?\n\n"
             "WRITING STYLE:\n"
             "- For reasoning: Use medical terminology, reference the protocol.\n"
             "- For answer: Use simple, reassuring language. LIST SYMPTOMS AS BULLETS.\n"
@@ -1168,16 +1219,44 @@ class MultiModelEngine:
 
         if protocols:
             best_protocol = protocols[0]
+            relevance_score = best_protocol.get("relevance_score", 0)
             protocol_text = best_protocol.get("text", "")
             protocol_metadata = best_protocol.get("metadata", {})
             protocol_title = protocol_metadata.get("title", "")
 
             log_llm_output(
                 f"Protocol: {protocol_title}\n"
-                f"Score: {best_protocol.get('relevance_score', 0):.3f}\n"
+                f"Score: {relevance_score:.3f}\n"
                 f"Text Preview: {protocol_text[:200]}...",
                 context="RETRIEVED_PROTOCOL"
             )
+
+            # Fallback if semantic search failed (score too low)
+            if relevance_score < 0.1:
+                logger.warning(f"Low relevance score ({relevance_score:.3f}), trying keyword fallback")
+                fallback_query = self._get_french_fallback_query(
+                    patient_context.get("chief_complaint", "")
+                )
+                if fallback_query != search_query:
+                    # Retry with keyword-based query
+                    fallback_protocols = self._drbert_engine.search_protocols(
+                        french_query=fallback_query,
+                        n_results=n_protocols
+                    )
+                    if fallback_protocols:
+                        fallback_protocol = fallback_protocols[0]
+                        fallback_score = fallback_protocol.get("relevance_score", 0)
+                        if fallback_score > relevance_score:
+                            logger.info(f"Fallback improved score: {relevance_score:.3f} -> {fallback_score:.3f}")
+                            best_protocol = fallback_protocol
+                            protocol_text = best_protocol.get("text", "")
+                            protocol_metadata = best_protocol.get("metadata", {})
+                            protocol_title = protocol_metadata.get("title", "")
+                            log_llm_output(
+                                f"FALLBACK Protocol: {protocol_title}\n"
+                                f"Score: {fallback_score:.3f}",
+                                context="RETRIEVED_PROTOCOL_FALLBACK"
+                            )
         else:
             log_llm_output("No protocols found", context="RETRIEVED_PROTOCOL")
 
@@ -1207,14 +1286,12 @@ class MultiModelEngine:
                 "## Reasoning\n"
                 "Your clinical analysis based on the protocol. Reference specific protocol criteria.\n\n"
                 "## Answer\n"
-                "Your response to the staff member in simple terms. Explain the triage decision.\n\n"
+                "Your response to the staff member. List the patient's symptoms as bullet points.\n\n"
                 "## Protocol Applied\n"
-                "The specific protocol name and section you used for this assessment.\n\n"
+                "The specific protocol name and section you used.\n\n"
                 "## Questions\n"
-                "- First follow-up question to ask the patient?\n"
-                "- Second follow-up question to ask the patient?\n"
-                "- Third follow-up question to ask the patient?\n\n"
-                "IMPORTANT: Use EXACTLY these headers. Do not change or omit them."
+                "Write 3 specific follow-up questions for this patient.\n\n"
+                "IMPORTANT: Use EXACTLY these headers. Do not echo instructions. Write actual content."
             )
 
         with self._lock:
@@ -1282,12 +1359,13 @@ class MultiModelEngine:
                 return self._generate_structured_fallback(patient_context, user_query)
 
     def _strip_think_tags(self, text: str) -> tuple:
-        """Strip <think>...</think> tags from DeepSeek-R1 output, return (cleaned, reasoning)."""
+        """Strip <think>/<thinking> tags from DeepSeek-R1 output, return (cleaned, reasoning)."""
         reasoning = ""
-        think_match = re.search(r'<think>(.*?)</think>', text, flags=re.DOTALL)
+        # Match both <think> and <thinking> variants
+        think_match = re.search(r'<think(?:ing)?>(.*?)</think(?:ing)?>', text, flags=re.DOTALL)
         if think_match:
             reasoning = think_match.group(1).strip()
-        cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+        cleaned = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', text, flags=re.DOTALL).strip()
         return cleaned, reasoning
 
     def _parse_rag_output(self, raw_str: str) -> Dict[str, Any]:
