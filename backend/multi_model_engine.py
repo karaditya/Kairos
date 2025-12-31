@@ -26,7 +26,7 @@ from model_registry import (
 )
 from response_validator import TriageResponseValidator, validate_triage_response
 from retry_handler import GenerationRetryHandler
-from translation_engine import get_translation_engine, TranslationEngine
+from drbert_engine import detect_language
 
 # =============================================================================
 # JSON SCHEMAS (for models that support JSON grammar)
@@ -40,17 +40,6 @@ TRIAGE_CHAT_SCHEMA = {
         "follow_up_questions": {"type": "array", "items": {"type": "string"}}
     },
     "required": ["reasoning", "answer", "follow_up_questions"]
-}
-
-# French Pivot: Schema for symptom translation to French medical terminology
-FRENCH_PIVOT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "french_terms": {"type": "string", "description": "Symptoms in French medical terminology"},
-        "medical_category": {"type": "string", "description": "Medical category (e.g., cardiac, respiratory)"},
-        "urgency_indicators": {"type": "array", "items": {"type": "string"}}
-    },
-    "required": ["french_terms", "medical_category"]
 }
 
 # RAG-grounded response schema
@@ -119,9 +108,6 @@ class MultiModelEngine:
 
         # DrBERT engine reference for RAG (set externally)
         self._drbert_engine: Optional[Any] = None
-
-        # Translation engine for French pivot RAG (lazy loaded)
-        self._translation_engine: Optional[TranslationEngine] = None
 
         # Auto-detect GPU layers if not explicitly set
         env_gpu_layers = os.environ.get("N_GPU_LAYERS")
@@ -1034,30 +1020,62 @@ class MultiModelEngine:
         return sections
 
     # =========================================================================
-    # FRENCH PIVOT RAG PIPELINE
+    # DUAL-LANGUAGE RAG PIPELINE (No Translation)
     # =========================================================================
 
-    # Chief complaint → French protocol keyword mapping for fallback
-    COMPLAINT_TO_FRENCH = {
-        "chest": "douleur thoracique",
-        "heart": "douleur thoracique cardiaque",
-        "head": "céphalée mal de tête",
-        "abdomen": "douleur abdominale",
-        "stomach": "douleur abdominale",
-        "breath": "dyspnée essoufflement",
-        "respiratory": "dyspnée respiratoire",
-        "fever": "fièvre température",
-        "trauma": "traumatisme blessure",
-        "allergy": "réaction allergique",
-        "psychiatric": "urgence psychiatrique",
-    }
+    # Keywords that indicate a medical/triage-related query
+    MEDICAL_QUERY_KEYWORDS = [
+        "pain", "symptom", "patient", "hurt", "ache", "fever", "breathing",
+        "chest", "head", "stomach", "nausea", "dizzy", "blood", "injury",
+        "swelling", "rash", "cough", "vomit", "faint", "weak", "tired",
+        "medication", "allergy", "emergency", "urgent", "hospital", "doctor",
+        "triage", "assessment", "condition", "diagnosis", "treatment",
+        "douleur", "fièvre", "mal", "symptôme", "urgence", "blessure"
+    ]
 
-    def _build_search_query(self, patient_context: Dict[str, Any]) -> str:
+    def _is_medical_query(self, query: str) -> bool:
         """
-        Build a SIMPLE, FOCUSED search query for DrBERT semantic search.
+        Check if a query is medical/triage-related.
+        Returns False for off-topic questions like 'Where is Paris?'
+        """
+        query_lower = query.lower()
 
-        Strategy: Keep query short and focused on medical concepts only.
-        Long, noisy queries create embeddings that don't match protocols.
+        # Check for medical keywords
+        for keyword in self.MEDICAL_QUERY_KEYWORDS:
+            if keyword in query_lower:
+                return True
+
+        # Common non-medical patterns
+        non_medical_patterns = [
+            r'\bwhere\s+is\b',
+            r'\bwhat\s+is\s+the\s+capital\b',
+            r'\btell\s+me\s+about\b(?!.*(?:pain|symptom|condition))',
+            r'\bhow\s+do\s+i\s+get\s+to\b',
+            r'\bweather\b',
+            r'\brecipe\b',
+            r'\bparis\b',
+            r'\blondon\b',
+            r'\bnew\s+york\b',
+        ]
+
+        for pattern in non_medical_patterns:
+            if re.search(pattern, query_lower):
+                return False
+
+        # Default: if patient context exists with symptoms, it's medical
+        return True
+
+    def _build_search_query(self, patient_context: Dict[str, Any]) -> tuple:
+        """
+        Build a SIMPLE, FOCUSED search query for semantic search.
+
+        Strategy:
+        1. Keep query short and focused on medical concepts only
+        2. Detect language from patient data
+        3. Return query in native language (no translation needed)
+
+        Returns:
+            tuple: (query_string, detected_language)
         """
         # 1. Chief complaint is the PRIMARY signal
         chief = patient_context.get("chief_complaint", "").replace("_", " ").strip()
@@ -1086,47 +1104,31 @@ class MultiModelEngine:
                     if label:
                         key_symptoms.append(label)
 
-        # 3. Build simple English query (max 3 symptoms)
+        # 3. Build query with chief complaint + symptoms
         symptom_str = " ".join(key_symptoms[:3])
-        english_query = f"{chief} {symptom_str}".strip()
+        query = f"{chief} {symptom_str}".strip()
 
-        logger.info(f"Search query (EN): '{english_query}'")
+        # 4. Detect language from the query
+        language = detect_language(query)
 
-        # 4. Translate to French
-        try:
-            if self._translation_engine is None:
-                self._translation_engine = get_translation_engine()
+        logger.info(f"Search query: '{query}' (language: {language})")
 
-            french_query = self._translation_engine.translate_medical_query(english_query)
-            logger.info(f"Search query (FR): '{french_query}'")
-            return french_query
-        except Exception as e:
-            logger.warning(f"Translation failed: {e}")
-            # Fallback: Use keyword mapping
-            return self._get_french_fallback_query(chief)
-
-    def _get_french_fallback_query(self, chief_complaint: str) -> str:
-        """Get French query from keyword mapping when translation fails."""
-        chief_lower = chief_complaint.lower()
-        for keyword, french in self.COMPLAINT_TO_FRENCH.items():
-            if keyword in chief_lower:
-                logger.info(f"Using fallback French query: '{french}'")
-                return french
-        # Default fallback
-        return "symptômes médicaux urgence"
+        return query, language
 
     def _build_rag_system_prompt(self,
                                   patient_card: str,
                                   protocol_text: str,
                                   protocol_metadata: Dict[str, Any],
+                                  protocol_language: str = "en",
                                   user_language: str = "en") -> str:
         """
-        Build system prompt with retrieved French protocol as ground truth.
+        Build system prompt with retrieved protocol as ground truth.
 
         Args:
             patient_card: Flattened patient data
-            protocol_text: Retrieved French protocol text
+            protocol_text: Retrieved protocol text (EN or FR)
             protocol_metadata: Protocol metadata (title, source, etc.)
+            protocol_language: Language of the retrieved protocol
             user_language: User's language for response
 
         Returns:
@@ -1140,10 +1142,11 @@ class MultiModelEngine:
         }.get(user_language, "Respond in English.")
 
         protocol_title = protocol_metadata.get("title", "Medical Protocol")
-        protocol_source = protocol_metadata.get("source", "SFMU/HAS")
+        protocol_source = protocol_metadata.get("source", "SFMU/HAS Guidelines")
+        protocol_lang_label = "ENGLISH" if protocol_language == "en" else "FRENCH"
 
         return (
-            "You are a medical triage assistant. You MUST use the FRENCH PROTOCOL below "
+            f"You are a medical triage assistant. You MUST use the {protocol_lang_label} PROTOCOL below "
             "as your SOURCE OF TRUTH for medical decisions.\n\n"
             "═══════════════════════════════════════════════════════════════\n"
             f"📋 OFFICIAL PROTOCOL: {protocol_title}\n"
@@ -1169,7 +1172,7 @@ class MultiModelEngine:
             "- (list other symptoms from PATIENT DATA)\n\n"
             "End with reassurance about next steps.\n\n"
             "## Protocol Applied\n"
-            "State which protocol you used (e.g., 'Douleur Thoracique - Niveau 2').\n\n"
+            f"State which protocol you used (e.g., '{protocol_title}').\n\n"
             "## Questions\n"
             "Ask 3 specific follow-up questions to assess urgency. Examples:\n"
             "1. How long have you had this pain?\n"
@@ -1188,11 +1191,11 @@ class MultiModelEngine:
                        user_language: str = "en",
                        n_protocols: int = 1) -> Dict[str, Any]:
         """
-        Query with RAG Pipeline.
+        Query with Dual-Language RAG Pipeline (No Translation).
 
         The pipeline:
-        1. BUILD: Extract symptoms from patient data
-        2. RETRIEVE: DrBERT searches ChromaDB semantically
+        1. BUILD: Extract symptoms + detect language from patient data
+        2. RETRIEVE: Search native language collection (EN or FR)
         3. SYNTHESIZE: LLM generates response grounded in protocol
 
         Returns: {answer, follow_up_questions, protocol, reasoning}
@@ -1202,20 +1205,22 @@ class MultiModelEngine:
             logger.warning("RAG not available. Falling back to standard generation.")
             return self._generate_structured_fallback(patient_context, user_query)
 
-        # === STEP 1: BUILD SEARCH QUERY ===
-        search_query = self._build_search_query(patient_context)
+        # === STEP 1: BUILD SEARCH QUERY + DETECT LANGUAGE ===
+        search_query, detected_language = self._build_search_query(patient_context)
 
-        log_llm_output(f"Search Query: {search_query}", context="DRBERT_QUERY")
+        log_llm_output(f"Search Query: {search_query} (lang: {detected_language})", context="DRBERT_QUERY")
 
-        # === STEP 2: RETRIEVE FROM DRBERT ===
+        # === STEP 2: RETRIEVE FROM DRBERT (Native Language) ===
         protocols = self._drbert_engine.search_protocols(
-            french_query=search_query,
+            query=search_query,
+            language=detected_language,
             n_results=n_protocols
         )
 
         protocol_text = ""
         protocol_metadata = {}
         protocol_title = ""
+        protocol_language = detected_language
 
         if protocols:
             best_protocol = protocols[0]
@@ -1223,40 +1228,15 @@ class MultiModelEngine:
             protocol_text = best_protocol.get("text", "")
             protocol_metadata = best_protocol.get("metadata", {})
             protocol_title = protocol_metadata.get("title", "")
+            protocol_language = best_protocol.get("language", detected_language)
 
             log_llm_output(
                 f"Protocol: {protocol_title}\n"
+                f"Language: {protocol_language}\n"
                 f"Score: {relevance_score:.3f}\n"
                 f"Text Preview: {protocol_text[:200]}...",
                 context="RETRIEVED_PROTOCOL"
             )
-
-            # Fallback if semantic search failed (score too low)
-            if relevance_score < 0.1:
-                logger.warning(f"Low relevance score ({relevance_score:.3f}), trying keyword fallback")
-                fallback_query = self._get_french_fallback_query(
-                    patient_context.get("chief_complaint", "")
-                )
-                if fallback_query != search_query:
-                    # Retry with keyword-based query
-                    fallback_protocols = self._drbert_engine.search_protocols(
-                        french_query=fallback_query,
-                        n_results=n_protocols
-                    )
-                    if fallback_protocols:
-                        fallback_protocol = fallback_protocols[0]
-                        fallback_score = fallback_protocol.get("relevance_score", 0)
-                        if fallback_score > relevance_score:
-                            logger.info(f"Fallback improved score: {relevance_score:.3f} -> {fallback_score:.3f}")
-                            best_protocol = fallback_protocol
-                            protocol_text = best_protocol.get("text", "")
-                            protocol_metadata = best_protocol.get("metadata", {})
-                            protocol_title = protocol_metadata.get("title", "")
-                            log_llm_output(
-                                f"FALLBACK Protocol: {protocol_title}\n"
-                                f"Score: {fallback_score:.3f}",
-                                context="RETRIEVED_PROTOCOL_FALLBACK"
-                            )
         else:
             log_llm_output("No protocols found", context="RETRIEVED_PROTOCOL")
 
@@ -1266,6 +1246,7 @@ class MultiModelEngine:
             patient_card=patient_card,
             protocol_text=protocol_text,
             protocol_metadata=protocol_metadata,
+            protocol_language=protocol_language,
             user_language=user_language
         )
 
@@ -1348,8 +1329,10 @@ class MultiModelEngine:
                     "protocol_applied": validated.get("protocol_applied", protocol_title),
                     "follow_up_questions": validated.get("follow_up_questions", [])[:3],
                     "search_query_used": search_query,
+                    "detected_language": detected_language,
+                    "protocol_language": protocol_language,
                     "protocol_relevance": protocols[0].get("relevance_score", 0) if protocols else 0,
-                    "protocol_source": protocol_metadata.get("source", "SFMU/HAS"),
+                    "protocol_source": protocol_metadata.get("source", "SFMU/HAS Guidelines"),
                     "rag_used": True,
                     "model_used": self._current_model.config.name if self._current_model else "Unknown"
                 }
@@ -1554,6 +1537,26 @@ class MultiModelEngine:
         """
         if model_id:
             self.switch_model(model_id)
+
+        # Check if the question is medical-related
+        if not self._is_medical_query(question):
+            return {
+                "answer": "I'm a medical triage assistant focused on patient assessment. I can help you with questions about this patient's symptoms, condition, or triage priority. Is there anything specific about the patient's case you'd like to know?",
+                "reasoning": "Query detected as non-medical. This system is designed for clinical triage support.",
+                "suggested_questions": [
+                    "What is the patient's triage priority?",
+                    "What symptoms should I be concerned about?",
+                    "What are the recommended next steps?"
+                ],
+                "has_reasoning": True,
+                "cited_data": [],
+                "model_used": "System",
+                "rag_used": False,
+                "protocol_applied": "",
+                "protocol_source": "",
+                "search_query_used": "",
+                "off_topic": True
+            }
 
         # Use RAG if available and requested
         if use_rag and self.rag_available:

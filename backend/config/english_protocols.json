@@ -1,0 +1,83 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "source": "Manchester Triage System (MTS)",
+    "language": "en",
+    "last_updated": "2024-01-01",
+    "reference": "Manchester Triage Group Guidelines"
+  },
+  "protocols": [
+    {
+      "id": "mts-chest-pain",
+      "title": "Chest Pain - Manchester Triage Protocol",
+      "text": "CHEST PAIN (Cardiac-type pain, Central chest pain, Crushing pain)\n\nRED - Immediate (Category 1):\n- Airway compromise\n- Inadequate breathing\n- Shock (cold, clammy, HR>100, SBP<90)\n- Unresponsive or only responds to pain\n- Ongoing cardiac arrest\n\nORANGE - Very Urgent (Category 2):\n- Severe pain (8-10/10)\n- Cardiac pain: crushing, tight, radiating to arm/jaw/back\n- Abnormal pulse (irregular, very fast >120, very slow <50)\n- New neurological deficit\n- Significant cardiac history with new symptoms\n- Hypotension (SBP <100)\n- Acutely short of breath\n\nYELLOW - Urgent (Category 3):\n- Moderate pain (4-7/10)\n- Pleuritic pain (sharp, worse on breathing)\n- Cardiac risk factors (diabetes, hypertension, smoking, family history)\n- History of cardiac disease with similar previous pain\n- Age >35 with new chest pain\n- Associated symptoms: nausea, sweating, palpitations\n\nGREEN - Standard (Category 4):\n- Mild pain (<4/10)\n- Musculoskeletal chest pain (reproducible on palpation)\n- Recent minor illness (cold/cough) with chest discomfort\n- Anxiety-related chest tightness\n- Known non-cardiac cause\n\nKey Discriminators:\n- Cardiac pain, Pleuritic pain, Severity of pain\n- Abnormal pulse, Signs of shock, Hypotension\n- Associated shortness of breath, Diaphoresis\n\nImmediate Actions:\n- ECG within 10 minutes for Orange/Red\n- Continuous monitoring for Red/Orange\n- IV access, Aspirin if cardiac suspected",
+      "category": "cardiac",
+      "source": "MTS",
+      "priority_level": "1-2",
+      "keywords": ["chest pain", "heart attack", "cardiac", "crushing", "angina", "MI", "ACS", "pressure", "tight"]
+    },
+    {
+      "id": "mts-shortness-of-breath",
+      "title": "Shortness of Breath - Manchester Triage Protocol",
+      "text": "SHORTNESS OF BREATH (Difficulty breathing, Breathlessness, Respiratory distress)\n\nRED - Immediate (Category 1):\n- Airway compromise (stridor, drooling, unable to swallow)\n- Inadequate breathing (apnoea, gasping, exhaustion)\n- Shock\n- Unresponsive or responds to pain only\n- Very low SpO2 (<85% on air)\n- Cannot speak in sentences\n\nORANGE - Very Urgent (Category 2):\n- Severe respiratory distress (accessory muscle use, tripod position)\n- SpO2 <92% on air\n- Unable to speak in full sentences\n- Stridor or severe wheeze\n- Altered conscious level\n- Exhaustion from breathing effort\n- Acute onset severe breathlessness\n- Anaphylaxis features (rash + breathing difficulty)\n\nYELLOW - Urgent (Category 3):\n- Moderate respiratory distress\n- SpO2 92-94% on air\n- New wheeze or increased wheeze\n- Increased work of breathing\n- Known asthma/COPD with worsening symptoms\n- Fever with respiratory symptoms\n- Unable to complete sentences comfortably\n\nGREEN - Standard (Category 4):\n- Mild breathlessness on exertion only\n- SpO2 >95% on air\n- Normal respiratory rate and effort\n- Chronic stable symptoms\n- Recent mild illness with slight breathlessness\n\nKey Discriminators:\n- SpO2 level, Respiratory rate, Work of breathing\n- Ability to speak in sentences\n- Stridor, Wheeze, Signs of exhaustion\n- Associated features (fever, rash, cough)\n\nImmediate Actions:\n- Oxygen therapy if SpO2 <94%\n- Sitting upright position\n- Nebulisers if wheeze/bronchospasm\n- Peak flow if asthma",
+      "category": "respiratory",
+      "source": "MTS",
+      "priority_level": "1-2",
+      "keywords": ["shortness of breath", "breathing difficulty", "dyspnea", "breathless", "wheeze", "asthma", "COPD", "respiratory"]
+    },
+    {
+      "id": "mts-headache",
+      "title": "Headache - Manchester Triage Protocol",
+      "text": "HEADACHE (Head pain, Migraine, Severe headache)\n\nRED - Immediate (Category 1):\n- Airway compromise\n- Inadequate breathing\n- Shock\n- Unresponsive or responds to pain only\n- Currently fitting\n- Signs of meningococcal septicaemia (purpuric rash)\n\nORANGE - Very Urgent (Category 2):\n- Sudden onset severe headache (thunderclap - worst ever, peak within seconds)\n- Altered conscious level (drowsy, confused)\n- New focal neurological deficit (weakness, speech problems, visual loss)\n- Signs of meningism (neck stiffness, photophobia, Kernig's positive)\n- Non-blanching rash with fever\n- Very high temperature (>40°C)\n- Severe pain (8-10/10)\n- Recent significant head injury with new headache\n\nYELLOW - Urgent (Category 3):\n- Moderate to severe pain (4-7/10)\n- First severe headache or different from usual\n- Headache with fever\n- Headache with vomiting\n- Headache with visual disturbance\n- Age >50 with new type headache\n- Known raised intracranial pressure\n- Immunocompromised with headache and fever\n\nGREEN - Standard (Category 4):\n- Mild headache (<4/10)\n- Known migraine with typical features\n- Tension-type headache\n- Recent mild viral illness\n- Headache responding to simple analgesia\n\nKey Discriminators:\n- Sudden onset, Severity, Thunderclap quality\n- Signs of meningism, Fever, Rash\n- Neurological deficit, Altered consciousness\n- History of recent trauma\n\nImmediate Actions:\n- Urgent CT head if thunderclap headache\n- LP if meningitis suspected (after CT)\n- Neurological observations\n- Analgesia and antiemetics",
+      "category": "neurological",
+      "source": "MTS",
+      "priority_level": "1-2",
+      "keywords": ["headache", "migraine", "head pain", "meningitis", "thunderclap", "worst headache", "neurological"]
+    },
+    {
+      "id": "mts-abdominal-pain",
+      "title": "Abdominal Pain - Manchester Triage Protocol",
+      "text": "ABDOMINAL PAIN (Stomach pain, Belly pain, Gastric pain)\n\nRED - Immediate (Category 1):\n- Airway compromise\n- Inadequate breathing\n- Shock (cold, clammy, tachycardia, hypotension)\n- Unresponsive or responds to pain only\n- Massive haematemesis or rectal bleeding\n- Rigid abdomen with severe pain\n\nORANGE - Very Urgent (Category 2):\n- Severe pain (8-10/10)\n- Signs of peritonism (guarding, rigidity, rebound)\n- Haematemesis or melaena (fresh or altered blood)\n- Absent bowel sounds with distension\n- Severe vomiting with dehydration signs\n- Signs of ectopic pregnancy (female of childbearing age with abdominal pain and PV bleeding)\n- Known AAA with abdominal or back pain\n- Significant abdominal trauma\n\nYELLOW - Urgent (Category 3):\n- Moderate pain (4-7/10)\n- Localised tenderness (RIF, RUQ, LIF)\n- Vomiting without ability to tolerate fluids\n- No passage of stool/flatus >24 hours\n- Fever with abdominal pain\n- Pregnancy with abdominal pain\n- Testicular pain (male)\n- Urinary symptoms with loin pain\n\nGREEN - Standard (Category 4):\n- Mild pain (<4/10)\n- Soft non-tender abdomen\n- Normal bowel function\n- No vomiting or mild self-limiting vomiting\n- Recent dietary indiscretion\n- Known IBS with typical symptoms\n\nKey Discriminators:\n- Severity of pain, Peritonism, Rigidity\n- GI bleeding (haematemesis, melaena, fresh blood)\n- Obstruction signs, Dehydration\n- Pregnancy status in females\n\nImmediate Actions:\n- IV access and bloods for Orange/Red\n- Pregnancy test in females of childbearing age\n- Nil by mouth if surgical abdomen\n- Analgesia (do not delay for surgical assessment)",
+      "category": "abdominal",
+      "source": "MTS",
+      "priority_level": "1-2",
+      "keywords": ["abdominal pain", "stomach pain", "belly pain", "appendicitis", "vomiting", "surgical", "GI bleed"]
+    },
+    {
+      "id": "mts-unwell-adult",
+      "title": "Unwell Adult with Fever - Manchester Triage Protocol",
+      "text": "UNWELL ADULT / FEVER (Generally unwell, Pyrexia, High temperature, Infection)\n\nRED - Immediate (Category 1):\n- Airway compromise\n- Inadequate breathing\n- Shock (cold peripheries, mottled, capillary refill >4s, hypotension)\n- Unresponsive or responds to pain only\n- Purpuric/non-blanching rash with fever (meningococcal sepsis)\n\nORANGE - Very Urgent (Category 2):\n- Very hot adult (temp >40°C / >104°F)\n- Rigors or uncontrollable shaking\n- Non-blanching rash\n- Signs of severe sepsis (tachycardia >100, tachypnoea >25, confusion)\n- Immunocompromised patient (chemo, steroids, HIV, splenectomy)\n- Acutely confused or drowsy\n- Purpura or petechiae with fever\n- Unable to stand or walk\n- Severe pain\n\nYELLOW - Urgent (Category 3):\n- Hot adult (temp 38-40°C / 100-104°F)\n- Localising signs of infection (cough, dysuria, cellulitis)\n- Known infection not responding to antibiotics\n- Return from malaria-endemic area with fever\n- Persistent vomiting\n- Moderate pain\n- Recent surgery or invasive procedure\n\nGREEN - Standard (Category 4):\n- Warm (temp <38°C / <100°F)\n- No localising signs\n- Self-caring and mobile\n- Tolerating oral fluids\n- Recent mild viral illness\n- Low-grade temperature only\n\nKey Discriminators:\n- Temperature, Signs of sepsis/shock\n- Non-blanching rash, Purpura\n- Immunocompromise status\n- Travel history, Localising symptoms\n\nImmediate Actions:\n- Sepsis 6 pathway if sepsis suspected\n- Blood cultures before antibiotics\n- IV access and fluids if shocked\n- Malaria screen if travel history",
+      "category": "infectious",
+      "source": "MTS",
+      "priority_level": "1-2",
+      "keywords": ["fever", "temperature", "infection", "sepsis", "unwell", "pyrexia", "rigors", "chills"]
+    },
+    {
+      "id": "mts-trauma",
+      "title": "Major Trauma - Manchester Triage Protocol",
+      "text": "MAJOR TRAUMA (Injury, Accident, Fall, RTC)\n\nRED - Immediate (Category 1):\n- Airway compromise (stridor, unable to speak, facial burns)\n- Inadequate breathing\n- Shock (trauma with signs of haemorrhage)\n- Unresponsive or responds to pain only (GCS <9)\n- Exsanguinating haemorrhage\n- Traumatic amputation (major limb)\n- Penetrating injury to chest/abdomen/neck\n\nORANGE - Very Urgent (Category 2):\n- Significant mechanism (high speed RTC, fall >3m, ejection from vehicle)\n- GCS 9-14 or any LOC\n- Open or depressed skull fracture\n- Suspected spinal injury with neurological symptoms\n- Multiple long bone fractures\n- Crush injury >15 minutes\n- Burns >15% BSA adult (or airway concern)\n- Penetrating limb injury with neurovascular compromise\n- Severe pain\n- Significant blood loss (visible or suspected)\n\nYELLOW - Urgent (Category 3):\n- Moderate mechanism of injury\n- Single long bone fracture or dislocation\n- Head injury with brief or no LOC, now GCS 15\n- Burns 5-15% BSA (not involving face/airway)\n- Lacerations requiring suturing\n- Moderate pain\n- Unable to weight bear\n- Spinal tenderness without neurological deficit\n\nGREEN - Standard (Category 4):\n- Minor mechanism\n- Small burns (<5% BSA, superficial)\n- Minor soft tissue injury\n- Mild pain\n- Walking wounded with minor injury\n- Simple wounds/abrasions\n\nKey Discriminators:\n- Mechanism of injury, GCS/consciousness\n- Airway, Breathing, Circulation status\n- Obvious fractures, Neurovascular compromise\n- Burns extent and location\n\nImmediate Actions:\n- C-spine immobilisation if mechanism indicates\n- Trauma team activation for major trauma\n- Haemorrhage control\n- Analgesia (IV for Orange/Red)",
+      "category": "trauma",
+      "source": "MTS",
+      "priority_level": "1-2",
+      "keywords": ["trauma", "injury", "accident", "fracture", "fall", "RTC", "wound", "burns"]
+    },
+    {
+      "id": "mts-allergy",
+      "title": "Allergic Reaction - Manchester Triage Protocol",
+      "text": "ALLERGIC REACTION (Allergy, Anaphylaxis, Hives, Swelling)\n\nRED - Immediate (Category 1):\n- Airway compromise (stridor, tongue/throat swelling, unable to swallow)\n- Inadequate breathing (severe wheeze, silent chest)\n- Shock (hypotension, tachycardia, clammy)\n- Unresponsive or responds to pain only\n- Known anaphylaxis in progress\n\nORANGE - Very Urgent (Category 2):\n- Stridor or respiratory distress with allergic symptoms\n- Facial or lip swelling (angioedema)\n- Spreading urticaria with systemic symptoms (dizziness, nausea)\n- Previous anaphylaxis with current exposure to allergen\n- Difficulty swallowing or speaking\n- Wheeze with allergic reaction\n- Abdominal symptoms with skin changes (anaphylaxis feature)\n- Hypotension or near-syncope\n\nYELLOW - Urgent (Category 3):\n- Widespread urticaria (hives) without systemic symptoms\n- Localised angioedema (not face/airway)\n- Moderate itch/discomfort\n- Known allergy with new exposure (monitoring needed)\n- Allergic reaction not responding to antihistamines\n- Associated GI symptoms (vomiting, diarrhoea)\n\nGREEN - Standard (Category 4):\n- Localised urticaria only\n- Mild itching\n- No systemic features\n- Known mild allergic reaction, responding to treatment\n- Contact dermatitis\n- Insect bite with local reaction only\n\nKey Discriminators:\n- Airway swelling (face, tongue, throat)\n- Breathing difficulty, Wheeze, Stridor\n- Cardiovascular compromise\n- Speed of onset, Previous anaphylaxis history\n\nImmediate Actions:\n- IM Adrenaline for anaphylaxis (0.5mg 1:1000)\n- High flow oxygen\n- IV access and fluids\n- Antihistamines and steroids\n- Continuous monitoring",
+      "category": "allergy",
+      "source": "MTS",
+      "priority_level": "1-2",
+      "keywords": ["allergy", "anaphylaxis", "hives", "urticaria", "swelling", "angioedema", "allergic reaction"]
+    },
+    {
+      "id": "mts-mental-health",
+      "title": "Mental Health Crisis - Manchester Triage Protocol",
+      "text": "MENTAL HEALTH (Psychiatric emergency, Self-harm, Suicidal, Agitation)\n\nRED - Immediate (Category 1):\n- Airway compromise\n- Inadequate breathing\n- Shock\n- Unresponsive (medical cause vs overdose)\n- Currently actively harming self\n- Currently actively harming others\n- Medical emergency from overdose/self-harm\n\nORANGE - Very Urgent (Category 2):\n- High risk of immediate self-harm or suicide\n- Recent significant self-harm requiring treatment\n- Significant overdose (actual or suspected)\n- Severe agitation with risk to self or others\n- Acute psychosis with disturbed behaviour\n- Severe distress\n- Needing physical restraint\n- Command hallucinations to harm self/others\n- Brought by police under Section 136\n\nYELLOW - Urgent (Category 3):\n- Moderate risk of self-harm\n- Recent self-harm (wounds dressed, medically stable)\n- Suicidal ideation without immediate plan\n- Moderate agitation\n- Acute anxiety/panic attack\n- Known mental health crisis, worsening\n- Alcohol/drug intoxication with psychiatric symptoms\n- Distressed but able to engage\n\nGREEN - Standard (Category 4):\n- Low risk, seeking mental health support\n- Chronic mental health symptoms, no acute change\n- Anxiety symptoms, not in crisis\n- Requests for mental health review\n- Social crisis without psychiatric emergency\n- Medication review/repeat prescription issues\n\nKey Discriminators:\n- Risk to self, Risk to others\n- Active self-harm vs ideation\n- Overdose/medical sequelae\n- Level of agitation, Ability to engage\n- Psychotic symptoms, Command hallucinations\n\nImmediate Actions:\n- Treat medical emergency first\n- Safe environment (ligature-free, supervised)\n- 1:1 observation for high risk\n- De-escalation techniques\n- Psychiatric liaison/crisis team referral",
+      "category": "psychiatric",
+      "source": "MTS",
+      "priority_level": "1-2",
+      "keywords": ["mental health", "suicide", "self-harm", "psychiatric", "overdose", "agitation", "psychosis", "anxiety"]
+    }
+  ]
+}

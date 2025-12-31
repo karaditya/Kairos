@@ -1,24 +1,26 @@
 """
-DrBERT Engine - French Medical BERT with Smart GPU/CPU Split + ChromaDB Vector Store
+DrBERT Engine - Dual-Language Medical BERT with Smart GPU/CPU Split + ChromaDB Vector Store
 
-Loads DrBERT models (4GB/7GB training data variants) with automatic
-memory distribution between GPU and CPU for laptop compatibility.
+Loads DrBERT/PubMedBERT hybrid model with automatic memory distribution
+between GPU and CPU for laptop compatibility.
 
-FRENCH PIVOT RAG ARCHITECTURE:
-- Ingests French medical protocols into ChromaDB vector store
-- Provides semantic search over protocols using DrBERT embeddings
-- Enables multilingual queries via LLM translation to French
+DUAL-LANGUAGE RAG ARCHITECTURE:
+- Supports both English and French medical protocols
+- Uses DrBERT-PubMedBERT hybrid for bilingual embeddings
+- Language detection routes queries to appropriate collection
+- No translation needed - native language semantic search
 
 Use cases:
 - Medical entity extraction (NER)
 - Symptom classification
-- French biomedical embeddings
+- Bilingual biomedical embeddings
 - Fill-mask for medical terms
-- Protocol semantic search (RAG)
+- Protocol semantic search (RAG) in EN/FR
 """
 
 import os
 import gc
+import re
 import threading
 import logging
 import hashlib
@@ -62,6 +64,53 @@ def _check_dependencies():
         pass
 
 _check_dependencies()
+
+
+# =============================================================================
+# Language Detection
+# =============================================================================
+
+# Keywords for language detection (medical context)
+FRENCH_KEYWORDS = [
+    "douleur", "fièvre", "tête", "ventre", "essoufflement", "poitrine",
+    "thoracique", "mal", "nausée", "vomissement", "fatigue", "vertige",
+    "palpitations", "gonflement", "saignement", "respiration", "cœur",
+    "abdomen", "gorge", "toux", "frissons", "sueur", "perte"
+]
+
+ENGLISH_KEYWORDS = [
+    "pain", "fever", "head", "stomach", "breath", "chest", "ache",
+    "nausea", "vomiting", "fatigue", "dizziness", "palpitations",
+    "swelling", "bleeding", "breathing", "heart", "abdomen", "throat",
+    "cough", "chills", "sweating", "loss", "shortness", "pressure"
+]
+
+
+def detect_language(text: str) -> str:
+    """
+    Detect language of medical text (English or French).
+
+    Uses keyword matching optimized for medical terminology.
+    Returns 'en' for English, 'fr' for French.
+
+    Args:
+        text: Medical text to analyze
+
+    Returns:
+        'en' or 'fr'
+    """
+    if not text:
+        return "en"  # Default to English
+
+    text_lower = text.lower()
+
+    # Count keyword matches
+    fr_count = sum(1 for kw in FRENCH_KEYWORDS if kw in text_lower)
+    en_count = sum(1 for kw in ENGLISH_KEYWORDS if kw in text_lower)
+
+    # Return language with more matches, default to English on tie
+    return "fr" if fr_count > en_count else "en"
+
 
 # =============================================================================
 # DrBERT Model Configs
@@ -224,35 +273,33 @@ class PatientCase:
 
 class ProtocolVectorStore:
     """
-    ChromaDB-backed vector store for French medical protocols.
+    ChromaDB-backed vector store for medical protocols (English and French).
 
-    Uses DrBERT embeddings for semantic search over protocol texts.
-    Designed for the French Pivot RAG architecture.
+    Uses DrBERT-PubMedBERT embeddings for bilingual semantic search.
+    Maintains separate collections for each language.
     """
 
     def __init__(self,
                  persist_directory: str,
-                 collection_name: str = "french_protocols",
                  embedding_function: Optional[Any] = None):
         """
-        Initialize the vector store.
+        Initialize the dual-language vector store.
 
         Args:
             persist_directory: Path to store ChromaDB data
-            collection_name: Name of the collection
             embedding_function: Custom embedding function (uses DrBERT if None)
         """
         self.persist_directory = persist_directory
-        self.collection_name = collection_name
         self._embedding_fn = embedding_function
         self._client = None
-        self._collection = None
+        self._en_collection = None  # English protocols
+        self._fr_collection = None  # French protocols
         self._lock = threading.RLock()
 
         self._initialize_store()
 
     def _initialize_store(self):
-        """Initialize ChromaDB client and collection."""
+        """Initialize ChromaDB client and dual collections."""
         if not CHROMADB_AVAILABLE:
             logger.warning("ChromaDB not available. Protocol storage disabled.")
             return
@@ -273,39 +320,49 @@ class ProtocolVectorStore:
                 )
             )
 
-            # Get or create collection
-            self._collection = self._client.get_or_create_collection(
-                name=self.collection_name,
-                metadata={"description": "French medical protocols for triage"}
+            # Create dual collections for English and French
+            self._en_collection = self._client.get_or_create_collection(
+                name="english_protocols",
+                metadata={"description": "English medical protocols for triage", "language": "en"}
+            )
+            self._fr_collection = self._client.get_or_create_collection(
+                name="french_protocols",
+                metadata={"description": "French medical protocols for triage", "language": "fr"}
             )
 
-            logger.info(f"VectorStore initialized: {self._collection.count()} protocols")
+            logger.info(f"VectorStore initialized: EN={self._en_collection.count()}, FR={self._fr_collection.count()} protocols")
 
         except Exception as e:
             logger.error(f"Failed to initialize ChromaDB: {e}")
             self._client = None
-            self._collection = None
+            self._en_collection = None
+            self._fr_collection = None
+
+    def _get_collection(self, language: str = "en"):
+        """Get the appropriate collection for language."""
+        return self._en_collection if language == "en" else self._fr_collection
 
     @property
     def is_available(self) -> bool:
         """Check if vector store is available."""
-        return self._collection is not None
+        return self._en_collection is not None or self._fr_collection is not None
 
     def set_embedding_function(self, fn):
         """Set the embedding function (typically from DrBERTEngine)."""
         self._embedding_fn = fn
 
-    def _generate_id(self, protocol: Protocol) -> str:
+    def _generate_id(self, protocol: Protocol, language: str = "en") -> str:
         """Generate deterministic ID for a protocol."""
-        content = f"{protocol.title}:{protocol.text[:200]}:{protocol.source}"
+        content = f"{language}:{protocol.title}:{protocol.text[:200]}:{protocol.source}"
         return hashlib.md5(content.encode()).hexdigest()
 
-    def ingest_protocols(self, protocols: List[Protocol], batch_size: int = 32) -> Dict[str, Any]:
+    def ingest_protocols(self, protocols: List[Protocol], language: str = "en", batch_size: int = 32) -> Dict[str, Any]:
         """
-        Ingest protocols into the vector store.
+        Ingest protocols into the appropriate language collection.
 
         Args:
             protocols: List of Protocol objects
+            language: 'en' for English, 'fr' for French
             batch_size: Number of protocols to process at once
 
         Returns:
@@ -317,6 +374,10 @@ class ProtocolVectorStore:
         if not self._embedding_fn:
             return {"success": False, "error": "No embedding function set. Load DrBERT first."}
 
+        collection = self._get_collection(language)
+        if not collection:
+            return {"success": False, "error": f"No collection for language: {language}"}
+
         with self._lock:
             added = 0
             skipped = 0
@@ -327,7 +388,7 @@ class ProtocolVectorStore:
 
                 try:
                     # Prepare batch data
-                    ids = [self._generate_id(p) for p in batch]
+                    ids = [self._generate_id(p, language) for p in batch]
                     documents = [p.text for p in batch]
                     metadatas = [
                         {
@@ -336,18 +397,19 @@ class ProtocolVectorStore:
                             "category": p.category,
                             "priority_level": p.priority_level or "",
                             "keywords": ",".join(p.keywords),
+                            "language": language,
                             **{k: str(v) for k, v in p.metadata.items()}
                         }
                         for p in batch
                     ]
 
-                    # Generate embeddings using DrBERT
+                    # Generate embeddings using DrBERT-PubMedBERT
                     embeddings = self._embedding_fn(documents)
 
                     # Check for existing IDs
                     existing = set()
                     try:
-                        result = self._collection.get(ids=ids)
+                        result = collection.get(ids=ids)
                         existing = set(result["ids"]) if result["ids"] else set()
                     except Exception:
                         pass
@@ -369,7 +431,7 @@ class ProtocolVectorStore:
 
                     # Add new protocols
                     if new_ids:
-                        self._collection.add(
+                        collection.add(
                             ids=new_ids,
                             documents=new_docs,
                             metadatas=new_metas,
@@ -386,19 +448,22 @@ class ProtocolVectorStore:
                 "added": added,
                 "skipped": skipped,
                 "total": len(protocols),
-                "total_in_store": self._collection.count(),
+                "language": language,
+                "total_in_store": collection.count(),
                 "errors": errors[:5] if errors else []
             }
 
     def search(self,
                query: str,
+               language: str = "en",
                n_results: int = 3,
                category_filter: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Search protocols using semantic similarity.
+        Search protocols using semantic similarity with keyword boosting.
 
         Args:
-            query: French query text (should be in French for best results!)
+            query: Query text (should match the language of the collection)
+            language: 'en' for English, 'fr' for French
             n_results: Number of results to return
             category_filter: Optional category filter
 
@@ -412,6 +477,11 @@ class ProtocolVectorStore:
             logger.warning("No embedding function. Cannot search.")
             return []
 
+        collection = self._get_collection(language)
+        if not collection:
+            logger.warning(f"No collection for language: {language}")
+            return []
+
         with self._lock:
             try:
                 # Generate query embedding
@@ -422,65 +492,120 @@ class ProtocolVectorStore:
                 if category_filter:
                     where = {"category": category_filter}
 
-                # Search
-                results = self._collection.query(
+                # Fetch more results for re-ranking
+                fetch_n = max(n_results * 2, 8)
+
+                # Search in language-specific collection
+                results = collection.query(
                     query_embeddings=[query_embedding],
-                    n_results=n_results,
+                    n_results=fetch_n,
                     where=where,
                     include=["documents", "metadatas", "distances"]
                 )
 
-                # Format results
+                # Format results with keyword boosting
                 protocols = []
+                query_lower = query.lower()
+
                 if results and results["ids"] and results["ids"][0]:
                     for i, doc_id in enumerate(results["ids"][0]):
                         distance = results["distances"][0][i] if results["distances"] else 0.0
+                        metadata = results["metadatas"][0][i] if results["metadatas"] else {}
 
-                        # Convert L2 distance to relevance score (0.0 - 1.0)
+                        # Base relevance from semantic similarity
                         # For normalized embeddings: L2 = sqrt(2 * (1 - cosine_sim))
-                        # So: relevance = 1 - (L2^2 / 2), clamped to [0, 1]
-                        # This formula works better than linear 1 - (d/2) for large distances
-                        relevance = max(0.0, min(1.0, 1.0 - (distance * distance / 4.0)))
+                        base_relevance = max(0.0, min(1.0, 1.0 - (distance * distance / 4.0)))
+
+                        # Keyword boost: check if query terms match protocol keywords
+                        keywords = metadata.get("keywords", "").lower().split(",")
+                        title = metadata.get("title", "").lower()
+                        keyword_boost = 0.0
+
+                        for keyword in keywords:
+                            keyword = keyword.strip()
+                            if keyword and keyword in query_lower:
+                                keyword_boost += 0.05  # Boost for each matching keyword
+
+                        # Title match boost - use word boundary matching to avoid
+                        # partial matches like "chest" in "manchester"
+                        title_words = set(re.findall(r'\b\w+\b', title))
+                        query_words = query_lower.split()
+                        for word in query_words:
+                            if len(word) > 3 and word in title_words:
+                                keyword_boost += 0.08  # Stronger boost for title match
+
+                        # Cap boost at 0.3
+                        keyword_boost = min(keyword_boost, 0.3)
+
+                        # Combined score
+                        final_score = min(1.0, base_relevance + keyword_boost)
 
                         protocols.append({
                             "id": doc_id,
                             "text": results["documents"][0][i] if results["documents"] else "",
-                            "metadata": results["metadatas"][0][i] if results["metadatas"] else {},
+                            "metadata": metadata,
                             "distance": distance,
-                            "relevance_score": relevance
+                            "relevance_score": final_score,
+                            "semantic_score": base_relevance,
+                            "keyword_boost": keyword_boost,
+                            "language": language
                         })
 
-                return protocols
+                # Re-rank by final score and return top n
+                protocols.sort(key=lambda x: x["relevance_score"], reverse=True)
+                return protocols[:n_results]
 
             except Exception as e:
                 logger.error(f"Search error: {e}")
                 return []
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get vector store statistics."""
+        """Get vector store statistics for both languages."""
         if not self.is_available:
             return {"available": False}
 
         return {
             "available": True,
-            "collection_name": self.collection_name,
-            "total_protocols": self._collection.count(),
+            "english_protocols": self._en_collection.count() if self._en_collection else 0,
+            "french_protocols": self._fr_collection.count() if self._fr_collection else 0,
+            "total_protocols": (
+                (self._en_collection.count() if self._en_collection else 0) +
+                (self._fr_collection.count() if self._fr_collection else 0)
+            ),
             "persist_directory": self.persist_directory
         }
 
-    def clear(self) -> bool:
-        """Clear all protocols from the store."""
+    def clear(self, language: Optional[str] = None) -> bool:
+        """
+        Clear protocols from the store.
+
+        Args:
+            language: 'en', 'fr', or None for both
+
+        Returns:
+            True if cleared successfully
+        """
         if not self.is_available:
             return False
 
         with self._lock:
             try:
-                # Delete and recreate collection
-                self._client.delete_collection(self.collection_name)
-                self._collection = self._client.create_collection(
-                    name=self.collection_name,
-                    metadata={"description": "French medical protocols for triage"}
-                )
+                if language is None or language == "en":
+                    if self._en_collection:
+                        self._client.delete_collection("english_protocols")
+                        self._en_collection = self._client.create_collection(
+                            name="english_protocols",
+                            metadata={"description": "English medical protocols for triage", "language": "en"}
+                        )
+
+                if language is None or language == "fr":
+                    if self._fr_collection:
+                        self._client.delete_collection("french_protocols")
+                        self._fr_collection = self._client.create_collection(
+                            name="french_protocols",
+                            metadata={"description": "French medical protocols for triage", "language": "fr"}
+                        )
+
                 return True
             except Exception as e:
                 logger.error(f"Clear error: {e}")
@@ -741,10 +866,12 @@ class DrBERTEngine:
     - ChromaDB vector store for protocol retrieval (RAG)
     """
 
+    # Default model: DrBERT-PubMedBERT hybrid works for both EN and FR
+    DEFAULT_MODEL_ID = "drbert-4gb-pubmed"
+
     def __init__(self,
                  cache_dir: Optional[str] = None,
                  vector_db_dir: Optional[str] = None,
-                 protocols_file: Optional[str] = None,
                  auto_load: bool = False):
         self.cache_dir = cache_dir or os.path.join(
             os.path.dirname(__file__), "..", "models", "drbert_cache"
@@ -752,14 +879,18 @@ class DrBERTEngine:
         self.vector_db_dir = vector_db_dir or os.path.join(
             os.path.dirname(__file__), "..", "data", "vector_db"
         )
-        self.protocols_file = protocols_file or os.path.join(
+        # Protocol files for both languages
+        self.en_protocols_file = os.path.join(
+            os.path.dirname(__file__), "config", "english_protocols.json"
+        )
+        self.fr_protocols_file = os.path.join(
             os.path.dirname(__file__), "config", "french_protocols.json"
         )
         self._current_model: Optional[LoadedDrBERT] = None
         self._lock = threading.RLock()
         self._total_inferences = 0
 
-        # Initialize vector stores
+        # Initialize vector stores (dual-language)
         self._vector_store: Optional[ProtocolVectorStore] = None
         self._case_store: Optional[PatientCaseVectorStore] = None
         self._init_vector_stores()
@@ -771,12 +902,11 @@ class DrBERTEngine:
             self._try_load_default()
 
     def _init_vector_stores(self):
-        """Initialize both protocol and patient case vector stores."""
+        """Initialize dual-language protocol and patient case vector stores."""
         if CHROMADB_AVAILABLE:
             try:
                 self._vector_store = ProtocolVectorStore(
-                    persist_directory=self.vector_db_dir,
-                    collection_name="french_protocols"
+                    persist_directory=self.vector_db_dir
                 )
                 self._case_store = PatientCaseVectorStore(
                     persist_directory=self.vector_db_dir,
@@ -795,8 +925,8 @@ class DrBERTEngine:
         self._on_load_callback = callback
 
     def _try_load_default(self):
-        """Attempt to load the recommended DrBERT model."""
-        self.load_model("drbert-7gb")
+        """Attempt to load the recommended DrBERT-PubMedBERT hybrid model."""
+        self.load_model(self.DEFAULT_MODEL_ID)
 
     # =========================================================================
     # Model Loading
@@ -977,13 +1107,14 @@ class DrBERTEngine:
     # Inference Methods
     # =========================================================================
 
-    def get_embeddings(self, texts: List[str], pooling: str = "mean") -> List[List[float]]:
+    def get_embeddings(self, texts: List[str], pooling: str = "mean", normalize: bool = True) -> List[List[float]]:
         """
         Get embeddings for texts using DrBERT.
 
         Args:
-            texts: List of French medical texts
+            texts: List of medical texts (English or French)
             pooling: 'mean', 'cls', or 'max'
+            normalize: Whether to L2-normalize embeddings (required for proper similarity scores)
 
         Returns:
             List of embedding vectors (768-dim each)
@@ -1027,6 +1158,10 @@ class DrBERTEngine:
                     sum_embeddings = torch.sum(hidden_states * mask, dim=1)
                     sum_mask = torch.clamp(mask.sum(dim=1), min=1e-9)
                     embeddings = sum_embeddings / sum_mask
+
+                # L2 normalize embeddings for proper cosine similarity via L2 distance
+                if normalize:
+                    embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
 
                 self._current_model.inference_count += len(texts)
                 self._total_inferences += len(texts)
@@ -1126,60 +1261,70 @@ class DrBERTEngine:
     # =========================================================================
 
     def _auto_load_protocols(self):
-        """Auto-load protocols from JSON file if available and store is empty."""
+        """Auto-load protocols from JSON files for both languages."""
         if not self._vector_store or not self._vector_store.is_available:
             return
 
-        # Check if protocols already loaded
         stats = self._vector_store.get_stats()
-        if stats.get("total_protocols", 0) > 0:
-            print(f"  Protocols already indexed: {stats['total_protocols']}")
-            return
 
-        # Try to load from file
-        if not os.path.exists(self.protocols_file):
-            print(f"  No protocols file found at {self.protocols_file}")
-            return
+        # Load English protocols
+        en_count = stats.get("english_protocols", 0)
+        if en_count == 0 and os.path.exists(self.en_protocols_file):
+            try:
+                with open(self.en_protocols_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                protocols = data.get("protocols", [])
+                if protocols:
+                    print(f"  Auto-loading {len(protocols)} English protocols...")
+                    result = self.ingest_protocols(protocols, language="en")
+                    if result.get("success"):
+                        print(f"  Loaded {result.get('added', 0)} English protocols")
+                    else:
+                        print(f"  EN protocol load failed: {result.get('error', 'Unknown')}")
+            except Exception as e:
+                logger.error(f"Failed to auto-load English protocols: {e}")
+        elif en_count > 0:
+            print(f"  English protocols already indexed: {en_count}")
 
-        try:
-            with open(self.protocols_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            protocols = data.get("protocols", [])
-            if not protocols:
-                print(f"  Protocols file empty")
-                return
-
-            print(f"  Auto-loading {len(protocols)} protocols from file...")
-            result = self.ingest_protocols(protocols)
-
-            if result.get("success"):
-                print(f"  Loaded {result.get('added', 0)} protocols")
-            else:
-                print(f"  Protocol load failed: {result.get('error', 'Unknown')}")
-
-        except Exception as e:
-            logger.error(f"Failed to auto-load protocols: {e}")
-            print(f"  Failed to load protocols: {e}")
+        # Load French protocols
+        fr_count = stats.get("french_protocols", 0)
+        if fr_count == 0 and os.path.exists(self.fr_protocols_file):
+            try:
+                with open(self.fr_protocols_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                protocols = data.get("protocols", [])
+                if protocols:
+                    print(f"  Auto-loading {len(protocols)} French protocols...")
+                    result = self.ingest_protocols(protocols, language="fr")
+                    if result.get("success"):
+                        print(f"  Loaded {result.get('added', 0)} French protocols")
+                    else:
+                        print(f"  FR protocol load failed: {result.get('error', 'Unknown')}")
+            except Exception as e:
+                logger.error(f"Failed to auto-load French protocols: {e}")
+        elif fr_count > 0:
+            print(f"  French protocols already indexed: {fr_count}")
 
     # =========================================================================
-    # Protocol RAG Methods (French Pivot Architecture)
+    # Protocol RAG Methods (Dual-Language Architecture)
     # =========================================================================
 
     def ingest_protocols(self,
                          protocols: List[Dict[str, Any]],
+                         language: str = "en",
                          batch_size: int = 32) -> Dict[str, Any]:
         """
-        Ingest French medical protocols into the vector store.
+        Ingest medical protocols into the appropriate language collection.
 
         Args:
             protocols: List of protocol dicts with keys:
                 - title: Protocol title
-                - text: Full protocol text (in French)
+                - text: Full protocol text
                 - source: Source (e.g., "SFMU", "HAS")
                 - category: Category (e.g., "cardiac", "trauma")
                 - priority_level: Optional priority level
                 - keywords: Optional list of keywords
+            language: 'en' for English, 'fr' for French
             batch_size: Batch size for embedding generation
 
         Returns:
@@ -1205,20 +1350,22 @@ class DrBERTEngine:
                 metadata=p.get("metadata", {})
             ))
 
-        return self._vector_store.ingest_protocols(protocol_objs, batch_size)
+        return self._vector_store.ingest_protocols(protocol_objs, language=language, batch_size=batch_size)
 
     def search_protocols(self,
-                         french_query: str,
+                         query: str,
+                         language: Optional[str] = None,
                          n_results: int = 3,
                          category: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Search protocols using French query text.
+        Search protocols using native language query.
 
-        IMPORTANT: Query MUST be in French for best results!
-        Use the LLM to translate user input to French before calling this.
+        Auto-detects language if not specified, then searches the
+        appropriate language collection.
 
         Args:
-            french_query: Query in French (e.g., "Douleur thoracique constrictive")
+            query: Query text (English or French)
+            language: 'en', 'fr', or None for auto-detect
             n_results: Number of results to return
             category: Optional category filter
 
@@ -1233,24 +1380,31 @@ class DrBERTEngine:
             logger.warning("DrBERT not loaded. Cannot search protocols.")
             return []
 
+        # Auto-detect language if not specified
+        if language is None:
+            language = detect_language(query)
+            logger.debug(f"Auto-detected language: {language} for query: {query[:50]}...")
+
         return self._vector_store.search(
-            query=french_query,
+            query=query,
+            language=language,
             n_results=n_results,
             category_filter=category
         )
 
-    def get_best_protocol(self, french_query: str, category: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def get_best_protocol(self, query: str, language: Optional[str] = None, category: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Get the single best matching protocol for a French query.
+        Get the single best matching protocol for a query.
 
         Args:
-            french_query: Query in French
+            query: Query text (English or French)
+            language: 'en', 'fr', or None for auto-detect
             category: Optional category filter
 
         Returns:
             Best matching protocol or None
         """
-        results = self.search_protocols(french_query, n_results=1, category=category)
+        results = self.search_protocols(query, language=language, n_results=1, category=category)
         return results[0] if results else None
 
     def get_vector_store_stats(self) -> Dict[str, Any]:
@@ -1481,6 +1635,9 @@ __all__ = [
     "ProtocolVectorStore",
     "PatientCaseVectorStore",
     "get_drbert_engine",
+    "detect_language",
     "TRANSFORMERS_AVAILABLE",
     "CHROMADB_AVAILABLE",
+    "FRENCH_KEYWORDS",
+    "ENGLISH_KEYWORDS",
 ]
