@@ -112,6 +112,36 @@ export interface ModelsResponse {
   current_model: CurrentModel | null;
 }
 
+// New model types for Ollama-based models
+export interface OllamaModel {
+  id: string;
+  name: string;
+  size_gb: number;
+  description: string;
+  status: 'ready' | 'available' | 'downloading';
+  source: 'local' | 'ollama';
+  is_active: boolean;
+  is_ready: boolean;
+  is_available: boolean;
+}
+
+export interface OllamaModelsResponse {
+  models: OllamaModel[];
+  current_model: string;
+  ollama_available: boolean;
+  ready_count: number;
+  available_count: number;
+}
+
+export interface PullProgress {
+  model_id: string;
+  status: 'downloading' | 'verifying' | 'complete' | 'error';
+  progress: number;
+  downloaded_gb: number;
+  total_gb: number;
+  message: string;
+}
+
 // API functions
 export const api = {
   // Patient endpoints
@@ -458,6 +488,120 @@ export const api = {
       method: "POST",
     });
     if (!response.ok) throw new Error("Failed to unload DrBERT model");
+    return response.json();
+  },
+
+  // =========================================================================
+  // Ollama Model Management (New endpoints)
+  // =========================================================================
+
+  async getOllamaModels(): Promise<OllamaModelsResponse> {
+    const response = await fetch(`${API_BASE_URL}/models`);
+    if (!response.ok) throw new Error("Failed to fetch Ollama models");
+    return response.json();
+  },
+
+  async getReadyModels(): Promise<{ models: OllamaModel[]; current_model: string }> {
+    const response = await fetch(`${API_BASE_URL}/models/ready`);
+    if (!response.ok) throw new Error("Failed to fetch ready models");
+    return response.json();
+  },
+
+  async getAvailableModels(): Promise<{ models: OllamaModel[] }> {
+    const response = await fetch(`${API_BASE_URL}/models/available`);
+    if (!response.ok) throw new Error("Failed to fetch available models");
+    return response.json();
+  },
+
+  async selectModel(modelId: string): Promise<{ success: boolean; model_id: string; message: string }> {
+    const response = await fetch(`${API_BASE_URL}/models/select`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model_id: modelId }),
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Failed to select model");
+    }
+    return response.json();
+  },
+
+  async pullModel(
+    modelId: string,
+    onProgress?: (progress: PullProgress) => void
+  ): Promise<boolean> {
+    const response = await fetch(`${API_BASE_URL}/models/pull/${modelId}`, {
+      method: "POST",
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Failed to pull model");
+    }
+
+    // Check if already pulled (JSON response)
+    const contentType = response.headers.get("content-type");
+    if (contentType?.includes("application/json")) {
+      const result = await response.json();
+      if (onProgress) {
+        onProgress({
+          model_id: modelId,
+          status: "complete",
+          progress: 1,
+          downloaded_gb: 0,
+          total_gb: 0,
+          message: result.message || "Model ready",
+        });
+      }
+      return result.status === "already_ready";
+    }
+
+    // Handle SSE stream for pull progress
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("No response body");
+
+    const decoder = new TextDecoder();
+    let success = false;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const text = decoder.decode(value, { stream: true });
+      const lines = text.split("\n");
+
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          try {
+            const data = JSON.parse(line.slice(6)) as PullProgress;
+            if (onProgress) onProgress(data);
+
+            if (data.status === "complete") {
+              success = true;
+            } else if (data.status === "error") {
+              throw new Error(data.message || "Pull failed");
+            }
+          } catch (e) {
+            // Ignore parse errors for incomplete chunks
+          }
+        }
+      }
+    }
+
+    return success;
+  },
+
+  async getModelStatus(modelId: string): Promise<{
+    model_id: string;
+    name: string;
+    description: string;
+    size_gb: number;
+    status: string;
+    is_active: boolean;
+    is_ready: boolean;
+  }> {
+    const response = await fetch(`${API_BASE_URL}/models/${modelId}/status`);
+    if (!response.ok) throw new Error("Failed to fetch model status");
     return response.json();
   },
 };

@@ -28,6 +28,14 @@ from response_validator import TriageResponseValidator, validate_triage_response
 from retry_handler import GenerationRetryHandler
 from drbert_engine import detect_language
 
+# Parlant agent integration (optional - for guideline-based generation)
+PARLANT_AVAILABLE = False
+try:
+    from parlant_agent import SyncParlantTriageAgent
+    PARLANT_AVAILABLE = True
+except ImportError:
+    logger.info("Parlant not available - using legacy prompting")
+
 # =============================================================================
 # JSON SCHEMAS (for models that support JSON grammar)
 # =============================================================================
@@ -109,6 +117,10 @@ class MultiModelEngine:
         # DrBERT engine reference for RAG (set externally)
         self._drbert_engine: Optional[Any] = None
 
+        # Parlant agent for guideline-based generation (optional)
+        self._parlant_agent: Optional[Any] = None
+        self._use_parlant = os.environ.get("USE_PARLANT", "false").lower() == "true"
+
         # Auto-detect GPU layers if not explicitly set
         env_gpu_layers = os.environ.get("N_GPU_LAYERS")
         if env_gpu_layers is not None:
@@ -124,6 +136,23 @@ class MultiModelEngine:
     def set_drbert_engine(self, drbert_engine):
         """Set the DrBERT engine for RAG operations."""
         self._drbert_engine = drbert_engine
+        # Also set for Parlant agent if available
+        if self._parlant_agent:
+            self._parlant_agent.set_drbert_engine(drbert_engine)
+
+    def _get_parlant_agent(self):
+        """Get or create Parlant agent instance (lazy initialization)."""
+        if not PARLANT_AVAILABLE:
+            return None
+        if self._parlant_agent is None:
+            self._parlant_agent = SyncParlantTriageAgent(self._drbert_engine)
+            logger.info("Parlant agent created (lazy init)")
+        return self._parlant_agent
+
+    @property
+    def parlant_available(self) -> bool:
+        """Check if Parlant is available and enabled."""
+        return PARLANT_AVAILABLE and self._use_parlant
 
     @property
     def rag_available(self) -> bool:
@@ -944,7 +973,8 @@ class MultiModelEngine:
                 logger.error(f"PDF Gen Error: {e}")
                 return "Error generating clinical text. Please try again."
 
-    def generate_pdf_summary(self, clinical_state: Dict[str, Any], model_id: Optional[str] = None) -> Dict[str, str]:
+    def generate_pdf_summary(self, clinical_state: Dict[str, Any], model_id: Optional[str] = None,
+                               use_parlant: Optional[bool] = None) -> Dict[str, str]:
         """
         Generate PDF sections with ROLE-BASED PERSONAS:
         - Clinical Summary: Triage nurse's systematic observation (factual, procedural, organized)
@@ -952,8 +982,26 @@ class MultiModelEngine:
         - Conclusion: Attending physician's recommendations (authoritative, actionable, clear)
 
         CRITICAL: Personas embedded via TONE, not explicit "As a..." to prevent echoing.
+
+        Args:
+            clinical_state: Patient clinical data
+            model_id: Optional model to switch to
+            use_parlant: Whether to use Parlant agent (default: None = use class setting)
         """
         if model_id: self.switch_model(model_id)
+
+        # Determine if we should use Parlant
+        should_use_parlant = use_parlant if use_parlant is not None else self._use_parlant
+
+        # Use Parlant agent if enabled and available
+        if should_use_parlant and self.parlant_available:
+            agent = self._get_parlant_agent()
+            if agent:
+                try:
+                    return agent.generate_pdf_sections(clinical_state)
+                except Exception as e:
+                    logger.error(f"Parlant PDF generation error, falling back to legacy: {e}")
+                    # Fall through to legacy implementation
 
         card = self._flatten_patient_data(clinical_state)
 
@@ -1036,34 +1084,170 @@ class MultiModelEngine:
     def _is_medical_query(self, query: str) -> bool:
         """
         Check if a query is medical/triage-related.
-        Returns False for off-topic questions like 'Where is Paris?'
+        Returns False for off-topic questions like 'Where is Paris?' or 'Delhi pollution'
+
+        Logic:
+        1. Check for medical keywords → definitely medical
+        2. Check for non-medical patterns → definitely NOT medical
+        3. Default to NOT medical (conservative) - only process if clearly about patient
         """
         query_lower = query.lower()
 
-        # Check for medical keywords
-        for keyword in self.MEDICAL_QUERY_KEYWORDS:
-            if keyword in query_lower:
-                return True
-
-        # Common non-medical patterns
+        # First, check for CLEAR non-medical topics (geography, general knowledge, etc.)
         non_medical_patterns = [
             r'\bwhere\s+is\b',
             r'\bwhat\s+is\s+the\s+capital\b',
-            r'\btell\s+me\s+about\b(?!.*(?:pain|symptom|condition))',
+            r'\btell\s+me\s+about\b(?!.*(?:pain|symptom|condition|patient))',
             r'\bhow\s+do\s+i\s+get\s+to\b',
             r'\bweather\b',
             r'\brecipe\b',
             r'\bparis\b',
             r'\blondon\b',
             r'\bnew\s+york\b',
+            r'\bdelhi\b',
+            r'\bpollution\b',
+            r'\bpolitics\b',
+            r'\bsports\b',
+            r'\bfootball\b',
+            r'\bcricket\b',
+            r'\bmovie\b',
+            r'\bfilm\b',
+            r'\bmusic\b',
+            r'\bsong\b',
+            r'\bhistory\b(?!.*(?:medical|family|patient))',
+            r'\bgeography\b',
+            r'\bscience\b(?!.*(?:medical))',
+            r'\bmath\b',
+            r'\bcook\b',
+            r'\btravel\b',
+            r'\bhotel\b',
+            r'\bflight\b',
+            r'\bcar\b(?!.*(?:accident|crash|injury))',
+            r'\bphone\b',
+            r'\bcomputer\b',
+            r'\bprogramming\b',
+            r'\bcode\b(?!.*(?:medical))',
+            r'\bjoke\b',
+            r'\bstory\b(?!.*(?:medical|patient))',
+            r'\bwho\s+is\b(?!.*(?:patient|doctor))',
+            r'\bwho\s+won\b',
         ]
 
         for pattern in non_medical_patterns:
             if re.search(pattern, query_lower):
                 return False
 
-        # Default: if patient context exists with symptoms, it's medical
-        return True
+        # Check for medical keywords - definitely medical
+        for keyword in self.MEDICAL_QUERY_KEYWORDS:
+            if keyword in query_lower:
+                return True
+
+        # Check for patient-related queries
+        patient_patterns = [
+            r'\bpatient\b',
+            r'\bthis\s+case\b',
+            r'\btheir\s+(symptoms?|condition)\b',
+            r'\bhow\s+(is|are)\s+(he|she|they|the\s+patient)\b',
+            r'\bwhat\s+should\s+(we|i)\s+do\b',
+            r'\btriage\b',
+            r'\bpriority\b',
+            r'\bstatus\b',
+        ]
+
+        for pattern in patient_patterns:
+            if re.search(pattern, query_lower):
+                return True
+
+        # Default: NOT medical - be conservative
+        # Only trigger RAG if query is clearly about patient/medical topics
+        return False
+
+    def _handle_off_topic_query(self, question: str) -> Dict[str, Any]:
+        """
+        Handle off-topic (non-medical) queries with a natural LLM response.
+
+        This allows the system to answer general questions like "What is Delhi's pollution?"
+        without using patient data or medical protocols.
+        """
+        # If no model loaded, return a simple fallback
+        if not self._current_model or not self._current_model.instance:
+            return {
+                "answer": "I'm a medical triage assistant. While I can answer general questions, my primary focus is helping with patient assessment. How can I help you with this patient's care?",
+                "reasoning": "",
+                "suggested_questions": [
+                    "What is the patient's current status?",
+                    "What symptoms should we prioritize?",
+                    "What are the next steps for this patient?"
+                ],
+                "has_reasoning": False,
+                "cited_data": [],
+                "model_used": "System",
+                "rag_used": False,
+                "protocol_applied": "",
+                "protocol_source": "",
+                "search_query_used": "",
+                "off_topic": True
+            }
+
+        try:
+            # Generate natural response without patient context
+            system_prompt = (
+                "You are a helpful assistant. Answer the user's question naturally and concisely. "
+                "Keep your response brief (2-4 sentences unless more detail is needed). "
+                "Be friendly and informative."
+            )
+
+            with self._lock:
+                output = self._current_model.instance.create_chat_completion(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": question}
+                    ],
+                    max_tokens=500,
+                    temperature=0.7,
+                    stop=["<|im_end|>", "<|im_start|>", "</s>", "<|eot_id|>"]
+                )
+
+                answer = output['choices'][0]['message']['content'].strip()
+
+                # Strip any think tags if present
+                answer, _ = self._strip_think_tags(answer)
+
+                log_llm_output(answer, context="OFF_TOPIC_RESPONSE")
+
+                return {
+                    "answer": answer,
+                    "reasoning": "",
+                    "suggested_questions": [
+                        "How is this patient doing?",
+                        "What symptoms should we focus on?",
+                        "What is the triage priority?"
+                    ],
+                    "has_reasoning": False,
+                    "cited_data": [],
+                    "model_used": self._current_model.config.name,
+                    "rag_used": False,
+                    "protocol_applied": "",
+                    "protocol_source": "",
+                    "search_query_used": "",
+                    "off_topic": True
+                }
+
+        except Exception as e:
+            logger.error(f"Off-topic response generation failed: {e}")
+            return {
+                "answer": f"I'd be happy to help with that question about '{question[:50]}...', but I'm primarily focused on medical triage. Feel free to ask me about the patient's condition!",
+                "reasoning": "",
+                "suggested_questions": [],
+                "has_reasoning": False,
+                "cited_data": [],
+                "model_used": "System",
+                "rag_used": False,
+                "protocol_applied": "",
+                "protocol_source": "",
+                "search_query_used": "",
+                "off_topic": True
+            }
 
     def _build_search_query(self, patient_context: Dict[str, Any]) -> tuple:
         """
@@ -1165,12 +1349,14 @@ class MultiModelEngine:
             "## Reasoning\n"
             "Write your clinical analysis here. Reference specific protocol criteria.\n\n"
             "## Answer\n"
-            "Start with a brief greeting, then list the patient's symptoms as bullets:\n\n"
-            "**Your reported symptoms:**\n"
-            "- Chest pain (describe type and location)\n"
-            "- Shortness of breath\n"
-            "- (list other symptoms from PATIENT DATA)\n\n"
-            "End with reassurance about next steps.\n\n"
+            "Start with a brief greeting, then provide your response to the staff member according to the format in the question asked. \n"
+            "If there is a list of informations to provide, present them as bullet points.\n\n"
+            # "Start with a brief greeting, then list the patient's symptoms as bullets:\n\n"
+            # "**Your reported symptoms:**\n"
+            # "- Chest pain (describe type and location)\n"
+            # "- Shortness of breath\n"
+            # "- (list other symptoms from PATIENT DATA)\n\n"
+            # "End with reassurance about next steps.\n\n"
             "## Protocol Applied\n"
             f"State which protocol you used (e.g., '{protocol_title}').\n\n"
             "## Questions\n"
@@ -1179,8 +1365,8 @@ class MultiModelEngine:
             "2. Have you experienced this before?\n"
             "3. Are you taking any medications?\n\n"
             "WRITING STYLE:\n"
-            "- For reasoning: Use medical terminology, reference the protocol.\n"
-            "- For answer: Use simple, reassuring language. LIST SYMPTOMS AS BULLETS.\n"
+            "- For reasoning: Use medical terminology like a senior doctor, reference the protocol.\n"
+            "- For answer: Use simple, admin friendly language. The user needs to understand well as they need to handle admin tasks \n" #LIST SYMPTOMS AS BULLETS.\n"
             "- For questions: Ask specific questions to assess urgency.\n\n"
             f"LANGUAGE: {language_instruction}\n"
         )
@@ -1267,7 +1453,7 @@ class MultiModelEngine:
                 "## Reasoning\n"
                 "Your clinical analysis based on the protocol. Reference specific protocol criteria.\n\n"
                 "## Answer\n"
-                "Your response to the staff member. List the patient's symptoms as bullet points.\n\n"
+                "Your response to the staff member.\n\n" # List the patient's symptoms as bullet points.\n\n"
                 "## Protocol Applied\n"
                 "The specific protocol name and section you used.\n\n"
                 "## Questions\n"
@@ -1835,7 +2021,8 @@ REFINED_QUESTIONS:
                                model_id: Optional[str] = None,
                                use_rag: bool = True,
                                user_language: str = "en",
-                               use_multi_agent: bool = True) -> Dict[str, Any]:
+                               use_multi_agent: bool = False,
+                               use_parlant: Optional[bool] = None) -> Dict[str, Any]:
         """
         Answer a staff question about a case.
 
@@ -1847,6 +2034,8 @@ REFINED_QUESTIONS:
             user_language: Language for response
             use_multi_agent: Whether to use enhanced multi-agent pipeline (default: False)
                              When True, uses 3 LLM calls: Draft → Clinical Review → Empathy Refine
+            use_parlant: Whether to use Parlant agent (default: None = use class setting)
+                         When True, uses Parlant's guideline-based generation instead of prompting
 
         Returns:
             Response dictionary with answer, reasoning, citations, etc.
@@ -1856,23 +2045,42 @@ REFINED_QUESTIONS:
 
         # Check if the question is medical-related
         if not self._is_medical_query(question):
-            return {
-                "answer": "I'm a medical triage assistant focused on patient assessment. I can help you with questions about this patient's symptoms, condition, or triage priority. Is there anything specific about the patient's case you'd like to know?",
-                "reasoning": "Query detected as non-medical. This system is designed for clinical triage support.",
-                "suggested_questions": [
-                    "What is the patient's triage priority?",
-                    "What symptoms should I be concerned about?",
-                    "What are the recommended next steps?"
-                ],
-                "has_reasoning": True,
-                "cited_data": [],
-                "model_used": "System",
-                "rag_used": False,
-                "protocol_applied": "",
-                "protocol_source": "",
-                "search_query_used": "",
-                "off_topic": True
-            }
+            # Generate a natural response for off-topic queries (no patient data, no protocols)
+            return self._handle_off_topic_query(question)
+
+        # Determine if we should use Parlant
+        should_use_parlant = use_parlant if use_parlant is not None else self._use_parlant
+
+        # Use Parlant agent if enabled and available
+        if should_use_parlant and self.parlant_available:
+            agent = self._get_parlant_agent()
+            if agent:
+                try:
+                    response = agent.answer_question(
+                        question=question,
+                        clinical_state=clinical_state,
+                        user_language=user_language,
+                        session_key=clinical_state.get("session_id")
+                    )
+                    citations = self._extract_citations(response.get("answer", ""), clinical_state)
+                    return {
+                        "answer": response.get("answer", ""),
+                        "reasoning": response.get("reasoning", ""),
+                        "suggested_questions": response.get("follow_up_questions", []),
+                        "has_reasoning": True,
+                        "cited_data": citations,
+                        "model_used": response.get("model_used", "Parlant"),
+                        "rag_used": response.get("rag_used", False),
+                        "protocol_applied": response.get("protocol_applied", ""),
+                        "protocol_source": response.get("protocol_source", ""),
+                        "search_query_used": "",
+                        "multi_agent_used": False,
+                        "parlant_used": True,
+                        "guidelines_triggered": response.get("guidelines_triggered", [])
+                    }
+                except Exception as e:
+                    logger.error(f"Parlant agent error, falling back to legacy: {e}")
+                    # Fall through to legacy implementation
 
         # Use RAG if available and requested
         if use_rag and self.rag_available:

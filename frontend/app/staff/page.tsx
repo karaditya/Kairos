@@ -31,7 +31,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { GenerateSummaryButton } from "@/components/ui/generate-summary-button";
 import { AnimatedDownloadButton } from "@/components/ui/animated-download-button";
 import { LanguageSelectorDropdown, type Language } from "@/components/ui/language-selector-dropdown";
-import { api, type CaseResponse, type ModelInfo, type CurrentModel, type GpuInfo, type DownloadProgress } from "@/lib/api";
+import { api, type CaseResponse, type ModelInfo, type CurrentModel, type GpuInfo, type DownloadProgress, type OllamaModel, type PullProgress } from "@/lib/api";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
@@ -248,22 +248,49 @@ function StaffPortalContent() {
 
   const fetchModels = async () => {
     try {
-      const response = await api.getAllModels();
-      setModels(response.models);
-      setGpuInfo(response.gpu_info);
-      // Set current model from GGUF (primary) or DrBERT
-      const current = response.current_gguf || response.current_drbert;
-      setCurrentModel(current);
-      if (current) {
-        setSelectedModelId(current.model_id);
+      // Try new Ollama-based endpoint first
+      const ollamaResponse = await api.getOllamaModels();
+
+      // Convert to ModelInfo format for backward compatibility
+      const convertedModels: ModelInfo[] = ollamaResponse.models.map(m => ({
+        id: m.id,
+        name: m.name,
+        family: m.source === 'ollama' ? 'ollama' : 'local',
+        description: m.description,
+        size_mb: Math.round(m.size_gb * 1024),
+        tags: [m.source, m.status],
+        is_available: true,
+        is_loaded: m.is_active,
+        is_downloaded: m.is_ready,
+        type: "gguf" as const,
+      }));
+
+      setModels(convertedModels);
+
+      // Set current model
+      if (ollamaResponse.current_model) {
+        setCurrentModel({
+          model_id: ollamaResponse.current_model,
+          name: `Parlant (${ollamaResponse.current_model})`,
+          family: 'ollama',
+          loaded_at: new Date().toISOString(),
+          inference_count: 0,
+          is_loaded: true,
+        });
+        setSelectedModelId(ollamaResponse.current_model);
       }
     } catch (err) {
-      console.error("Failed to fetch models:", err);
+      console.error("Failed to fetch Ollama models:", err);
       // Fallback to old endpoint
       try {
-        const fallback = await api.getModels();
-        setModels(fallback.models.map(m => ({ ...m, is_downloaded: m.is_available ?? false, type: "gguf" as const })));
-        setCurrentModel(fallback.current_model);
+        const response = await api.getAllModels();
+        setModels(response.models);
+        setGpuInfo(response.gpu_info);
+        const current = response.current_gguf || response.current_drbert;
+        setCurrentModel(current);
+        if (current) {
+          setSelectedModelId(current.model_id);
+        }
       } catch (e) {
         console.error("Fallback also failed:", e);
       }
@@ -276,8 +303,17 @@ function StaffPortalContent() {
     setError("");
 
     try {
-      await api.downloadModel(modelId, true, (progress) => {
-        setDownloadProgress(progress);
+      // Try new pullModel endpoint first
+      await api.pullModel(modelId, (progress) => {
+        // Convert PullProgress to DownloadProgress format
+        setDownloadProgress({
+          type: progress.status === 'complete' ? 'complete' : 'progress',
+          model_id: progress.model_id,
+          progress: progress.progress,
+          downloaded_mb: progress.downloaded_gb * 1024,
+          total_mb: progress.total_gb * 1024,
+          status: progress.message,
+        });
       });
 
       // Refresh models list after download
@@ -285,7 +321,15 @@ function StaffPortalContent() {
       setDownloadingModel(null);
       setDownloadProgress(null);
     } catch (err: any) {
-      setError(err.message || "Download failed");
+      // Fallback to old download endpoint
+      try {
+        await api.downloadModel(modelId, true, (progress) => {
+          setDownloadProgress(progress);
+        });
+        await fetchModels();
+      } catch (fallbackErr: any) {
+        setError(fallbackErr.message || "Download failed");
+      }
       setDownloadingModel(null);
       setDownloadProgress(null);
     }
@@ -294,7 +338,7 @@ function StaffPortalContent() {
   const handleSwitchModel = async (modelId: string) => {
     const model = models.find(m => m.id === modelId);
 
-    // If not downloaded, trigger download instead
+    // If not downloaded/ready, trigger download instead
     if (model && !model.is_downloaded) {
       await handleDownloadModel(modelId);
       return;
@@ -311,19 +355,36 @@ function StaffPortalContent() {
     setError("");
 
     try {
-      // Use appropriate endpoint based on model type
-      if (model?.type === "drbert") {
-        const result = await api.loadDrBertModel(modelId);
-        setCurrentModel(result.model);
-      } else {
-        const result = await api.switchModel(modelId, staffPin);
-        setCurrentModel(result.model);
-      }
+      // Try new selectModel endpoint first
+      const result = await api.selectModel(modelId);
+      setCurrentModel({
+        model_id: result.model_id,
+        name: `Parlant (${result.model_id})`,
+        family: 'ollama',
+        loaded_at: new Date().toISOString(),
+        inference_count: 0,
+        is_loaded: true,
+      });
       setSelectedModelId(modelId);
       await fetchModels();
       setShowModelSelector(false);
     } catch (err: any) {
-      setError(err.message || "Failed to switch model");
+      // Fallback to old switchModel endpoint
+      try {
+        const model = models.find(m => m.id === modelId);
+        if (model?.type === "drbert") {
+          const result = await api.loadDrBertModel(modelId);
+          setCurrentModel(result.model);
+        } else {
+          const result = await api.switchModel(modelId, staffPin);
+          setCurrentModel(result.model);
+        }
+        setSelectedModelId(modelId);
+        await fetchModels();
+        setShowModelSelector(false);
+      } catch (fallbackErr: any) {
+        setError(fallbackErr.message || "Failed to switch model");
+      }
     } finally {
       setModelSwitching(false);
     }

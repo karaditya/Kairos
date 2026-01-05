@@ -30,13 +30,16 @@ import asyncio
 
 from database import Database, Session, Case
 from pdf_generator import generate_medical_report_pdf
-from triage_engine import TriageEngine, RiskEngine
-from multi_model_engine import MultiModelEngine, get_engine
-from model_registry import get_all_models, get_model_config, model_to_dict
-from drbert_engine import (
-    DrBERTEngine, get_drbert_engine, DRBERT_MODELS,
-    Protocol, PatientCase, CHROMADB_AVAILABLE
-)
+
+# New Parlant-native imports
+from triage_rules import get_triage_rules, TriageRules
+from risk_calculator import get_risk_calculator, RiskCalculator
+from parlant_engine import ParlantEngine, get_parlant_engine
+from drbert_rag import get_drbert_rag, DrBERTRAG, CHROMADB_AVAILABLE, DRBERT_MODELS
+from config import OLLAMA_MODEL, RAG_ENABLED, PARLANT_PORT, SUPPORTED_OLLAMA_MODELS
+from ollama_manager import OllamaManager, get_ollama_manager
+
+# Legacy imports for model downloading (still needed)
 from model_downloader import (
     detect_gpu_capabilities,
     download_and_load_model,
@@ -44,6 +47,9 @@ from model_downloader import (
     get_all_downloads,
     check_model_downloaded
 )
+
+# Parlant is always available in the new architecture
+PARLANT_AVAILABLE = True
 
 # =============================================================================
 # Configuration
@@ -151,10 +157,11 @@ class ProtocolSearchRequest(BaseModel):
 
 # Global instances
 db: Database = None
-triage_engine: TriageEngine = None
-risk_engine: RiskEngine = None
-reasoning_engine: MultiModelEngine = None
-drbert_engine: DrBERTEngine = None
+triage_rules: TriageRules = None
+risk_calculator: RiskCalculator = None
+parlant_engine: ParlantEngine = None
+drbert_rag: DrBERTRAG = None
+ollama_manager: OllamaManager = None
 
 
 
@@ -162,122 +169,67 @@ drbert_engine: DrBERTEngine = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize components on startup, cleanup on shutdown."""
-    global db, triage_engine, risk_engine, reasoning_engine, drbert_engine
+    global db, triage_rules, risk_calculator, parlant_engine, drbert_rag, ollama_manager
 
-    print("Starting Offline Triage MVP...")
+    print("Starting Offline Triage MVP (Parlant-Native)...")
 
     # Initialize database
     db = Database(DB_PATH)
     db.initialize()
     print(f"  Database initialized: {DB_PATH}")
 
-    # Initialize triage engine
-    triage_engine = TriageEngine(CONFIG_DIR)
-    print(f"  Triage engine loaded: {len(triage_engine.trees)} complaint trees")
+    # Initialize triage rules (deterministic question flow)
+    triage_rules = get_triage_rules()
+    print(f"  Triage rules loaded: {len(triage_rules.trees)} complaint trees")
 
-    # Initialize risk engine
-    risk_engine = RiskEngine(CONFIG_DIR)
-    print(f"  Risk engine loaded: {len(risk_engine.rules)} red-flag rules")
+    # Initialize risk calculator (deterministic risk bands)
+    risk_calculator = get_risk_calculator()
+    print(f"  Risk calculator loaded: {len(risk_calculator.rules_en)} EN rules, {len(risk_calculator.rules_fr)} FR rules")
 
-    # Initialize multi-model reasoning engine
-    models_dir = os.path.dirname(MODEL_PATH)
-    reasoning_engine = get_engine(models_dir=models_dir, reinitialize=True)
+    # Initialize DrBERT RAG (lazy load - doesn't load model by default)
+    drbert_rag = get_drbert_rag()
+    print(f"  DrBERT RAG initialized (load on demand)")
 
-    if reasoning_engine.is_loaded:
-        current = reasoning_engine.get_current_model()
-        if current:
-            print(f"  LLM loaded: {current['name']} ({current['model_id']})")
-        else:
-            stats = reasoning_engine.get_engine_stats()
-            print(f"  LLM loaded: {stats.get('model_loaded', 'Unknown')}")
+    # Initialize Ollama manager (model detection and switching)
+    ollama_manager = await get_ollama_manager()
+    if ollama_manager.is_available:
+        ready_models = await ollama_manager.get_ready_models()
+        print(f"  Ollama manager: {len(ready_models)} models ready")
     else:
-        print(f"  No LLM loaded (will use fallback mode)")
+        print("  Ollama manager: Ollama not available")
 
-    # List available models
-    available = [m for m in reasoning_engine.get_available_models() if m.get("is_available")]
-    print(f"  Available models: {len(available)}")
+    # Initialize Parlant engine (main LLM engine with guidelines)
+    parlant_engine = ParlantEngine()
+    await parlant_engine.initialize(load_rag=RAG_ENABLED)
+    print(f"  Parlant engine initialized: {parlant_engine.model_name}")
 
-    # Initialize DrBERT engine (lazy load - doesn't load model by default)
-    drbert_engine = get_drbert_engine(reinitialize=True)
-    print(f"  DrBERT engine initialized (load on demand)")
-
-    # Connect DrBERT to MultiModelEngine for RAG support
-    reasoning_engine.set_drbert_engine(drbert_engine)
-
-    # Set up auto-ingestion callback for DrBERT
-    def auto_ingest_patients():
-        """Auto-ingest all patient cases when DrBERT loads."""
-        if not drbert_engine.case_store_available:
-            return
-
-        # Check if cases already indexed
-        case_stats = drbert_engine.get_case_store_stats()
-        existing_count = case_stats.get("total_cases", 0)
-
-        # Get all cases from database
-        all_cases = db.list_cases()
-        if not all_cases:
-            print(f"  No patient cases to index")
-            return
-
-        # Convert to format for indexing
-        cases_to_index = []
-        for case in all_cases:
-            # Build symptoms text from answers
-            symptoms_parts = []
-            answers = case.answers or {}
-            for key, val in answers.items():
-                if not key.startswith("_"):
-                    if isinstance(val, bool):
-                        if val:
-                            symptoms_parts.append(key.replace("_", " "))
-                    elif val:
-                        symptoms_parts.append(f"{key.replace('_', ' ')}: {val}")
-
-            symptoms_text = ", ".join(symptoms_parts) if symptoms_parts else case.summary or ""
-
-            cases_to_index.append({
-                "case_id": case.id,
-                "session_id": case.session_id,
-                "chief_complaint": answers.get("chief_complaint", "unknown"),
-                "symptoms_text": symptoms_text,
-                "risk_band": case.risk_band,
-                "demographics": case.demographics or {}
-            })
-
-        # Index all cases
-        if cases_to_index:
-            print(f"  Auto-indexing {len(cases_to_index)} patient cases...")
-            result = drbert_engine.index_patient_cases_batch(cases_to_index)
-            if result.get("success"):
-                print(f"  Indexed {result.get('added', 0)} new cases (skipped {result.get('skipped', 0)} existing)")
-            else:
-                print(f"  Case indexing failed: {result.get('error', 'Unknown')}")
-
-    # Register the callback
-    drbert_engine.set_on_load_callback(auto_ingest_patients)
+    # Report status
+    print(f"  Parlant agent: ENABLED (guideline-based generation)")
+    print(f"  Ollama model: {OLLAMA_MODEL}")
+    print(f"  RAG available: {parlant_engine.rag_available}")
 
     if CHROMADB_AVAILABLE:
-        vs_stats = drbert_engine.get_vector_store_stats()
-        protocol_count = vs_stats.get("total_protocols", 0)
-        case_stats = drbert_engine.get_case_store_stats()
-        case_count = case_stats.get("total_cases", 0)
-        print(f"  VectorStore: {protocol_count} protocols, {case_count} patient cases indexed")
+        stats = drbert_rag.get_stats()
+        protocol_count = stats.get("total_protocols", 0)
+        print(f"  VectorStore: {protocol_count} protocols indexed")
     else:
         print(f"  VectorStore: ChromaDB not available")
 
     print("Triage MVP ready!")
     print(f"   Patient interface: http://localhost:8000/")
     print(f"   Staff interface: http://localhost:8000/staff")
+    print(f"   Parlant port: {PARLANT_PORT}")
 
     yield
 
     # Cleanup
     print("Shutting down...")
-    if reasoning_engine:
-        reasoning_engine.unload_model()
-    if drbert_engine:
-        drbert_engine.unload_model()
+    if ollama_manager:
+        await ollama_manager.shutdown()
+    if parlant_engine:
+        await parlant_engine.shutdown()
+    if drbert_rag:
+        drbert_rag.unload_model()
 
 # =============================================================================
 # FastAPI Application
@@ -355,7 +307,7 @@ async def submit_demographics(session_id: str, demographics: DemographicsRequest
     db.update_session(session)
 
     # Return chief complaint selection
-    complaints = triage_engine.get_available_complaints(session.language)
+    complaints = triage_rules.get_available_complaints(session.language)
 
     return {
         "next_question": {
@@ -384,15 +336,23 @@ async def submit_chief_complaint(session_id: str, complaint: Dict[str, Any]):
     session.answers["chief_complaint_text"] = free_text
 
     # Load triage tree for this complaint
-    tree = triage_engine.get_tree(complaint_id)
+    tree = triage_rules.get_tree(complaint_id, session.language)
     if not tree:
-        tree = triage_engine.get_tree("general")
+        # Fallback: try first available tree for this language
+        available = triage_rules.get_available_complaints(session.language)
+        if available:
+            fallback_id = available[0]["id"]
+            tree = triage_rules.get_tree(fallback_id, session.language)
+            logger.warning(f"Complaint '{complaint_id}' not found, using fallback: {fallback_id}")
+
+    if not tree:
+        raise HTTPException(status_code=400, detail=f"No triage tree available for complaint: {complaint_id}")
 
     # Get first question
-    first_q = triage_engine.get_first_question(tree)
-    session.current_question_id = first_q["id"]
+    first_q = triage_rules.get_first_question(tree)
+    session.current_question_id = first_q.id if hasattr(first_q, 'id') else first_q["id"]
     session.status = "triage"
-    session.answers["_tree_id"] = tree["id"]
+    session.answers["_tree_id"] = tree.id if hasattr(tree, 'id') else tree["id"]
     db.update_session(session)
 
     return {
@@ -412,11 +372,15 @@ async def submit_answer(session_id: str, request: AnswerRequest):
     session.answers[request.question_id] = request.answer
 
     # Get current tree
-    tree_id = session.answers.get("_tree_id", "general")
-    tree = triage_engine.get_tree(tree_id)
+    tree_id = session.answers.get("_tree_id")
+    if not tree_id:
+        raise HTTPException(status_code=400, detail="No triage tree set for session")
+    tree = triage_rules.get_tree(tree_id, session.language)
+    if not tree:
+        raise HTTPException(status_code=400, detail=f"Triage tree not found: {tree_id}")
 
     # Determine next question
-    next_q = triage_engine.get_next_question(
+    next_q = triage_rules.get_next_question(
         tree,
         request.question_id,
         request.answer,
@@ -424,7 +388,7 @@ async def submit_answer(session_id: str, request: AnswerRequest):
     )
 
     # Calculate progress
-    total_questions = triage_engine.count_questions(tree)
+    total_questions = triage_rules.count_questions(tree)
     answered = len([k for k in session.answers.keys() if not k.startswith("_")])
     progress = min(0.15 + (answered / total_questions) * 0.7, 0.85)
 
@@ -434,11 +398,11 @@ async def submit_answer(session_id: str, request: AnswerRequest):
         session.current_question_id = None
 
         # Compute risk band (pass language to use appropriate system)
-        risk_result = risk_engine.compute_risk(
+        risk_result = risk_calculator.compute_risk(
             session.demographics,
             session.answers,
             language=session.language
-        )
+        ).to_dict()
         session.answers["_risk_band"] = risk_result["band"]
         session.answers["_triggered_rules"] = risk_result["triggered_rules"]
 
@@ -457,7 +421,8 @@ async def submit_answer(session_id: str, request: AnswerRequest):
             risk_band=risk_result["band"]
         )
     else:
-        session.current_question_id = next_q["id"]
+        # Handle both dict and Question dataclass
+        session.current_question_id = next_q.id if hasattr(next_q, 'id') else next_q["id"]
         db.update_session(session)
 
         return AnswerResponse(
@@ -492,13 +457,17 @@ async def get_summary(session_id: str):
         "triggered_rules": triggered_rules
     }
 
-    # Use the engine to generate a summary via answer_staff_question
+    # Use the Parlant engine to generate a summary
     summary_prompt = "Provide a brief 2-3 sentence summary of this patient's condition and triage priority."
-    ai_result = reasoning_engine.answer_staff_question(summary_prompt, clinical_state)
+    ai_result = await parlant_engine.answer_staff_question(
+        summary_prompt,
+        clinical_state,
+        user_language=session.language
+    )
     summary_text = ai_result.get("answer", "Triage assessment complete. Please proceed as directed.")
 
     # Extract key flags from triggered rules
-    key_flags = reasoning_engine._extract_key_flags(clinical_state)
+    key_flags = [rule.get("description", "") for rule in triggered_rules[:3]]
 
     # Determine waiting instruction based on language/system
     triage_level = session.answers.get("_triage_level", "4")
@@ -542,28 +511,8 @@ async def get_summary(session_id: str):
     )
     db.create_case(case)
 
-    # Auto-index case if DrBERT is loaded
-    if drbert_engine and drbert_engine.is_loaded and drbert_engine.case_store_available:
-        try:
-            symptoms_parts = []
-            for key, val in session.answers.items():
-                if not key.startswith("_"):
-                    if isinstance(val, bool) and val:
-                        symptoms_parts.append(key.replace("_", " "))
-                    elif val:
-                        symptoms_parts.append(f"{key.replace('_', ' ')}: {val}")
-            symptoms_text_indexed = ", ".join(symptoms_parts) if symptoms_parts else summary_text
-
-            drbert_engine.index_patient_case(
-                case_id=case.id,
-                session_id=session_id,
-                chief_complaint=session.answers.get("chief_complaint", "unknown"),
-                symptoms_text=symptoms_text_indexed,
-                risk_band=risk_band,
-                demographics=session.demographics
-            )
-        except Exception as e:
-            logger.warning(f"Failed to auto-index case: {e}")
+    # Note: Case indexing is now handled automatically by the Parlant engine
+    # when RAG is enabled, so we skip manual indexing here
 
     return SummaryResponse(
         session_id=session_id,
@@ -606,12 +555,15 @@ async def generate_summary_pdf(session_id: str):
         "triggered_rules": triggered_rules
     }
 
-    # Generate extended summary with diagnosis and conclusion using the engine
+    # Generate extended summary with diagnosis and conclusion using Parlant engine
     # Returns {"summary": ..., "diagnosis": ..., "conclusion": ...}
-    pdf_sections = reasoning_engine.generate_pdf_summary(clinical_state)
+    pdf_sections = await parlant_engine.generate_pdf_summary(
+        clinical_state,
+        user_language=session.language
+    )
 
-    # Extract key flags
-    key_flags = reasoning_engine._extract_key_flags(clinical_state)
+    # Extract key flags from triggered rules
+    key_flags = [rule.get("description", "") for rule in triggered_rules[:3]]
 
     # Waiting instruction based on risk
     waiting_instructions = {
@@ -730,12 +682,10 @@ async def staff_ask(case_id: str, request: StaffAskRequestWithModel, _: bool = D
     session = db.get_session(case.session_id) if case.session_id else None
     user_language = session.language if session else "en"
 
-    # Use reasoning engine to answer (with optional model selection and RAG)
-    result = reasoning_engine.answer_staff_question(
+    # Use Parlant engine to answer (with guideline-based generation)
+    result = await parlant_engine.answer_staff_question(
         request.question,
         clinical_state,
-        model_id=request.model_id,
-        use_rag=request.use_rag,
         user_language=user_language
     )
 
@@ -766,125 +716,309 @@ async def update_case_status(case_id: str, status: Dict[str, str], _: bool = Dep
     return {"success": True, "new_status": case.status}
 
 # =============================================================================
-# Model Management Endpoints
+# Model Management Endpoints (Enhanced with OllamaManager)
 # =============================================================================
 
 @app.get("/models")
 async def list_models():
-    """List all supported models with availability status."""
+    """
+    List all models with their status.
+
+    Returns models in two categories:
+    - Ready: Models that are pulled and ready to use (local + pulled Ollama)
+    - Available: Models that can be downloaded from Ollama
+
+    Response includes current active model.
+    """
+    if not ollama_manager:
+        # Fallback if ollama_manager not initialized
+        return {
+            "models": [],
+            "current_model": OLLAMA_MODEL,
+            "ollama_available": False,
+            "message": "Ollama manager not initialized"
+        }
+
+    all_models = await ollama_manager.get_all_models()
+    current_model_id = ollama_manager.get_current_model()
+
+    # Format for frontend
+    models_list = []
+    for m in all_models:
+        models_list.append({
+            "id": m.id,
+            "name": m.name,
+            "size_gb": m.size_gb,
+            "description": m.description,
+            "status": m.status,  # 'ready', 'available', 'downloading'
+            "source": m.source,  # 'local', 'ollama'
+            "is_active": m.is_active,
+            "is_ready": m.status == "ready",
+            "is_available": m.status == "available",
+        })
+
     return {
-        "models": reasoning_engine.get_available_models(),
-        "current_model": reasoning_engine.get_current_model(),
+        "models": models_list,
+        "current_model": current_model_id,
+        "ollama_available": ollama_manager.is_available,
+        "ready_count": len([m for m in all_models if m.status == "ready"]),
+        "available_count": len([m for m in all_models if m.status == "available"]),
+    }
+
+@app.get("/models/ready")
+async def list_ready_models():
+    """List only models that are ready to use (pulled or local)."""
+    if not ollama_manager:
+        return {"models": [], "error": "Ollama manager not initialized"}
+
+    ready_models = await ollama_manager.get_ready_models()
+    return {
+        "models": [m.to_dict() for m in ready_models],
+        "current_model": ollama_manager.get_current_model()
+    }
+
+@app.get("/models/available")
+async def list_available_models():
+    """List models available for download (not yet pulled)."""
+    if not ollama_manager:
+        return {"models": [], "error": "Ollama manager not initialized"}
+
+    available_models = await ollama_manager.get_available_models()
+    return {
+        "models": [m.to_dict() for m in available_models]
     }
 
 @app.get("/models/current")
 async def get_current_model():
-    """Get currently loaded model information."""
-    current = reasoning_engine.get_current_model()
-    if not current:
-        return {"loaded": False, "message": "No model currently loaded"}
-    return {"loaded": True, "model": current}
+    """Get currently active model information."""
+    if not ollama_manager:
+        return {
+            "model_id": OLLAMA_MODEL,
+            "name": f"Parlant ({OLLAMA_MODEL})",
+            "ollama_available": False,
+        }
+
+    current_id = ollama_manager.get_current_model()
+    is_available = await ollama_manager.check_model_available(current_id)
+
+    return {
+        "model_id": current_id,
+        "name": f"Parlant ({current_id})",
+        "is_ready": is_available,
+        "ollama_available": ollama_manager.is_available,
+        "parlant_initialized": parlant_engine.is_initialized if parlant_engine else False,
+    }
+
+@app.post("/models/select")
+async def select_model(request: ModelSwitchRequest):
+    """
+    Select a model for use with Parlant.
+
+    The model must be ready (pulled or local).
+    """
+    if not ollama_manager:
+        raise HTTPException(status_code=503, detail="Ollama manager not initialized")
+
+    model_id = request.model_id
+
+    # Check if model is available
+    is_available = await ollama_manager.check_model_available(model_id)
+    if not is_available:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model '{model_id}' is not ready. Pull it first using POST /models/pull"
+        )
+
+    # Set the model
+    success = await ollama_manager.set_model(model_id)
+    if not success:
+        raise HTTPException(status_code=500, detail=f"Failed to select model: {model_id}")
+
+    # Update Parlant engine to use new model
+    if parlant_engine:
+        await parlant_engine.set_model(model_id)
+
+    return {
+        "success": True,
+        "model_id": model_id,
+        "message": f"Model switched to {model_id}"
+    }
+
+@app.post("/models/pull/{model_id}")
+async def pull_model(model_id: str):
+    """
+    Pull a model from Ollama with progress streaming.
+
+    Returns Server-Sent Events with download progress.
+    """
+    if not ollama_manager:
+        raise HTTPException(status_code=503, detail="Ollama manager not initialized")
+
+    if not ollama_manager.is_available:
+        raise HTTPException(status_code=503, detail="Ollama is not available")
+
+    # Check if model is supported
+    if model_id not in SUPPORTED_OLLAMA_MODELS and not model_id.startswith("local:"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown model: {model_id}. Supported: {list(SUPPORTED_OLLAMA_MODELS.keys())}"
+        )
+
+    # Check if already pulled
+    is_ready = await ollama_manager.check_model_available(model_id)
+    if is_ready:
+        return {
+            "status": "already_ready",
+            "model_id": model_id,
+            "message": "Model is already pulled and ready to use"
+        }
+
+    import json
+
+    async def generate_progress():
+        async for progress in ollama_manager.pull_model(model_id):
+            yield f"data: {json.dumps(progress.to_dict())}\n\n"
+
+    return StreamingResponse(
+        generate_progress(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
+
+@app.get("/models/{model_id}/status")
+async def get_model_status(model_id: str):
+    """Get status of a specific model."""
+    if not ollama_manager:
+        raise HTTPException(status_code=503, detail="Ollama manager not initialized")
+
+    is_ready = await ollama_manager.check_model_available(model_id)
+    is_active = ollama_manager.get_current_model() == model_id
+
+    # Get model info from supported list
+    model_info = SUPPORTED_OLLAMA_MODELS.get(model_id, {})
+
+    return {
+        "model_id": model_id,
+        "name": model_info.get("name", model_id),
+        "description": model_info.get("description", ""),
+        "size_gb": model_info.get("size_gb", 0),
+        "status": "ready" if is_ready else "available",
+        "is_active": is_active,
+        "is_ready": is_ready,
+    }
 
 @app.get("/models/all")
 async def list_all_models_with_download_status():
     """
-    List all available models (GGUF + DrBERT) with download status.
-    This is the unified endpoint for the frontend model selector.
+    List all available models with download status.
+    In Parlant-native mode, we use Ollama models + DrBERT for RAG.
     """
-    models_dir = os.path.dirname(MODEL_PATH)
     gpu_info = detect_gpu_capabilities()
 
     all_models = []
 
-    # GGUF models
-    for config in get_all_models():
-        model_dict = model_to_dict(config)
-        model_dict["type"] = "gguf"
-        model_dict["is_downloaded"] = reasoning_engine._model_exists(config.id)
-        model_dict["is_loaded"] = (
-            reasoning_engine._current_model and
-            reasoning_engine._current_model.model_id == config.id
-        )
-        all_models.append(model_dict)
+    # Ollama model (used by Parlant)
+    all_models.append({
+        "id": OLLAMA_MODEL,
+        "name": f"Parlant ({OLLAMA_MODEL})",
+        "family": "ollama",
+        "description": "Parlant agent with Ollama backend",
+        "type": "ollama",
+        "is_downloaded": True,  # Ollama manages its own downloads
+        "is_loaded": parlant_engine.is_initialized if parlant_engine else False,
+        "tags": ["parlant", "guideline-based"]
+    })
 
-    # DrBERT models
+    # DrBERT models for RAG
     for model_id, config in DRBERT_MODELS.items():
         drbert_dict = {
-            "id": config.id,
+            "id": model_id,
             "name": config.name,
             "family": "drbert",
             "description": config.description,
             "type": "drbert",
-            "size_mb": config.approx_size_mb,
-            "training_data_gb": config.training_data_gb,
-            "hf_model_id": config.hf_model_id,
-            "is_downloaded": check_model_downloaded(
-                model_id, "drbert",
-                {"hf_model_id": config.hf_model_id},
-                models_dir
-            ),
-            "is_loaded": (
-                drbert_engine.is_loaded and
-                drbert_engine._current_model and
-                drbert_engine._current_model.config.id == model_id
-            ),
-            "tags": ["french", "medical", "bert"]
+            "size_gb": config.size_gb,
+            "hf_repo": config.hf_repo,
+            "is_downloaded": drbert_rag.is_loaded if drbert_rag and drbert_rag.model_id == model_id else False,
+            "is_loaded": drbert_rag.is_loaded and drbert_rag.model_id == model_id if drbert_rag else False,
+            "tags": ["french", "medical", "bert", "rag"]
         }
         all_models.append(drbert_dict)
 
     return {
         "models": all_models,
         "gpu_info": gpu_info,
-        "current_gguf": reasoning_engine.get_current_model(),
-        "current_drbert": drbert_engine.get_current_model() if drbert_engine else None
-    }
-
-@app.get("/models/{model_id}")
-async def get_model_info(model_id: str):
-    """Get detailed information about a specific model."""
-    config = get_model_config(model_id)
-    if not config:
-        raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
-
-    model_info = model_to_dict(config)
-    model_info["is_available"] = reasoning_engine._model_exists(model_id)
-
-    current = reasoning_engine._current_model
-    model_info["is_loaded"] = (current is not None and current.model_id == model_id)
-
-    return model_info
-
-@app.post("/models/switch", dependencies=[Depends(verify_staff_pin)])
-async def switch_model(request: ModelSwitchRequest):
-    """Switch to a different GGUF model (staff only).
-
-    Note: GGUF models are used for text generation (Q&A, summaries).
-    DrBERT can run alongside for embeddings/similarity.
-    """
-    config = get_model_config(request.model_id)
-    if not config:
-        raise HTTPException(status_code=404, detail=f"Unknown model: {request.model_id}")
-
-    if not reasoning_engine._model_exists(request.model_id):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Model not downloaded. Download {config.filename} first."
-        )
-
-    success = reasoning_engine.switch_model(request.model_id)
-    if not success:
-        raise HTTPException(status_code=500, detail="Failed to switch model")
-
-    return {
-        "success": True,
-        "message": f"Switched to {config.name}",
-        "model": reasoning_engine.get_current_model()
+        "current_parlant": {"id": OLLAMA_MODEL, "name": parlant_engine.model_name} if parlant_engine else None,
+        "current_drbert": {"id": drbert_rag.model_id} if drbert_rag and drbert_rag.is_loaded else None
     }
 
 @app.get("/models/stats", dependencies=[Depends(verify_staff_pin)])
 async def get_model_stats():
     """Get engine statistics (staff only)."""
-    return reasoning_engine.get_engine_stats()
+    return {
+        "parlant_initialized": parlant_engine.is_initialized if parlant_engine else False,
+        "ollama_model": OLLAMA_MODEL,
+        "rag_available": parlant_engine.rag_available if parlant_engine else False,
+        "drbert_loaded": drbert_rag.is_loaded if drbert_rag else False,
+        "drbert_model": drbert_rag.model_id if drbert_rag and drbert_rag.is_loaded else None,
+        "drbert_stats": drbert_rag.get_stats() if drbert_rag else {}
+    }
+
+@app.get("/models/{model_id}")
+async def get_model_info(model_id: str):
+    """Get detailed information about a specific model."""
+    # In Parlant-native mode, we use Ollama for LLM and DrBERT for RAG
+    if model_id == OLLAMA_MODEL:
+        return {
+            "id": OLLAMA_MODEL,
+            "name": f"Parlant ({OLLAMA_MODEL})",
+            "type": "ollama",
+            "is_available": True,
+            "is_loaded": parlant_engine.is_initialized if parlant_engine else False,
+            "description": "Parlant agent with Ollama backend for guideline-based generation"
+        }
+    elif model_id in DRBERT_MODELS:
+        config = DRBERT_MODELS[model_id]
+        return {
+            "id": model_id,
+            "name": config.name,
+            "type": "drbert",
+            "is_available": True,
+            "is_loaded": drbert_rag.is_loaded and drbert_rag.model_id == model_id if drbert_rag else False,
+            "description": config.description,
+            "size_gb": config.size_gb,
+            "hf_repo": config.hf_repo
+        }
+    else:
+        raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
+
+@app.post("/models/switch", dependencies=[Depends(verify_staff_pin)])
+async def switch_model(request: ModelSwitchRequest):
+    """Switch to a different model (staff only).
+
+    In Parlant-native mode:
+    - Ollama models are managed externally (use `ollama pull <model>`)
+    - DrBERT models can be switched via /drbert/load/{model_id}
+    """
+    if request.model_id in DRBERT_MODELS:
+        # Switch DrBERT model
+        success = drbert_rag.load_model(request.model_id)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to switch DrBERT model")
+        return {
+            "success": True,
+            "message": f"Switched DrBERT to {request.model_id}",
+            "model": {"id": drbert_rag.model_id, "type": "drbert"}
+        }
+    else:
+        return {
+            "success": False,
+            "message": f"To change Ollama model, update OLLAMA_MODEL in config and restart. Current: {OLLAMA_MODEL}",
+            "current_model": {"id": OLLAMA_MODEL, "type": "ollama"}
+        }
 
 # =============================================================================
 # DrBERT Endpoints (French Medical BERT)
@@ -893,10 +1027,20 @@ async def get_model_stats():
 @app.get("/drbert/models")
 async def list_drbert_models():
     """List available DrBERT models."""
+    models = []
+    for model_id, config in DRBERT_MODELS.items():
+        models.append({
+            "id": model_id,
+            "name": config.name,
+            "description": config.description,
+            "size_gb": config.size_gb,
+            "hf_repo": config.hf_repo
+        })
+
     return {
-        "models": drbert_engine.get_available_models(),
-        "current": drbert_engine.get_current_model(),
-        "stats": drbert_engine.get_engine_stats()
+        "models": models,
+        "current": {"id": drbert_rag.model_id} if drbert_rag and drbert_rag.is_loaded else None,
+        "stats": drbert_rag.get_stats() if drbert_rag else {}
     }
 
 @app.post("/drbert/load/{model_id}")
@@ -905,8 +1049,8 @@ async def load_drbert_model(model_id: str):
     Load a DrBERT model with automatic GPU/CPU distribution.
     Models: drbert-4gb, drbert-7gb, drbert-4gb-pubmed
 
-    Note: DrBERT is for embeddings/similarity, not text generation.
-    It runs alongside the GGUF model (both can be loaded).
+    Note: DrBERT is for embeddings/RAG, not text generation.
+    It runs alongside Parlant (Ollama) for the full RAG pipeline.
     """
     if model_id not in DRBERT_MODELS:
         raise HTTPException(
@@ -914,7 +1058,7 @@ async def load_drbert_model(model_id: str):
             detail=f"Unknown model: {model_id}. Available: {list(DRBERT_MODELS.keys())}"
         )
 
-    success = drbert_engine.load_model(model_id)
+    success = drbert_rag.load_model(model_id)
     if not success:
         raise HTTPException(
             status_code=500,
@@ -923,14 +1067,14 @@ async def load_drbert_model(model_id: str):
 
     return {
         "success": True,
-        "model": drbert_engine.get_current_model(),
-        "stats": drbert_engine.get_engine_stats()
+        "model": {"id": drbert_rag.model_id},
+        "stats": drbert_rag.get_stats()
     }
 
 @app.post("/drbert/unload")
 async def unload_drbert_model():
     """Unload current DrBERT model to free memory."""
-    drbert_engine.unload_model()
+    drbert_rag.unload_model()
     return {"success": True, "message": "Model unloaded"}
 
 @app.post("/drbert/embeddings")
@@ -944,7 +1088,7 @@ async def get_drbert_embeddings(request: Dict[str, Any]):
         "pooling": "mean"  // optional: mean, cls, max
     }
     """
-    if not drbert_engine.is_loaded:
+    if not drbert_rag.is_loaded:
         raise HTTPException(status_code=400, detail="No DrBERT model loaded. Call /drbert/load/{model_id} first.")
 
     texts = request.get("texts", [])
@@ -954,7 +1098,7 @@ async def get_drbert_embeddings(request: Dict[str, Any]):
     pooling = request.get("pooling", "mean")
 
     try:
-        embeddings = drbert_engine.get_embeddings(texts, pooling=pooling)
+        embeddings = drbert_rag.get_embeddings(texts, pooling=pooling)
         return {
             "embeddings": embeddings,
             "dimension": len(embeddings[0]) if embeddings else 0,
@@ -974,7 +1118,7 @@ async def compute_drbert_similarity(request: Dict[str, Any]):
         "text2": "Difficulté respiratoire signalée"
     }
     """
-    if not drbert_engine.is_loaded:
+    if not drbert_rag.is_loaded:
         raise HTTPException(status_code=400, detail="No DrBERT model loaded. Call /drbert/load/{model_id} first.")
 
     text1 = request.get("text1", "")
@@ -984,7 +1128,7 @@ async def compute_drbert_similarity(request: Dict[str, Any]):
         raise HTTPException(status_code=400, detail="Both text1 and text2 required")
 
     try:
-        similarity = drbert_engine.compute_similarity(text1, text2)
+        similarity = drbert_rag.compute_similarity(text1, text2)
         return {
             "similarity": similarity,
             "text1": text1[:100],
@@ -1004,7 +1148,7 @@ async def drbert_fill_mask(request: Dict[str, Any]):
         "top_k": 5
     }
     """
-    if not drbert_engine.is_loaded:
+    if not drbert_rag.is_loaded:
         raise HTTPException(status_code=400, detail="No DrBERT model loaded. Call /drbert/load/{model_id} first.")
 
     text = request.get("text", "")
@@ -1017,7 +1161,7 @@ async def drbert_fill_mask(request: Dict[str, Any]):
     top_k = request.get("top_k", 5)
 
     try:
-        predictions = drbert_engine.fill_mask(text, top_k=top_k)
+        predictions = drbert_rag.fill_mask(text, top_k=top_k)
         return {"predictions": predictions}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1030,7 +1174,7 @@ async def drbert_fill_mask(request: Dict[str, Any]):
 @app.post("/admin/protocols/ingest", dependencies=[Depends(verify_staff_pin)])
 async def ingest_protocols(request: ProtocolIngestRequest):
     """
-    Ingest French medical protocols into the vector store.
+    Ingest medical protocols into the vector store.
 
     Requires:
     - DrBERT model loaded (/drbert/load/{model_id})
@@ -1050,13 +1194,13 @@ async def ingest_protocols(request: ProtocolIngestRequest):
         ]
     }
     """
-    if not drbert_engine.is_loaded:
+    if not drbert_rag.is_loaded:
         raise HTTPException(
             status_code=400,
             detail="DrBERT model not loaded. Call /drbert/load/{model_id} first."
         )
 
-    if not drbert_engine.vector_store_available:
+    if not drbert_rag.rag_available:
         raise HTTPException(
             status_code=400,
             detail="Vector store not available. Ensure ChromaDB is installed."
@@ -1065,7 +1209,7 @@ async def ingest_protocols(request: ProtocolIngestRequest):
     # Convert Pydantic models to dicts
     protocols_data = [p.model_dump() for p in request.protocols]
 
-    result = drbert_engine.ingest_protocols(protocols_data)
+    result = drbert_rag.ingest_protocols(protocols_data)
 
     if not result.get("success", False):
         raise HTTPException(status_code=500, detail=result.get("error", "Ingestion failed"))
@@ -1082,10 +1226,10 @@ async def ingest_protocols(request: ProtocolIngestRequest):
 @app.post("/admin/protocols/search")
 async def search_protocols(request: ProtocolSearchRequest):
     """
-    Search protocols using French query text.
+    Search protocols using medical query text.
 
-    For best results, query should be in French medical terminology.
-    Use the LLM French Pivot to translate symptoms before searching.
+    Works with both English and French queries.
+    DrBERT provides semantic understanding for accurate retrieval.
 
     Request body:
     {
@@ -1094,53 +1238,54 @@ async def search_protocols(request: ProtocolSearchRequest):
         "category": "cardiac"  // optional
     }
     """
-    if not drbert_engine.is_loaded:
+    if not drbert_rag.is_loaded:
         raise HTTPException(
             status_code=400,
             detail="DrBERT model not loaded. Call /drbert/load/{model_id} first."
         )
 
-    if not drbert_engine.vector_store_available:
+    if not drbert_rag.rag_available:
         raise HTTPException(
             status_code=400,
             detail="Vector store not available. Ensure ChromaDB is installed."
         )
 
-    results = drbert_engine.search_protocols(
-        french_query=request.query,
+    # Use the search_protocols method from drbert_rag
+    results = drbert_rag.search_protocols(
+        query=request.query,
         n_results=request.n_results,
         category=request.category
     )
 
     return {
         "query": request.query,
-        "results": results,
-        "count": len(results)
+        "results": [p.to_dict() for p in results.protocols] if hasattr(results, 'protocols') else results,
+        "count": len(results.protocols) if hasattr(results, 'protocols') else len(results)
     }
 
 
 @app.get("/admin/protocols/stats")
 async def get_protocol_stats():
     """Get vector store statistics."""
-    if not drbert_engine.vector_store_available:
+    if not drbert_rag or not drbert_rag.rag_available:
         return {
             "available": False,
             "message": "Vector store not available. Ensure ChromaDB is installed."
         }
 
-    return drbert_engine.get_vector_store_stats()
+    return drbert_rag.get_stats()
 
 
 @app.delete("/admin/protocols/clear", dependencies=[Depends(verify_staff_pin)])
 async def clear_protocols():
     """Clear all protocols from the vector store."""
-    if not drbert_engine.vector_store_available:
+    if not drbert_rag or not drbert_rag.rag_available:
         raise HTTPException(
             status_code=400,
             detail="Vector store not available."
         )
 
-    success = drbert_engine.clear_protocols()
+    success = drbert_rag.clear_protocols()
 
     if not success:
         raise HTTPException(status_code=500, detail="Failed to clear protocols")
@@ -1151,35 +1296,69 @@ async def clear_protocols():
 @app.get("/rag/status")
 async def get_rag_status():
     """
-    Get the status of the French Pivot RAG pipeline.
+    Get the status of the RAG pipeline.
 
     Returns information about:
-    - LLM model status
+    - Parlant/Ollama model status
     - DrBERT model status
     - Vector store status
     - Overall RAG readiness
     """
-    llm_stats = reasoning_engine.get_engine_stats()
-    drbert_stats = drbert_engine.get_engine_stats() if drbert_engine else {}
+    drbert_stats = drbert_rag.get_stats() if drbert_rag else {}
 
     return {
-        "rag_available": reasoning_engine.rag_available,
+        "rag_available": parlant_engine.rag_available if parlant_engine else False,
         "llm": {
-            "loaded": llm_stats.get("model_loaded") != "None",
-            "model": llm_stats.get("model_loaded"),
-            "supports_json_grammar": llm_stats.get("uses_json_grammar", False)
+            "loaded": parlant_engine.is_initialized if parlant_engine else False,
+            "model": OLLAMA_MODEL,
+            "type": "parlant+ollama"
         },
         "drbert": {
-            "loaded": drbert_engine.is_loaded if drbert_engine else False,
-            "model": drbert_stats.get("model_loaded"),
-            "rag_ready": drbert_engine.rag_ready if drbert_engine else False
+            "loaded": drbert_rag.is_loaded if drbert_rag else False,
+            "model": drbert_rag.model_id if drbert_rag and drbert_rag.is_loaded else None,
+            "rag_ready": drbert_rag.rag_available if drbert_rag else False
         },
-        "vector_store": drbert_stats.get("vector_store", {"available": False}),
+        "vector_store": {
+            "available": CHROMADB_AVAILABLE,
+            "total_protocols": drbert_stats.get("total_protocols", 0)
+        },
         "message": (
-            "RAG pipeline ready" if reasoning_engine.rag_available
+            "RAG pipeline ready" if (parlant_engine and parlant_engine.rag_available)
             else "Load DrBERT and ingest protocols to enable RAG"
         )
     }
+
+
+@app.get("/parlant/status")
+async def get_parlant_status():
+    """
+    Get the status of the Parlant agent system.
+
+    Parlant provides guideline-based generation for improved
+    reliability and strict protocol adherence.
+    """
+    from parlant_guidelines import CORE_GUIDELINES, PDF_GUIDELINES
+
+    return {
+        "parlant_available": PARLANT_AVAILABLE,
+        "parlant_enabled": True,  # Always enabled in Parlant-native mode
+        "agent_initialized": parlant_engine.is_initialized if parlant_engine else False,
+        "configuration": {
+            "ollama_model": OLLAMA_MODEL,
+            "parlant_port": PARLANT_PORT,
+            "core_guidelines_count": len(CORE_GUIDELINES),
+            "pdf_guidelines_count": len(PDF_GUIDELINES),
+            "rag_enabled": RAG_ENABLED,
+        },
+        "model_name": parlant_engine.model_name if parlant_engine else None,
+        "rag_available": parlant_engine.rag_available if parlant_engine else False,
+        "message": (
+            "Parlant agent active with guideline-based generation"
+            if (parlant_engine and parlant_engine.is_initialized)
+            else "Parlant engine not initialized"
+        )
+    }
+
 
 # =============================================================================
 # Model Download Endpoints (Unified for GGUF and DrBERT)
@@ -1230,57 +1409,60 @@ async def get_model_download_status(model_id: str):
 @app.post("/download/{model_id}")
 async def download_model_endpoint(model_id: str, auto_load: bool = True):
     """
-    Download a model (GGUF or DrBERT) with progress streaming.
+    Download a DrBERT model with progress streaming.
+
+    In Parlant-native mode, Ollama models are managed externally.
+    This endpoint handles DrBERT model downloads for RAG.
 
     Returns Server-Sent Events with download progress.
     After download, automatically loads with optimal GPU/CPU split.
 
     Args:
-        model_id: Model ID (e.g., 'llama-3.2-1b', 'drbert-7gb')
+        model_id: Model ID (e.g., 'drbert-7gb', 'drbert-4gb-pubmed')
         auto_load: Whether to load after download (default: True)
     """
-    # Determine model type and config
-    gguf_config = get_model_config(model_id)
+    # Check if it's a DrBERT model
     drbert_config = DRBERT_MODELS.get(model_id)
 
-    if gguf_config:
-        model_type = "gguf"
-        config = model_to_dict(gguf_config)
-        config["size_bytes"] = gguf_config.size_bytes
-        config["download_url"] = gguf_config.download_url
-        config["filename"] = gguf_config.filename
-        models_dir = os.path.dirname(MODEL_PATH)
-    elif drbert_config:
-        model_type = "drbert"
-        config = {
-            "hf_model_id": drbert_config.hf_model_id,
-            "approx_size_mb": drbert_config.approx_size_mb
-        }
-        models_dir = os.path.dirname(MODEL_PATH)
-    else:
+    if not drbert_config:
+        # For Ollama models, return instructions
+        if model_id == OLLAMA_MODEL or "ollama" in model_id.lower():
+            return {
+                "status": "external_management",
+                "message": f"Ollama models are managed externally. Run: ollama pull {model_id}",
+                "model_id": model_id
+            }
         raise HTTPException(
             status_code=404,
-            detail=f"Unknown model: {model_id}. Check /models or /drbert/models for available models."
+            detail=f"Unknown model: {model_id}. Check /drbert/models for available models."
         )
 
-    # Check if already downloaded
-    if check_model_downloaded(model_id, model_type, config, models_dir):
-        # Already downloaded, just load if requested
-        if auto_load:
-            if model_type == "gguf":
-                success = reasoning_engine.load_model(model_id)
-            else:
-                success = drbert_engine.load_model(model_id)
+    model_type = "drbert"
+    config = {
+        "hf_repo": drbert_config.hf_repo,
+        "size_gb": drbert_config.size_gb
+    }
+    models_dir = os.path.dirname(MODEL_PATH)
 
-            return {
-                "status": "already_downloaded",
-                "loaded": success,
-                "model_id": model_id,
-                "gpu_info": detect_gpu_capabilities()
-            }
-        return {"status": "already_downloaded", "model_id": model_id}
+    # Check if already downloaded (DrBERT uses HuggingFace cache)
+    if drbert_rag and drbert_rag.is_loaded and drbert_rag.model_id == model_id:
+        return {
+            "status": "already_loaded",
+            "model_id": model_id,
+            "gpu_info": detect_gpu_capabilities()
+        }
 
-    # Stream download progress
+    # For DrBERT, loading handles download automatically via HuggingFace
+    if auto_load:
+        success = drbert_rag.load_model(model_id)
+        return {
+            "status": "downloaded_and_loaded" if success else "download_failed",
+            "loaded": success,
+            "model_id": model_id,
+            "gpu_info": detect_gpu_capabilities()
+        }
+
+    # Stream download progress (for DrBERT via HuggingFace)
     async def generate_events():
         import json
 
@@ -1363,9 +1545,15 @@ def get_text(key: str, language: str = "en") -> str:
     lang_dict = TRANSLATIONS.get(language, TRANSLATIONS["en"])
     return lang_dict.get(key, TRANSLATIONS["en"].get(key, key))
 
-def localize_question(question: Dict, language: str) -> Dict:
-    """Localize question text."""
-    q = question.copy()
+def localize_question(question, language: str) -> Dict:
+    """Localize question text. Accepts both dict and Question dataclass."""
+    # Convert Question dataclass to dict if needed
+    if hasattr(question, 'to_dict'):
+        q = question.to_dict()
+    elif hasattr(question, '__dict__'):
+        q = {k: v for k, v in question.__dict__.items() if not k.startswith('_')}
+    else:
+        q = question.copy()
     if language != "en" and "translations" in q:
         trans = q["translations"].get(language, {})
         q["text"] = trans.get("text", q["text"])

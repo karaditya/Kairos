@@ -1,57 +1,147 @@
 #!/bin/bash
 
-echo "🏥 Starting Triage Backend..."
+echo "==================================="
+echo "  Medical Triage Backend (Parlant)"
+echo "==================================="
 echo ""
 
-# Check if virtual environment exists
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Function to check if a command exists
+command_exists() {
+    command -v "$1" &> /dev/null
+}
+
+# Function to check if a port is in use
+port_in_use() {
+    lsof -i :"$1" &> /dev/null
+}
+
+# =============================================================================
+# Step 1: Check Python virtual environment
+# =============================================================================
+echo -e "${BLUE}[1/5]${NC} Checking Python environment..."
+
 if [ ! -d "venv" ]; then
     echo "Creating Python virtual environment..."
     python3 -m venv venv
 fi
 
-# Activate virtual environment
-echo "Activating virtual environment..."
 source venv/bin/activate
 
-# Check if dependencies are installed
+# Check dependencies
 if ! python -c "import fastapi" 2>/dev/null; then
     echo "Installing Python dependencies..."
     pip install -r requirements.txt
 fi
+echo -e "${GREEN}  Python environment ready${NC}"
 
-# Check if any models exist
-MODEL_COUNT=$(find models -name "*.gguf" 2>/dev/null | wc -l)
-if [ "$MODEL_COUNT" -eq 0 ]; then
+# =============================================================================
+# Step 2: Check and start Ollama
+# =============================================================================
+echo -e "${BLUE}[2/5]${NC} Checking Ollama..."
+
+if ! command_exists ollama; then
+    echo -e "${RED}  Ollama not installed!${NC}"
     echo ""
-    echo "⚠️  Warning: No LLM models found in models/ directory"
-    echo "The system will run in fallback mode (template-based responses)"
+    echo "Install Ollama from: https://ollama.ai/download"
+    echo "  curl -fsSL https://ollama.ai/install.sh | sh"
     echo ""
-    echo "📚 10+ models supported! Quick download options:"
-    echo ""
-    echo "Option 1: Llama 3.2 1B (Fastest, CPU-friendly, 738MB)"
-    echo "  mkdir -p models && cd models"
-    echo "  wget https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf -O llama-3.2-1b-instruct-q4_k_m.gguf"
-    echo ""
-    echo "Option 2: DeepSeek R1 1.5B (Chain-of-thought reasoning, 1GB)"
-    echo "  wget https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf -O deepseek-r1-1.5b-q4_k_m.gguf"
-    echo ""
-    echo "📖 See README.md for all 10 models and download instructions"
-    echo ""
+    echo "The backend will run in FALLBACK MODE (rule-based only, no LLM)"
+    OLLAMA_AVAILABLE=false
 else
-    echo "✅ Found $MODEL_COUNT model(s) in models/ directory"
-    # List available models
-    echo "Available models:"
-    find models -name "*.gguf" -exec basename {} \; | sed 's/^/  - /'
-    echo ""
+    # Check if Ollama is running
+    if ! curl -s http://localhost:11434/api/tags &> /dev/null; then
+        echo "  Starting Ollama server..."
+        ollama serve &> /dev/null &
+        sleep 3
+    fi
+
+    # Verify Ollama is responding
+    if curl -s http://localhost:11434/api/tags &> /dev/null; then
+        echo -e "${GREEN}  Ollama server running${NC}"
+        OLLAMA_AVAILABLE=true
+    else
+        echo -e "${YELLOW}  Ollama not responding - will use fallback mode${NC}"
+        OLLAMA_AVAILABLE=false
+    fi
 fi
 
-# Start backend
-echo "Starting FastAPI backend on http://localhost:8000..."
-if [ -z "$N_GPU_LAYERS" ]; then
-    echo "GPU Acceleration: Auto-detect (will use optimal GPU/CPU split based on VRAM)"
+# =============================================================================
+# Step 3: Check for available models
+# =============================================================================
+echo -e "${BLUE}[3/5]${NC} Checking LLM models..."
+
+if [ "$OLLAMA_AVAILABLE" = true ]; then
+    # Get list of pulled models
+    MODELS=$(ollama list 2>/dev/null | tail -n +2 | awk '{print $1}')
+    MODEL_COUNT=$(echo "$MODELS" | grep -c .)
+
+    if [ "$MODEL_COUNT" -gt 0 ]; then
+        echo -e "${GREEN}  Found $MODEL_COUNT model(s):${NC}"
+        echo "$MODELS" | while read model; do
+            echo "    - $model"
+        done
+    else
+        echo -e "${YELLOW}  No models found. Pull a model first:${NC}"
+        echo ""
+        echo "  Recommended models (run one of these):"
+        echo "    ollama pull mistral        # 4.1GB - Good default"
+        echo "    ollama pull llama3.2       # 2.0GB - Fast, compact"
+        echo "    ollama pull deepseek-r1:7b # 4.7GB - Strong reasoning"
+        echo "    ollama pull qwen2.5        # 4.4GB - Good for French"
+        echo ""
+        echo "  The backend will start but use fallback mode until a model is pulled."
+    fi
 else
-    echo "GPU Acceleration: $N_GPU_LAYERS layers (manual override)"
+    echo -e "${YELLOW}  Ollama not available - using rule-based fallback${NC}"
 fi
-echo "LLM output will be appended to backend/backend.log"
+
+# =============================================================================
+# Step 4: Check ports
+# =============================================================================
+echo -e "${BLUE}[4/5]${NC} Checking ports..."
+
+# Check port 8000 (FastAPI)
+if port_in_use 8000; then
+    echo -e "${YELLOW}  Port 8000 in use, killing existing process...${NC}"
+    kill $(lsof -t -i:8000) 2>/dev/null
+    sleep 1
+fi
+
+# Check port 8800 (Parlant)
+if port_in_use 8800; then
+    echo -e "${YELLOW}  Port 8800 in use, killing existing process...${NC}"
+    kill $(lsof -t -i:8800) 2>/dev/null
+    sleep 1
+fi
+
+echo -e "${GREEN}  Ports 8000 and 8800 available${NC}"
+
+# =============================================================================
+# Step 5: Start backend
+# =============================================================================
+echo -e "${BLUE}[5/5]${NC} Starting backend..."
+echo ""
+
 cd backend
-python main.py
+
+echo "==================================="
+echo "  Backend URLs:"
+echo "    Patient Interface: http://localhost:8000/"
+echo "    Staff Portal:      http://localhost:8000/staff"
+echo "    API Docs:          http://localhost:8000/docs"
+echo "==================================="
+echo ""
+
+# Start with uvicorn
+exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload

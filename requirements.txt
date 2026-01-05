@@ -1,75 +1,55 @@
-# Offline Triage Pre-Screen MVP
-# Python 3.10+ required
+# =============================================================================
+# Offline Triage Pre-Screen MVP (Parlant-Native)
+# Python 3.10–3.12
+# =============================================================================
 
 # =============================================================================
 # Web Framework
 # =============================================================================
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.24.0
 
 # =============================================================================
-# Data validation
+# Data Validation
 # =============================================================================
-pydantic==2.5.2
-
-# =============================================================================
-# Local LLM inference (Multi-Model Engine)
-# =============================================================================
-# CPU-only (default):
-#   pip install llama-cpp-python==0.2.20
-#
-# GPU (CUDA) - requires CUDA toolkit first:
-#   sudo apt install nvidia-cuda-toolkit -y
-#   pip uninstall llama-cpp-python -y
-#   CUDACXX=/usr/bin/nvcc CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install llama-cpp-python --no-cache-dir --force-reinstall
-#
-# GPU (ROCm/AMD):
-#   CMAKE_ARGS="-DGGML_HIPBLAS=on" pip install llama-cpp-python --no-cache-dir --force-reinstall
-#
-# GPU (Metal/macOS):
-#   CMAKE_ARGS="-DGGML_METAL=on" pip install llama-cpp-python --no-cache-dir --force-reinstall
-llama-cpp-python>=0.3.0
-
-# =============================================================================
-# Model Download Utility
-# =============================================================================
-requests>=2.31.0
-tqdm>=4.66.0
+pydantic>=2.5.0
+python-multipart>=0.0.6
 
 # =============================================================================
 # Async & File Operations
 # =============================================================================
-aiofiles==23.2.1
+aiofiles>=24.1.0
+
+# =============================================================================
+# Parlant Agent Framework (Core LLM Engine)
+# =============================================================================
+parlant>=3.0.3
+
+# =============================================================================
+# Ollama Client (Required by Parlant for LLM)
+# =============================================================================
+ollama>=0.1.9
+
+# =============================================================================
+# Vector DB / RAG
+# =============================================================================
+chromadb>=0.4.24
+
+# =============================================================================
+# DrBERT / French Medical BERT (Optional - for enhanced RAG)
+# Note: transformers <4.50 required for parlant tokenizers compatibility
+# =============================================================================
+transformers>=4.41.0,<4.50.0
+sentence-transformers>=2.2.2
+# torch>=2.0.0  # Uncomment if using GPU acceleration for DrBERT
 
 # =============================================================================
 # PDF Generation
 # =============================================================================
-reportlab>=4.0.0
+reportlab>=4.4.0
 
 # =============================================================================
-# DrBERT / HuggingFace Transformers (Optional - for French medical BERT)
+# Utilities
 # =============================================================================
-# Install for DrBERT support:
-#   pip install transformers accelerate torch
-#
-# Note: torch will auto-detect GPU (CUDA/ROCm/MPS)
-# DrBERT auto-splits between GPU and CPU based on available VRAM
-transformers>=4.35.0
-accelerate>=0.25.0
-# torch is installed separately based on your hardware:
-#   CPU only:  pip install torch
-#   CUDA:      pip install torch --index-url https://download.pytorch.org/whl/cu121
-#   ROCm:      pip install torch --index-url https://download.pytorch.org/whl/rocm5.6
-
-# =============================================================================
-# French Pivot RAG (Protocol Retrieval-Augmented Generation)
-# =============================================================================
-# ChromaDB - Local vector database for semantic search
-chromadb>=0.4.22
-# Sentence Transformers - Alternative embedding model (optional, DrBERT uses transformers)
-sentence-transformers>=2.2.2
-
-# =============================================================================
-# Development tools
-# =============================================================================
-python-multipart==0.0.6
+requests>=2.32.0
+tqdm>=4.66.0
