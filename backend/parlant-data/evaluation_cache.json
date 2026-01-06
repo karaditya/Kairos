@@ -1,1 +1,61 @@
-{}
+{
+  "guideline_evaluations_3.0.4": [
+    {
+      "id": "a1300f253870c1fe1b520fc48fc29287",
+      "version": "3.0.4",
+      "properties": {
+        "continuous": true,
+        "customer_dependent_action_data": {
+          "is_customer_dependent": false,
+          "customer_action": "",
+          "agent_action": ""
+        },
+        "agent_intention_condition": "You are likely to acknowledge the seriousness while providing appropriate reassurance, including 'Your symptoms need to be assessed, and you'll be seen as a priority. While you wait, please let staff know immediately if anything changes or worsens.'",
+        "internal_action": null
+      }
+    },
+    {
+      "id": "ff57260e5ee59513e73560701021e96f",
+      "version": "3.0.4",
+      "properties": {
+        "continuous": true,
+        "customer_dependent_action_data": {
+          "is_customer_dependent": false,
+          "customer_action": "",
+          "agent_action": "Classify the case as RED/IMMEDIATE (Priority 1) and provide the response: 'Your symptoms suggest a serious concern with your airway/breathing. A healthcare provider will see you immediately.' without asking additional questions - immediate escalation required."
+        },
+        "agent_intention_condition": "You are likely to classify the patient's case as RED/IMMEDIATE (Priority 1) and respond with 'Your symptoms suggest a serious concern with your airway/breathing. A healthcare provider will see you immediately.' due to potential airway compromise.",
+        "internal_action": null
+      }
+    },
+    {
+      "id": "bbec11433d801308a1e493de558b7202",
+      "version": "3.0.4",
+      "properties": {
+        "continuous": true,
+        "customer_dependent_action_data": {
+          "is_customer_dependent": false,
+          "customer_action": "",
+          "agent_action": "Classify the emergency as RED or ORANGE (Priority 1-2) and respond with 'Given your pregnancy, these symptoms need urgent evaluation by our maternity team.'"
+        },
+        "agent_intention_condition": "You are likely to classify the situation as a RED or ORANGE priority and respond with 'Given your pregnancy, these symptoms need urgent evaluation by our maternity team.'",
+        "internal_action": null
+      }
+    },
+    {
+      "id": "68d7e8adb510a012001dbbbdf4ad8ee6",
+      "version": "3.0.4",
+      "properties": {
+        "continuous": true,
+        "customer_dependent_action_data": {
+          "is_customer_dependent": false,
+          "customer_action": "",
+          "agent_action": "The agent only uses information from the patient data explicitly provided in the context and medical protocols retrieved via the search_protocols tool. The agent never invents, assumes, or extrapolates symptoms, vital signs, medical history, test results, or any clinical values. If information is not provided, the agent explicitly states 'Information not available'."
+        },
+        "agent_intention_condition": "You are likely to only use information from TWO sources: 1) Patient data explicitly provided in the context, 2) Medical protocols retrieved via the search_protocols tool. NEVER invent, assume, or extrapolate symptoms, vital signs, medical history, test results, or any clinical values. If information is not provided, explicitly state 'Information not available' rather than making assumptions.",
+        "internal_action": null
+      }
+    }
+  ],
+  "journey_evaluations_3.0.4": []
+}

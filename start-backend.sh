@@ -114,6 +114,21 @@ if [ "$OLLAMA_AVAILABLE" = true ]; then
             echo "    ollama pull deepseek-r1:7b # 4.7GB - Strong reasoning"
         fi
     fi
+
+    # Check for embedding model (required by Parlant SDK for semantic search)
+    EMBEDDING_MODEL="nomic-embed-text"
+    if ! echo "$MODELS" | grep -q "$EMBEDDING_MODEL"; then
+        echo ""
+        echo -e "${YELLOW}  Embedding model not found. Pulling $EMBEDDING_MODEL...${NC}"
+        echo "  (Required for Parlant agent semantic search)"
+        if ollama pull "$EMBEDDING_MODEL"; then
+            echo -e "${GREEN}  Successfully pulled $EMBEDDING_MODEL${NC}"
+        else
+            echo -e "${RED}  Failed to pull $EMBEDDING_MODEL - Parlant agent may not initialize${NC}"
+        fi
+    else
+        echo -e "${GREEN}  Embedding model ($EMBEDDING_MODEL) available${NC}"
+    fi
 else
     echo -e "${YELLOW}  Ollama not available - using rule-based fallback${NC}"
 fi

@@ -319,14 +319,20 @@ class ParlantAgentManager:
                 logger.warning("No Ollama models found")
                 return False
 
-            # Check if required model is available
+            # Check if required generation model is available
             required_model = OLLAMA_MODEL.split(':')[0]  # Handle 'mistral:latest' format
 
             if required_model not in model_names:
                 logger.warning(f"Required Ollama model '{required_model}' not found. Available: {model_names}")
                 return False
 
-            logger.info(f"Ollama available with models: {model_names}")
+            # Check if required embedding model is available (Parlant SDK requirement)
+            embedding_model = os.environ.get("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text").split(':')[0]
+            if embedding_model not in model_names:
+                logger.warning(f"Required embedding model '{embedding_model}' not found. Run: ollama pull {embedding_model}")
+                return False
+
+            logger.info(f"Ollama available with models: {model_names} (generation: {required_model}, embedding: {embedding_model})")
             return True
 
         except Exception as e:
