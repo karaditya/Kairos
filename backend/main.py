@@ -34,7 +34,8 @@ from pdf_generator import generate_medical_report_pdf
 # New Parlant-native imports
 from triage_rules import get_triage_rules, TriageRules
 from risk_calculator import get_risk_calculator, RiskCalculator
-from parlant_engine import ParlantEngine, get_parlant_engine
+# Use new unified engine (provides ParlantEngine compatibility wrapper)
+from triage_engine_unified import ParlantEngine, get_parlant_engine
 from drbert_rag import get_drbert_rag, DrBERTRAG, CHROMADB_AVAILABLE, DRBERT_MODELS
 from config import OLLAMA_MODEL, RAG_ENABLED, PARLANT_PORT, SUPPORTED_OLLAMA_MODELS
 from ollama_manager import OllamaManager, get_ollama_manager
@@ -1352,25 +1353,24 @@ async def get_parlant_status():
     Parlant provides guideline-based generation for improved
     reliability and strict protocol adherence.
     """
-    from parlant_guidelines import CORE_GUIDELINES, PDF_GUIDELINES
+    from parlant_guidelines_minimal import get_essential_guidelines, get_pdf_guidelines
 
     return {
         "parlant_available": PARLANT_AVAILABLE,
         "parlant_enabled": True,  # Always enabled in Parlant-native mode
-        "agent_initialized": parlant_engine.is_initialized if parlant_engine else False,
+        "agent_initialized": parlant_engine.is_available if parlant_engine else False,
         "configuration": {
             "ollama_model": OLLAMA_MODEL,
             "parlant_port": PARLANT_PORT,
-            "core_guidelines_count": len(CORE_GUIDELINES),
-            "pdf_guidelines_count": len(PDF_GUIDELINES),
+            "core_guidelines_count": len(get_essential_guidelines()),
+            "pdf_guidelines_count": len(get_pdf_guidelines()),
             "rag_enabled": RAG_ENABLED,
         },
-        "model_name": parlant_engine.model_name if parlant_engine else None,
-        "rag_available": parlant_engine.rag_available if parlant_engine else False,
+        "engine_status": parlant_engine.get_engine_status() if parlant_engine else {},
         "message": (
-            "Parlant agent active with guideline-based generation"
-            if (parlant_engine and parlant_engine.is_initialized)
-            else "Parlant engine not initialized"
+            "Unified triage engine active"
+            if (parlant_engine and parlant_engine.is_available)
+            else "Triage engine not initialized"
         )
     }
 

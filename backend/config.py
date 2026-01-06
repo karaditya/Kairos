@@ -30,6 +30,41 @@ PARLANT_PORT = int(os.environ.get("PARLANT_PORT", "8800"))
 PARLANT_TOOL_PORT = int(os.environ.get("PARLANT_TOOL_PORT", "8818"))
 
 # =============================================================================
+# GGUF FALLBACK CONFIGURATION
+# =============================================================================
+
+# GGUF models available for fallback (llama-cpp-python)
+GGUF_MODELS = {
+    "qwen2.5-1.5b": {
+        "filename": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        "context_size": 4096,
+        "description": "Multilingual fallback (good for French/English)",
+    },
+    "llama-3.2-1b": {
+        "filename": "llama-3.2-1b-instruct-q4_k_m.gguf",
+        "context_size": 4096,
+        "description": "Compact, fast fallback model",
+    },
+    "deepseek-r1-1.5b": {
+        "filename": "deepseek-r1-distill-qwen-1.5b-q4_k_m.gguf",
+        "context_size": 4096,
+        "description": "Reasoning-focused fallback",
+    },
+}
+
+# Default GGUF model for fallback
+DEFAULT_GGUF_MODEL = os.environ.get("DEFAULT_GGUF_MODEL", "qwen2.5-1.5b")
+
+# =============================================================================
+# TIMEOUT CONFIGURATION
+# =============================================================================
+
+# Response timeouts (seconds)
+PARLANT_RESPONSE_TIMEOUT = float(os.environ.get("PARLANT_RESPONSE_TIMEOUT", "30.0"))
+GGUF_RESPONSE_TIMEOUT = float(os.environ.get("GGUF_RESPONSE_TIMEOUT", "60.0"))
+OVERALL_REQUEST_TIMEOUT = float(os.environ.get("OVERALL_REQUEST_TIMEOUT", "90.0"))
+
+# =============================================================================
 # SUPPORTED OLLAMA MODELS
 # =============================================================================
 
