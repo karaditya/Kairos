@@ -87,9 +87,12 @@ class TriageAgent:
         )
         self._agent_id = self._agent.id
 
-        # Register tools
+        # Register tools with conditions
         for tool in ALL_TOOLS:
-            await self._agent.attach_tool(tool)
+            # Get tool name from the wrapped function
+            tool_name = getattr(tool, 'function', tool).__name__ if hasattr(tool, 'function') else str(tool)
+            condition = f"when the agent needs to use {tool_name} for patient assessment"
+            await self._agent.attach_tool(tool, condition)
         logger.info(f"Attached {len(ALL_TOOLS)} tools to Triage Agent")
 
         # Register guidelines
@@ -105,12 +108,14 @@ class TriageAgent:
         logger.info(f"Registered {len(ALL_TRIAGE_GUIDELINES)} triage guidelines")
 
         # Register canned responses for critical scenarios
+        # Note: Parlant SDK 3.x uses template-based canned responses
         for key, response_data in CANNED_RESPONSES.items():
-            await self._agent.create_canned_response(
-                name=key,
-                content=response_data["content"],
-                metadata={"use_when": response_data["use_when"]}
-            )
+            try:
+                # Use the content as a template
+                template = response_data["content"]
+                await self._agent.create_canned_response(template=template)
+            except Exception as e:
+                logger.warning(f"Failed to register canned response '{key}': {e}")
         logger.info(f"Registered {len(CANNED_RESPONSES)} canned responses")
 
         self._guidelines_registered = True
@@ -166,11 +171,15 @@ class PDFAgent:
         self._agent_id = self._agent.id
 
         # Register only essential tools for PDF generation
-        essential_tools = [t for t in ALL_TOOLS if t.__name__ in [
-            'get_patient_context', 'search_medical_protocols', 'detect_query_language'
-        ]]
+        essential_tool_names = ['get_patient_context', 'search_medical_protocols', 'detect_query_language']
+        essential_tools = [
+            t for t in ALL_TOOLS
+            if (getattr(t, 'function', t).__name__ if hasattr(t, 'function') else '') in essential_tool_names
+        ]
         for tool in essential_tools:
-            await self._agent.attach_tool(tool)
+            tool_name = getattr(tool, 'function', tool).__name__ if hasattr(tool, 'function') else str(tool)
+            condition = f"when generating clinical documentation using {tool_name}"
+            await self._agent.attach_tool(tool, condition)
         logger.info(f"Attached {len(essential_tools)} tools to PDF Agent")
 
         # Register PDF-specific guidelines
@@ -286,16 +295,36 @@ class ParlantAgentManager:
 
             # Try to list models
             client = ollama.Client(host=OLLAMA_BASE_URL)
-            models = client.list()
+            models_response = client.list()
 
-            # Check if we have models
-            model_names = [m.get('name', '').split(':')[0] for m in models.get('models', [])]
-            required = [OLLAMA_MODEL]
+            # Handle both old dict format and new object format
+            # New ollama library returns ListResponse with .models attribute
+            if hasattr(models_response, 'models'):
+                # New format: ListResponse object
+                models_list = models_response.models
+                model_names = []
+                for m in models_list:
+                    # Each model is a Model object with .model attribute
+                    full_name = getattr(m, 'model', '') or getattr(m, 'name', '')
+                    if full_name:
+                        # Extract base name (e.g., 'mistral' from 'mistral:latest')
+                        model_names.append(full_name.split(':')[0])
+            else:
+                # Old dict format
+                models_list = models_response.get('models', [])
+                model_names = [m.get('name', '').split(':')[0] for m in models_list]
 
-            for req in required:
-                if req not in model_names:
-                    logger.warning(f"Required Ollama model '{req}' not found")
-                    return False
+            # Check if we have any models at all
+            if not model_names:
+                logger.warning("No Ollama models found")
+                return False
+
+            # Check if required model is available
+            required_model = OLLAMA_MODEL.split(':')[0]  # Handle 'mistral:latest' format
+
+            if required_model not in model_names:
+                logger.warning(f"Required Ollama model '{required_model}' not found. Available: {model_names}")
+                return False
 
             logger.info(f"Ollama available with models: {model_names}")
             return True

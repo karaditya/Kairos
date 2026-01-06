@@ -77,30 +77,42 @@ else
 fi
 
 # =============================================================================
-# Step 3: Check for available models
+# Step 3: Check for available models (auto-pull if none)
 # =============================================================================
 echo -e "${BLUE}[3/5]${NC} Checking LLM models..."
+
+# Default model to pull if none exist
+DEFAULT_MODEL="${OLLAMA_MODEL:-mistral}"
 
 if [ "$OLLAMA_AVAILABLE" = true ]; then
     # Get list of pulled models
     MODELS=$(ollama list 2>/dev/null | tail -n +2 | awk '{print $1}')
-    MODEL_COUNT=$(echo "$MODELS" | grep -c .)
+    MODEL_COUNT=$(echo "$MODELS" | grep -v '^$' | wc -l)
 
     if [ "$MODEL_COUNT" -gt 0 ]; then
         echo -e "${GREEN}  Found $MODEL_COUNT model(s):${NC}"
-        echo "$MODELS" | while read model; do
+        echo "$MODELS" | grep -v '^$' | while read model; do
             echo "    - $model"
         done
     else
-        echo -e "${YELLOW}  No models found. Pull a model first:${NC}"
+        echo -e "${YELLOW}  No models found. Auto-pulling default model...${NC}"
         echo ""
-        echo "  Recommended models (run one of these):"
-        echo "    ollama pull mistral        # 4.1GB - Good default"
-        echo "    ollama pull llama3.2       # 2.0GB - Fast, compact"
-        echo "    ollama pull deepseek-r1:7b # 4.7GB - Strong reasoning"
-        echo "    ollama pull qwen2.5        # 4.4GB - Good for French"
+        echo "  Pulling $DEFAULT_MODEL (this may take a few minutes)..."
         echo ""
-        echo "  The backend will start but use fallback mode until a model is pulled."
+
+        # Pull the default model with progress
+        if ollama pull "$DEFAULT_MODEL"; then
+            echo ""
+            echo -e "${GREEN}  Successfully pulled $DEFAULT_MODEL${NC}"
+        else
+            echo -e "${RED}  Failed to pull $DEFAULT_MODEL${NC}"
+            echo "  The backend will run in fallback mode."
+            echo ""
+            echo "  You can manually pull a model later:"
+            echo "    ollama pull mistral        # 4.1GB - Good default"
+            echo "    ollama pull llama3.2       # 2.0GB - Fast, compact"
+            echo "    ollama pull deepseek-r1:7b # 4.7GB - Strong reasoning"
+        fi
     fi
 else
     echo -e "${YELLOW}  Ollama not available - using rule-based fallback${NC}"

@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 
 from config import (
     OLLAMA_MODEL,
+    OLLAMA_BASE_URL,
     RAG_ENABLED,
     DEFAULT_LANGUAGE,
     SUPPORTED_LANGUAGES,
@@ -90,20 +91,24 @@ class ParlantEngine:
         else:
             logger.info("RAG disabled or skipped")
 
+        # Check if Ollama is available directly (regardless of Parlant)
+        self._ollama_available = await self._check_ollama_directly()
+        if self._ollama_available:
+            logger.info(f"Ollama available at {OLLAMA_BASE_URL}")
+        else:
+            logger.warning("Ollama not available - will use rule-based fallback")
+
         # Initialize Parlant agent manager (with graceful fallback)
         self._agent_manager = ParlantAgentManager(self._drbert)
         try:
             await self._agent_manager.initialize()
-            # Check if agent manager actually initialized (Ollama available)
-            self._ollama_available = self._agent_manager._initialized
-            if self._ollama_available:
+            if self._agent_manager._initialized:
                 logger.info("Parlant agent manager initialized with Ollama")
             else:
-                logger.info("Running in fallback mode (rule-based only, no LLM)")
+                logger.info("Parlant failed to initialize - will use direct Ollama fallback")
         except Exception as e:
-            self._ollama_available = False
-            logger.warning(f"Ollama not available: {e}")
-            logger.info("Running in fallback mode (rule-based only, no LLM)")
+            logger.warning(f"Parlant agent error: {e}")
+            logger.info("Will use direct Ollama fallback if available")
 
         self._initialized = True
         logger.info("ParlantEngine initialization complete")
@@ -213,21 +218,52 @@ class ParlantEngine:
                 clinical_state, user_language
             )
 
-        # Check if Ollama/Parlant is available
-        if not self._ollama_available or self._agent_manager is None:
-            # Return fallback response based on rules
+        # Check if we can use LLM (via Parlant or direct Ollama)
+        if not self._ollama_available and self._agent_manager is None:
+            # No LLM at all - use rule-based fallback
             return self._generate_fallback_response(clinical_state, user_language)
 
-        # Get response from Parlant agent
-        try:
-            response = await self._agent_manager.answer_question(
-                question=question,
-                clinical_state=clinical_state,
-                user_language=user_language,
-                session_key=session_key
-            )
-        except Exception as e:
-            logger.error(f"Parlant agent error: {e}")
+        # Try Parlant first, then fall back to direct Ollama
+        response = None
+        parlant_failed = False
+
+        # Try Parlant agent if initialized
+        if self._agent_manager and self._agent_manager._initialized:
+            try:
+                response = await self._agent_manager.answer_question(
+                    question=question,
+                    clinical_state=clinical_state,
+                    user_language=user_language,
+                    session_key=session_key
+                )
+                # Check if response indicates an error
+                if response and ("error" in str(response.get("reasoning", "")).lower() or
+                                response.get("model_used", "").endswith("(error)")):
+                    logger.warning(f"Parlant returned error response, trying direct Ollama")
+                    parlant_failed = True
+                    response = None
+            except Exception as e:
+                logger.warning(f"Parlant agent error, trying direct Ollama: {e}")
+                parlant_failed = True
+                response = None
+        else:
+            parlant_failed = True  # Parlant not initialized
+
+        # Fall back to direct Ollama if Parlant failed or not available
+        if response is None and self._ollama_available:
+            try:
+                logger.info("Using direct Ollama fallback")
+                response = await self._direct_ollama_response(
+                    question=question,
+                    clinical_state=clinical_state,
+                    user_language=user_language
+                )
+            except Exception as e:
+                logger.error(f"Direct Ollama error: {e}")
+                return self._generate_fallback_response(clinical_state, user_language)
+
+        # If still no response, use rule-based fallback
+        if response is None:
             return self._generate_fallback_response(clinical_state, user_language)
 
         # Extract cited data from patient state
@@ -413,6 +449,211 @@ class ParlantEngine:
     # =========================================================================
     # HELPER METHODS
     # =========================================================================
+
+    async def _check_ollama_directly(self) -> bool:
+        """Check if Ollama is available by calling its API directly."""
+        import httpx
+        from config import OLLAMA_BASE_URL
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
+                if response.status_code == 200:
+                    data = response.json()
+                    models = data.get("models", [])
+                    if models:
+                        model_names = [m.get("name", "") for m in models]
+                        logger.info(f"Ollama has models: {model_names[:3]}...")
+                        return True
+            return False
+        except Exception as e:
+            logger.debug(f"Ollama direct check failed: {e}")
+            return False
+
+    async def _direct_ollama_response(
+        self,
+        question: str,
+        clinical_state: Dict[str, Any],
+        user_language: str
+    ) -> Dict[str, Any]:
+        """
+        Generate response using direct Ollama API call.
+
+        Used as fallback when Parlant agent is not available.
+        """
+        import httpx
+        from config import OLLAMA_BASE_URL, OLLAMA_TIMEOUT
+
+        # Build patient context
+        patient_card = self._format_patient_card(clinical_state)
+        risk = clinical_state.get("risk_calculation", {})
+
+        # Get protocol context from RAG if available
+        protocol_context = ""
+        protocol_title = ""
+        if self._drbert and self._drbert.rag_available:
+            try:
+                query = f"{clinical_state.get('chief_complaint', '')} {question}"
+                results = self._drbert.search_protocols(
+                    query=query,
+                    language=user_language,
+                    n_results=1
+                )
+                if results.protocols:
+                    protocol = results.protocols[0]
+                    protocol_title = protocol.title
+                    protocol_context = f"\nRELEVANT PROTOCOL: {protocol.title}\n{protocol.text}\n"
+            except Exception as e:
+                logger.warning(f"RAG search failed: {e}")
+
+        # Build prompt
+        lang_instruction = "Respond in French." if user_language == "fr" else "Respond in English."
+
+        prompt = f"""You are a medical triage assistant. {lang_instruction}
+
+PATIENT DATA:
+{patient_card}
+{protocol_context}
+QUESTION: {question}
+
+Provide a response with:
+1. ANSWER: A clear, patient-friendly response
+2. REASONING: Clinical reasoning for healthcare staff (cite any protocol criteria)
+3. FOLLOW-UP: Exactly 3 relevant follow-up questions
+
+Format your response as:
+ANSWER:
+[Your answer here]
+
+REASONING:
+[Clinical reasoning here]
+
+FOLLOW-UP:
+1. [Question 1]
+2. [Question 2]
+3. [Question 3]"""
+
+        # Call Ollama directly
+        async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT) as client:
+            response = await client.post(
+                f"{OLLAMA_BASE_URL}/api/generate",
+                json={
+                    "model": self._current_model,
+                    "prompt": prompt,
+                    "stream": False,
+                }
+            )
+            response.raise_for_status()
+            result = response.json()
+
+        # Parse the response
+        raw_text = result.get("response", "")
+        parsed = self._parse_ollama_response(raw_text, user_language)
+
+        return {
+            "answer": parsed["answer"],
+            "reasoning": parsed["reasoning"],
+            "follow_up_questions": parsed["follow_ups"],
+            "suggested_questions": parsed["follow_ups"],
+            "protocol_applied": protocol_title,
+            "protocol_source": "SFMU" if user_language == "fr" else "MTS",
+            "rag_used": bool(protocol_title),
+            "model_used": f"Ollama ({self._current_model})",
+            "has_reasoning": bool(parsed["reasoning"]),
+            "guidelines_triggered": [],
+            "is_fallback": False,
+        }
+
+    def _parse_ollama_response(self, raw_text: str, language: str) -> Dict[str, Any]:
+        """Parse structured response from Ollama."""
+        import re
+
+        answer = ""
+        reasoning = ""
+        follow_ups = []
+
+        # Try to extract sections
+        answer_match = re.search(r'ANSWER:\s*(.*?)(?=REASONING:|FOLLOW-UP:|$)', raw_text, re.DOTALL | re.IGNORECASE)
+        reasoning_match = re.search(r'REASONING:\s*(.*?)(?=FOLLOW-UP:|$)', raw_text, re.DOTALL | re.IGNORECASE)
+        followup_match = re.search(r'FOLLOW-UP:\s*(.*?)$', raw_text, re.DOTALL | re.IGNORECASE)
+
+        if answer_match:
+            answer = answer_match.group(1).strip()
+        else:
+            # Use full response if no structure
+            answer = raw_text.strip()
+
+        if reasoning_match:
+            reasoning = reasoning_match.group(1).strip()
+
+        if followup_match:
+            followup_text = followup_match.group(1)
+            # Extract numbered questions
+            questions = re.findall(r'\d+\.\s*(.+?)(?=\d+\.|$)', followup_text, re.DOTALL)
+            follow_ups = [q.strip() for q in questions if q.strip()][:3]
+
+        # Use defaults if no follow-ups found
+        if len(follow_ups) < 3:
+            defaults = self._get_default_questions(language)
+            follow_ups = (follow_ups + defaults)[:3]
+
+        return {
+            "answer": answer,
+            "reasoning": reasoning,
+            "follow_ups": follow_ups,
+        }
+
+    def _format_patient_card(self, clinical_state: Dict[str, Any]) -> str:
+        """Format clinical state for LLM prompt."""
+        lines = []
+
+        demo = clinical_state.get("demographics", {})
+        if demo:
+            lines.append(f"Age: {demo.get('age', 'Unknown')}, Sex: {demo.get('sex', 'Unknown')}")
+            if demo.get("pregnant"):
+                lines.append("Pregnancy: Yes")
+
+        complaint = clinical_state.get("chief_complaint", "")
+        if complaint:
+            lines.append(f"Chief Complaint: {complaint.replace('_', ' ').title()}")
+
+        risk = clinical_state.get("risk_calculation", {})
+        if risk.get("band"):
+            lines.append(f"Risk Level: {risk['band'].upper()}")
+
+        answers = clinical_state.get("answers", {})
+        if answers:
+            lines.append("Reported Symptoms:")
+            for key, val in answers.items():
+                if key.startswith("_"):
+                    continue
+                display_key = key.replace("_", " ").title()
+                if isinstance(val, bool):
+                    lines.append(f"  - {display_key}: {'Yes' if val else 'No'}")
+                elif val:
+                    lines.append(f"  - {display_key}: {val}")
+
+        triggered = risk.get("triggered_rules", [])
+        if triggered:
+            lines.append("Clinical Alerts:")
+            for rule in triggered[:3]:
+                lines.append(f"  - [{rule.get('band', '').upper()}] {rule.get('description', '')}")
+
+        return "\n".join(lines)
+
+    def _get_default_questions(self, language: str) -> List[str]:
+        """Get default follow-up questions."""
+        if language == "fr":
+            return [
+                "Depuis combien de temps avez-vous ces symptômes?",
+                "Avez-vous pris des médicaments?",
+                "Y a-t-il d'autres symptômes?"
+            ]
+        return [
+            "How long have you had these symptoms?",
+            "Have you taken any medications?",
+            "Are there any other symptoms?"
+        ]
 
     def _extract_cited_data(self, clinical_state: Dict[str, Any]) -> List[str]:
         """Extract key data points from clinical state for citation."""

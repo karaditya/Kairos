@@ -140,12 +140,13 @@ class DrBERTRAG:
     - Protocol ingestion and management
     """
 
-    def __init__(self, init_vector_store: bool = True):
+    def __init__(self, init_vector_store: bool = True, auto_load_protocols: bool = True):
         """
         Initialize DrBERT RAG.
 
         Args:
             init_vector_store: Initialize ChromaDB immediately (default: True)
+            auto_load_protocols: Auto-load protocols from config files (default: True)
         """
         self.model = None
         self.tokenizer = None
@@ -160,6 +161,10 @@ class DrBERTRAG:
         if init_vector_store:
             self._init_vector_store()
 
+        # Auto-load protocols from config files
+        if auto_load_protocols and self.vector_store_available:
+            self._auto_load_protocols()
+
     @property
     def is_loaded(self) -> bool:
         """Check if DrBERT model is loaded."""
@@ -167,13 +172,23 @@ class DrBERTRAG:
 
     @property
     def rag_available(self) -> bool:
-        """Check if RAG is ready (model + vector store)."""
-        return self.is_loaded and self.vector_store_available
+        """Check if RAG is ready (vector store with protocols, model optional)."""
+        return self.vector_store_available and self.protocol_count > 0
 
     @property
     def vector_store_available(self) -> bool:
         """Check if ChromaDB is available."""
         return CHROMADB_AVAILABLE and self._chroma_client is not None
+
+    @property
+    def protocol_count(self) -> int:
+        """Get total number of indexed protocols."""
+        count = 0
+        if self._english_collection:
+            count += self._english_collection.count()
+        if self._french_collection:
+            count += self._french_collection.count()
+        return count
 
     def load_model(self, model_id: str = DEFAULT_DRBERT_MODEL) -> bool:
         """
@@ -284,6 +299,110 @@ class DrBERTRAG:
 
         except Exception as e:
             logger.error(f"Failed to initialize ChromaDB: {e}")
+
+    def _auto_load_protocols(self):
+        """Auto-load protocols from config files if not already loaded."""
+        import json
+
+        # Check if protocols already loaded
+        en_count = self._english_collection.count() if self._english_collection else 0
+        fr_count = self._french_collection.count() if self._french_collection else 0
+
+        if en_count > 0 and fr_count > 0:
+            logger.info(f"Protocols already loaded: {en_count} EN, {fr_count} FR")
+            return
+
+        # Find config directory
+        backend_config = os.path.join(os.path.dirname(__file__), "config")
+
+        # Load English protocols
+        en_path = os.path.join(backend_config, "english_protocols.json")
+        if os.path.exists(en_path) and en_count == 0:
+            try:
+                with open(en_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                protocols = data.get("protocols", [])
+                if protocols:
+                    result = self.ingest_protocols_simple(protocols, "en")
+                    logger.info(f"Auto-loaded {result.get('added', 0)} English protocols")
+            except Exception as e:
+                logger.error(f"Failed to load English protocols: {e}")
+
+        # Load French protocols
+        fr_path = os.path.join(backend_config, "french_protocols.json")
+        if os.path.exists(fr_path) and fr_count == 0:
+            try:
+                with open(fr_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                protocols = data.get("protocols", [])
+                if protocols:
+                    result = self.ingest_protocols_simple(protocols, "fr")
+                    logger.info(f"Auto-loaded {result.get('added', 0)} French protocols")
+            except Exception as e:
+                logger.error(f"Failed to load French protocols: {e}")
+
+    def ingest_protocols_simple(
+        self,
+        protocols: List[Dict[str, Any]],
+        language: str = "en"
+    ) -> Dict[str, Any]:
+        """
+        Ingest protocols using simple keyword-based approach (no embeddings needed).
+
+        This allows RAG to work without loading the heavy DrBERT model.
+        """
+        if not self.vector_store_available:
+            return {"success": False, "error": "Vector store not available"}
+
+        collection = self._english_collection if language == "en" else self._french_collection
+        added = 0
+        skipped = 0
+
+        try:
+            for protocol in protocols:
+                protocol_id = protocol.get("id", "")
+
+                # Check if already exists
+                existing = collection.get(ids=[protocol_id])
+                if existing and existing.get("ids"):
+                    skipped += 1
+                    continue
+
+                # Create document text combining title, text, and keywords
+                title = protocol.get("title", "")
+                text = protocol.get("text", "")
+                keywords = protocol.get("keywords", [])
+                category = protocol.get("category", "")
+                source = protocol.get("source", "")
+
+                # Combine into searchable document
+                document = f"{title}\n\n{text}\n\nKeywords: {', '.join(keywords)}"
+
+                # Add to collection (ChromaDB will use its default embedding function)
+                collection.add(
+                    ids=[protocol_id],
+                    documents=[document],
+                    metadatas=[{
+                        "title": title,
+                        "category": category,
+                        "source": source,
+                        "language": language,
+                        "keywords": ",".join(keywords),
+                    }]
+                )
+                added += 1
+
+            return {
+                "success": True,
+                "added": added,
+                "skipped": skipped,
+                "total": len(protocols),
+                "language": language,
+            }
+
+        except Exception as e:
+            logger.error(f"Error ingesting protocols: {e}")
+            return {"success": False, "error": str(e), "added": added}
 
     def get_embeddings(self, texts: List[str], pooling: str = "mean") -> List[List[float]]:
         """
@@ -402,6 +521,10 @@ class DrBERTRAG:
         """
         Search protocols using semantic similarity.
 
+        Works with or without DrBERT model:
+        - With DrBERT: Uses medical-specific French/English embeddings
+        - Without DrBERT: Uses ChromaDB's default embeddings (all-MiniLM-L6-v2)
+
         Args:
             query: Search query
             language: 'en', 'fr', or None for auto-detect
@@ -426,19 +549,27 @@ class DrBERTRAG:
         collection = self._english_collection if language == "en" else self._french_collection
 
         try:
-            # Generate query embedding
-            query_embedding = self.get_embeddings([query])[0]
-
             # Build where clause if category filter
             where_clause = {"category": category} if category else None
 
-            # Search
-            results = collection.query(
-                query_embeddings=[query_embedding],
-                n_results=n_results,
-                where=where_clause,
-                include=["documents", "metadatas", "distances"]
-            )
+            # Search using DrBERT embeddings if model loaded, otherwise use ChromaDB's default
+            if self.is_loaded:
+                # Use DrBERT embeddings (better for medical French text)
+                query_embedding = self.get_embeddings([query])[0]
+                results = collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=n_results,
+                    where=where_clause,
+                    include=["documents", "metadatas", "distances"]
+                )
+            else:
+                # Use ChromaDB's default embedding function (all-MiniLM-L6-v2)
+                results = collection.query(
+                    query_texts=[query],
+                    n_results=n_results,
+                    where=where_clause,
+                    include=["documents", "metadatas", "distances"]
+                )
 
             protocols = []
             if results and results.get("ids") and results["ids"][0]:

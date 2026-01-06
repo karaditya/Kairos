@@ -252,6 +252,21 @@ app.add_middleware(
 )
 
 # =============================================================================
+# Health Check Endpoint
+# =============================================================================
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for monitoring and scripts."""
+    return {
+        "status": "healthy",
+        "service": "triage-backend",
+        "ollama_available": ollama_manager.is_available if ollama_manager else False,
+        "rag_available": parlant_engine.rag_available if parlant_engine else False,
+        "parlant_initialized": parlant_engine.is_initialized if parlant_engine else False,
+    }
+
+# =============================================================================
 # Patient Endpoints
 # =============================================================================
 
