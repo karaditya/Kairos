@@ -1,0 +1,29 @@
+{
+  "metadata": [
+    {
+      "id": "tyhkVCJbVm",
+      "version": "0.4.0"
+    }
+  ],
+  "agents": [
+    {
+      "id": "ze2Aeg5WF1",
+      "version": "0.4.0",
+      "creation_utc": "2026-01-08T11:14:37.079640+00:00",
+      "name": "Default Agent",
+      "description": null,
+      "max_engine_iterations": 3,
+      "composition_mode": "fluid"
+    },
+    {
+      "id": "plk0BJRFhM",
+      "version": "0.4.0",
+      "creation_utc": "2026-01-08T11:14:37.259509+00:00",
+      "name": "MedicalTriageAgent",
+      "description": "Medical triage assistant for emergency department. Supports EN (Manchester) and FR (SFMU).",
+      "max_engine_iterations": 3,
+      "composition_mode": "fluid"
+    }
+  ],
+  "agent_tags": []
+}

@@ -1,12 +1,11 @@
 """
-Clean Parlant Agent - Minimal, Reliable Parlant Integration
+Clean Parlant Agent - Subprocess-based Parlant Integration
 
-Simplified from the original implementation:
-- Single agent (handles both chat and PDF)
-- Minimal guidelines (5-7 essential rules)
-- No embedding model requirement
-- Proper async timeouts
-- Simple session management
+Uses ParlantSubprocess to start Parlant HTTP server in a separate process,
+then connects via AsyncParlantClient for all operations.
+
+This approach ensures the HTTP server actually runs (unlike the SDK Server class
+which never starts the HTTP server while the context is active).
 """
 
 import os
@@ -16,114 +15,60 @@ from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# =============================================================================
-# ENVIRONMENT SETUP (BEFORE importing Parlant)
-# =============================================================================
-
 from config import (
     OLLAMA_MODEL,
     OLLAMA_BASE_URL,
     PARLANT_PORT,
-    PARLANT_TOOL_PORT,
 )
+
+# Local imports
+from parlant_subprocess import get_parlant_subprocess, ParlantSubprocess
+from parlant_guidelines_minimal import get_all_guidelines
+from patient_data_rag import PatientDataRAG
+
+# Parlant HTTP client
+from parlant.client import AsyncParlantClient
 
 # Get model from environment or config
 _current_model = os.environ.get("OLLAMA_MODEL", OLLAMA_MODEL)
 
-# Set environment BEFORE importing Parlant
-# NOTE: Parlant SDK requires these env vars even though we'd prefer to avoid embedding
-os.environ.setdefault("OLLAMA_BASE_URL", OLLAMA_BASE_URL)
-os.environ.setdefault("OLLAMA_MODEL", _current_model)
-os.environ.setdefault("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")  # Required by Parlant SDK
-os.environ.setdefault("OLLAMA_API_TIMEOUT", "60")  # Shorter timeout for faster fallback
-
-# =============================================================================
-# PARLANT IMPORTS (LAZY - deferred until actually needed)
-# =============================================================================
-
-# Parlant SDK hangs during import, so we defer it
-PARLANT_AVAILABLE = False
-p = None
-AsyncParlantClient = None
-_parlant_import_attempted = False
-
-
-def _try_import_parlant():
-    """Lazy import of Parlant SDK - only called when actually needed."""
-    global PARLANT_AVAILABLE, p, AsyncParlantClient, _parlant_import_attempted
-
-    if _parlant_import_attempted:
-        return PARLANT_AVAILABLE
-
-    _parlant_import_attempted = True
-
-    try:
-        logger.info("Attempting to import Parlant SDK...")
-        from parlant import sdk as _p
-        from parlant.client import AsyncParlantClient as _AsyncParlantClient
-
-        p = _p
-        AsyncParlantClient = _AsyncParlantClient
-        PARLANT_AVAILABLE = True
-        logger.info("Parlant SDK imported successfully")
-    except ImportError as e:
-        logger.warning(f"Parlant SDK not available: {e}")
-    except Exception as e:
-        logger.warning(f"Parlant SDK import failed: {e}")
-
-    return PARLANT_AVAILABLE
-
-# =============================================================================
-# LOCAL IMPORTS
-# =============================================================================
-
-from parlant_guidelines_minimal import get_all_guidelines
-from patient_data_rag import PatientDataRAG
-
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-
-PARLANT_RESPONSE_TIMEOUT = 30.0  # seconds
+# Configuration
+PARLANT_RESPONSE_TIMEOUT = 90.0  # seconds (Ollama via Parlant can be slow)
 
 
 class CleanParlantAgent:
     """
-    Simplified Parlant agent for medical triage.
+    Subprocess-based Parlant agent for medical triage.
+
+    Uses HTTP API exclusively (no SDK context manager issues).
 
     Features:
-    - Single agent handling both chat and PDF
-    - Minimal guidelines (5-7 essential rules)
-    - Patient data context (not protocol RAG)
-    - Proper async timeouts
-    - Simple session management
+    - Subprocess-based Parlant server
+    - HTTP client for all operations
+    - Agent creation with guidelines via HTTP
+    - Session management via HTTP
     """
 
     def __init__(self):
-        self._server = None
-        self._client = None
-        self._agent = None
-        self._agent_id = None
+        self._subprocess: Optional[ParlantSubprocess] = None
+        self._client: Optional[AsyncParlantClient] = None
+        self._agent_id: Optional[str] = None
         self._initialized = False
-        self._sessions: Dict[str, str] = {}  # Simple: session_key -> session_id
+        self._sessions: Dict[str, str] = {}  # session_key -> session_id
+        self._guidelines_created = False
 
     @property
     def is_available(self) -> bool:
-        """Check if Parlant SDK is available (triggers lazy import)."""
-        return _try_import_parlant()
+        """Check if Parlant can be started."""
+        return True  # Will be verified during initialize
 
     @property
     def is_initialized(self) -> bool:
         """Check if agent is initialized."""
         return self._initialized
 
-    async def initialize(self, timeout: float = 30.0) -> bool:
-        """Initialize Parlant server and agent with timeout."""
-        # Trigger lazy import
-        if not _try_import_parlant():
-            logger.warning("Parlant SDK not available")
-            return False
-
+    async def initialize(self, timeout: float = 120.0) -> bool:
+        """Initialize Parlant subprocess and agent."""
         if self._initialized:
             return True
 
@@ -133,53 +78,35 @@ class CleanParlantAgent:
             return False
 
         try:
-            logger.info("Initializing Parlant server (timeout: %.1fs)...", timeout)
+            logger.info("Initializing Parlant subprocess (timeout: %.1fs)...", timeout)
 
-            # Start server with timeout to prevent hanging
-            self._server = p.Server(
-                port=PARLANT_PORT,
-                tool_service_port=PARLANT_TOOL_PORT,
-                nlp_service=p.NLPServices.ollama,
-                log_level=p.LogLevel.WARNING,  # Reduce noise
-            )
-
-            # Apply timeout to server startup
-            try:
-                await asyncio.wait_for(self._server.__aenter__(), timeout=timeout)
-            except asyncio.TimeoutError:
-                logger.error(f"Parlant server startup timed out after {timeout}s")
-                self._server = None
+            # Start subprocess
+            self._subprocess = get_parlant_subprocess()
+            if not await self._subprocess.start(timeout=timeout):
+                logger.error("Failed to start Parlant subprocess")
                 return False
 
-            logger.info(f"Parlant server started on port {PARLANT_PORT}")
-
-            # Create single agent
-            self._agent = await self._server.create_agent(
-                name="MedicalTriageAgent",
-                description=(
-                    "Medical triage assistant for emergency department. "
-                    "Assesses patient symptoms, provides triage guidance, "
-                    "and generates clinical summaries. "
-                    "Supports English (Manchester Triage) and French (SFMU)."
-                ),
-            )
-            self._agent_id = self._agent.id
-            logger.info(f"Created agent: {self._agent_id}")
-
-            # Register minimal guidelines
-            guidelines = get_all_guidelines()
-            for guideline in guidelines:
-                await self._agent.create_guideline(
-                    condition=guideline["condition"],
-                    action=guideline["action"],
-                    metadata={"id": guideline["id"], "priority": guideline["priority"]},
-                )
-            logger.info(f"Registered {len(guidelines)} guidelines")
-
-            # Initialize client
+            # Initialize HTTP client
             self._client = AsyncParlantClient(
-                base_url=f"http://localhost:{PARLANT_PORT}"
+                base_url=self._subprocess.base_url,
+                timeout=PARLANT_RESPONSE_TIMEOUT * 2,
             )
+
+            # Get agent ID from subprocess (it creates the agent)
+            self._agent_id = self._subprocess.agent_id
+            if not self._agent_id:
+                # Try to find via HTTP client
+                self._agent_id = await self._ensure_agent()
+
+            if not self._agent_id:
+                logger.error("Failed to get/create agent")
+                await self.shutdown()
+                return False
+
+            logger.info(f"Parlant agent ready: {self._agent_id}")
+
+            # Create guidelines via HTTP
+            await self._create_guidelines()
 
             self._initialized = True
             logger.info("Parlant agent initialized successfully")
@@ -212,28 +139,83 @@ class CleanParlantAgent:
             logger.warning(f"Ollama check failed: {e}")
             return False
 
+    async def _ensure_agent(self) -> Optional[str]:
+        """Get existing agent or create new one via HTTP."""
+        try:
+            # List existing agents
+            agents = await self._client.agents.list()
+
+            # Look for our agent
+            for agent in agents:
+                if agent.name == "MedicalTriageAgent":
+                    return agent.id
+
+            # Create new agent if not found
+            agent = await self._client.agents.create(
+                name="MedicalTriageAgent",
+                description=(
+                    "Medical triage assistant for emergency department. "
+                    "Assesses patient symptoms, provides triage guidance, "
+                    "and generates clinical summaries. "
+                    "Supports English (Manchester Triage) and French (SFMU)."
+                ),
+            )
+            logger.info(f"Created new agent via HTTP: {agent.id}")
+            return agent.id
+
+        except Exception as e:
+            logger.error(f"Failed to ensure agent: {e}")
+            return None
+
+    async def _create_guidelines(self):
+        """Create guidelines for the agent via HTTP API."""
+        if self._guidelines_created:
+            return
+
+        try:
+            guidelines = get_all_guidelines()
+            created_count = 0
+
+            for guideline in guidelines:
+                try:
+                    await self._client.agents.create_guideline(
+                        agent_id=self._agent_id,
+                        condition=guideline["condition"],
+                        action=guideline["action"],
+                    )
+                    created_count += 1
+                except Exception as e:
+                    # May already exist or other error
+                    logger.debug(f"Guideline creation note: {e}")
+
+            self._guidelines_created = True
+            logger.info(f"Created {created_count}/{len(guidelines)} guidelines")
+
+        except Exception as e:
+            logger.warning(f"Guideline creation error: {e}")
+
     async def shutdown(self):
         """Clean shutdown."""
         self._sessions.clear()
         self._client = None
+        self._agent_id = None
+        self._guidelines_created = False
 
-        if self._server:
-            try:
-                await self._server.__aexit__(None, None, None)
-            except Exception as e:
-                logger.debug(f"Server shutdown error: {e}")
-            self._server = None
+        if self._subprocess:
+            await self._subprocess.stop()
+            self._subprocess = None
 
         self._initialized = False
         logger.info("Parlant agent shutdown")
 
     async def _get_session(self, session_key: str) -> str:
-        """Get or create session."""
+        """Get or create session via HTTP."""
         if session_key in self._sessions:
             return self._sessions[session_key]
 
         session = await self._client.sessions.create(
-            agent_id=self._agent_id, title=f"Triage-{session_key[:8]}"
+            agent_id=self._agent_id,
+            title=f"Triage-{session_key[:8]}"
         )
         self._sessions[session_key] = session.id
         logger.debug(f"Created session: {session.id} for key: {session_key}")
@@ -287,7 +269,8 @@ Provide a clear answer, brief reasoning citing patient data, and 3 follow-up que
 
             # Send message with timeout
             response = await asyncio.wait_for(
-                self._send_and_wait(session_id, full_message), timeout=timeout
+                self._send_and_wait(session_id, full_message),
+                timeout=timeout
             )
 
             # Extract citations
@@ -307,14 +290,17 @@ Provide a clear answer, brief reasoning citing patient data, and 3 follow-up que
             raise
 
     async def _send_and_wait(self, session_id: str, message: str) -> Dict[str, Any]:
-        """Send message and wait for response."""
+        """Send message and wait for response via HTTP."""
         # Send customer message
         await self._client.sessions.create_event(
-            session_id=session_id, kind="message", source="customer", message=message
+            session_id=session_id,
+            kind="message",
+            source="customer",
+            message=message
         )
 
-        # Poll for response (max 60 polls = 30 seconds at 0.5s intervals)
-        max_polls = 60
+        # Poll for response (max 180 polls = 90 seconds at 0.5s intervals)
+        max_polls = 180
         for _ in range(max_polls):
             events = await self._client.sessions.list_events(session_id)
 
@@ -335,7 +321,8 @@ Provide a clear answer, brief reasoning citing patient data, and 3 follow-up que
         # Extract follow-up questions
         follow_ups = []
         fq_match = re.search(
-            r"(?:follow-up|questions?).*?:\s*(.*?)$", content, re.DOTALL | re.IGNORECASE
+            r"(?:follow-up|questions?).*?:\s*(.*?)$",
+            content, re.DOTALL | re.IGNORECASE
         )
         if fq_match:
             questions = re.findall(r"\d+\.\s*(.+?)(?=\d+\.|$)", fq_match.group(1))
@@ -345,8 +332,7 @@ Provide a clear answer, brief reasoning citing patient data, and 3 follow-up que
         reasoning = ""
         reason_match = re.search(
             r"(?:reasoning|because|based on).*?:\s*(.*?)(?=follow-up|questions?:|$)",
-            content,
-            re.DOTALL | re.IGNORECASE,
+            content, re.DOTALL | re.IGNORECASE
         )
         if reason_match:
             reasoning = reason_match.group(1).strip()
@@ -394,6 +380,7 @@ Write a CLINICAL SUMMARY in {lang} as a triage nurse. Document objectively:
 - All symptoms with exact values
 - Time course
 Be factual. Do not interpret or diagnose.""",
+
                 "diagnosis": f"""PATIENT DATA:
 {patient_context}
 
@@ -403,6 +390,7 @@ Write a DIAGNOSTIC ASSESSMENT in {lang} as a senior physician:
 - Risk factors identified
 - Red flags present/ruled out
 Use medical terminology appropriately.""",
+
                 "conclusion": f"""PATIENT DATA:
 {patient_context}
 
@@ -418,11 +406,10 @@ Be decisive and clear.""",
             for section_name, prompt in prompts.items():
                 try:
                     response = await asyncio.wait_for(
-                        self._send_and_wait(session_id, prompt), timeout=section_timeout
+                        self._send_and_wait(session_id, prompt),
+                        timeout=section_timeout
                     )
-                    sections[section_name] = response.get(
-                        "answer", f"Error generating {section_name}"
-                    )
+                    sections[section_name] = response.get("answer", f"Error generating {section_name}")
                 except asyncio.TimeoutError:
                     sections[section_name] = f"{section_name.title()} generation timed out"
                 except Exception as e:
@@ -439,10 +426,7 @@ Be decisive and clear.""",
             }
 
 
-# =============================================================================
-# SINGLETON
-# =============================================================================
-
+# Singleton
 _agent_instance: Optional[CleanParlantAgent] = None
 
 

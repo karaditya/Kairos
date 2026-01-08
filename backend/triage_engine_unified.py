@@ -1,13 +1,23 @@
 """
 Unified Triage Engine - Clean Entry Point with Fallback
 
-Primary: Parlant Agent (Ollama backend)
-Fallback: GGUF via llama-cpp-python
-Last Resort: Rule-based response
+PRIMARY: Parlant Agent (Ollama backend via subprocess) - Explainable, rule-satisfying
+FALLBACK: GGUF via llama-cpp-python
+LAST RESORT: Rule-based response
+
+Architecture:
+- Parlant runs in a subprocess that properly starts the HTTP server
+- CleanParlantAgent connects via AsyncParlantClient HTTP API
+- GGUF available as fast fallback when Parlant unavailable
+
+Priority order:
+1. Parlant (explainable, rule-satisfying, guideline-driven)
+2. GGUF (fast, reliable fallback)
+3. Rule-based (last resort)
 
 Features:
+- Automatic fallback between engines
 - Proper timeout handling
-- Automatic fallback
 - Patient data RAG (not protocol RAG)
 - Bilingual support (EN/FR)
 """
@@ -85,7 +95,11 @@ class UnifiedTriageEngine:
         self._gguf_available = False
 
     async def initialize(self):
-        """Initialize available engines."""
+        """Initialize available engines.
+
+        Parlant is the primary engine (subprocess-based HTTP server).
+        GGUF serves as fallback when Parlant is unavailable.
+        """
         if self._initialized:
             return
 
@@ -99,7 +113,7 @@ class UnifiedTriageEngine:
         except Exception as e:
             logger.warning(f"Risk calculator not available: {e}")
 
-        # Initialize GGUF first (more reliable, faster startup)
+        # Initialize GGUF (fallback engine)
         try:
             from gguf_fallback import get_gguf_fallback
             self._gguf = get_gguf_fallback()
@@ -108,7 +122,7 @@ class UnifiedTriageEngine:
                 if downloaded:
                     self._gguf_available = True
                     model_names = [m.model_id for m in downloaded]
-                    logger.info(f"Primary engine: GGUF ready ({model_names})")
+                    logger.info(f"GGUF fallback ready: {model_names}")
                 else:
                     logger.warning("No GGUF models downloaded")
             else:
@@ -116,24 +130,30 @@ class UnifiedTriageEngine:
         except Exception as e:
             logger.warning(f"GGUF not available: {e}")
 
-        # Try Parlant as secondary (may hang, so we don't depend on it)
+        # Initialize Parlant (PRIMARY engine - subprocess-based HTTP server)
         try:
             from parlant_agent_clean import get_clean_parlant_agent
             self._parlant = await get_clean_parlant_agent()
-            # Use short timeout to avoid hanging
-            if await self._parlant.initialize(timeout=15.0):
+            # Longer timeout for subprocess startup (includes embedding model loading)
+            if await self._parlant.initialize(timeout=120.0):
                 self._parlant_available = True
-                logger.info("Secondary engine: Parlant Agent ready")
+                logger.info("Parlant Agent ready (PRIMARY ENGINE)")
             else:
-                logger.warning("Parlant initialization failed/timed out")
+                logger.warning("Parlant initialization failed, using GGUF fallback")
         except Exception as e:
-            logger.warning(f"Parlant not available: {e}")
+            logger.warning(f"Parlant not available: {e}, using GGUF fallback")
 
         if not self._parlant_available and not self._gguf_available:
             logger.error("NO LLM ENGINES AVAILABLE - only rule-based responses possible")
 
         self._initialized = True
-        logger.info("Unified Triage Engine initialized")
+        if self._parlant_available:
+            status = "Parlant (with GGUF fallback)"
+        elif self._gguf_available:
+            status = "GGUF"
+        else:
+            status = "Rule-based only"
+        logger.info(f"Unified Triage Engine initialized. Engine: {status}")
 
     async def shutdown(self):
         """Cleanup."""
@@ -185,9 +205,9 @@ class UnifiedTriageEngine:
         """
         Answer a staff question with automatic fallback.
 
-        Primary: GGUF (fast, reliable)
-        Secondary: Parlant (if GGUF unavailable)
-        Last resort: Rule-based
+        PRIMARY: Parlant (explainable, rule-satisfying, guideline-driven)
+        FALLBACK: GGUF (fast, reliable)
+        LAST RESORT: Rule-based
         """
         if not self._initialized:
             await self.initialize()
@@ -208,10 +228,27 @@ class UnifiedTriageEngine:
                 language,
             )
 
-        # Try GGUF first (fast, reliable)
+        # PRIMARY: Try Parlant first (explainable, guideline-driven responses)
+        if self._parlant_available:
+            try:
+                logger.debug("Using Parlant Agent (PRIMARY - explainable)")
+                response = await self._parlant.answer_question(
+                    question=question,
+                    clinical_state=clinical_state,
+                    language=language,
+                    session_key=session_key,
+                    timeout=timeout * 0.7,  # Give Parlant most of the timeout
+                )
+                return response
+            except asyncio.TimeoutError:
+                logger.warning("Parlant timed out, falling back to GGUF")
+            except Exception as e:
+                logger.warning(f"Parlant error: {e}, falling back to GGUF")
+
+        # FALLBACK: Use GGUF
         if self._gguf_available:
             try:
-                logger.debug("Using GGUF fallback")
+                logger.debug("Using GGUF")
                 from patient_data_rag import PatientDataRAG
 
                 patient_context = PatientDataRAG.format_citable_context(clinical_state)
@@ -224,9 +261,9 @@ class UnifiedTriageEngine:
                 )
                 return response
             except Exception as e:
-                logger.error(f"GGUF fallback error: {e}")
+                logger.error(f"GGUF error: {e}")
 
-        # Last resort: rule-based response
+        # LAST RESORT: rule-based response
         return self._rule_based_response(clinical_state, language)
 
     async def generate_pdf_sections(
@@ -235,7 +272,12 @@ class UnifiedTriageEngine:
         language: str = None,
         timeout: float = None,
     ) -> Dict[str, str]:
-        """Generate PDF sections with fallback."""
+        """Generate PDF sections with fallback.
+
+        PRIMARY: Parlant (guideline-driven, role-based prompts)
+        FALLBACK: GGUF (reliable)
+        LAST RESORT: Rule-based
+        """
         if not self._initialized:
             await self.initialize()
 
@@ -250,9 +292,24 @@ class UnifiedTriageEngine:
                 language,
             )
 
-        # Try GGUF first (fast, reliable)
+        # PRIMARY: Try Parlant first (guideline-driven)
+        if self._parlant_available:
+            try:
+                logger.debug("Using Parlant for PDF generation (PRIMARY)")
+                return await self._parlant.generate_pdf_sections(
+                    clinical_state=clinical_state,
+                    language=language,
+                    timeout=timeout * 0.7,  # Give Parlant most of the timeout
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Parlant PDF timed out, falling back to GGUF")
+            except Exception as e:
+                logger.warning(f"Parlant PDF failed: {e}, falling back to GGUF")
+
+        # FALLBACK: Use GGUF
         if self._gguf_available:
             try:
+                logger.debug("Using GGUF for PDF generation")
                 from patient_data_rag import PatientDataRAG
 
                 patient_context = PatientDataRAG.format_citable_context(clinical_state)
@@ -267,18 +324,7 @@ class UnifiedTriageEngine:
             except Exception as e:
                 logger.warning(f"GGUF PDF generation failed: {e}")
 
-        # Fallback to Parlant
-        if self._parlant_available:
-            try:
-                return await self._parlant.generate_pdf_sections(
-                    clinical_state=clinical_state,
-                    language=language,
-                    timeout=timeout * 0.5,
-                )
-            except Exception as e:
-                logger.warning(f"Parlant PDF generation failed: {e}")
-
-        # Rule-based fallback
+        # LAST RESORT: Rule-based fallback
         return self._rule_based_pdf(clinical_state, language)
 
     def _rule_based_response(
@@ -421,8 +467,13 @@ class ParlantEngine:
             if status.get("parlant_available"):
                 from config import OLLAMA_MODEL
                 return f"Parlant ({OLLAMA_MODEL})"
-            elif status.get("gguf_model"):
-                return f"GGUF ({status['gguf_model']})"
+            elif status.get("gguf_available"):
+                # GGUF is available (lazy-loaded on first use)
+                gguf_model = status.get("gguf_model")
+                if gguf_model:
+                    return f"GGUF ({gguf_model})"
+                else:
+                    return "GGUF (ready, lazy-load)"
         return "Not initialized"
 
     @property

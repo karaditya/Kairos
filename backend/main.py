@@ -199,14 +199,19 @@ async def lifespan(app: FastAPI):
     else:
         print("  Ollama manager: Ollama not available")
 
-    # Initialize Parlant engine (main LLM engine with guidelines)
+    # Initialize triage engine (main LLM engine)
     parlant_engine = ParlantEngine()
     await parlant_engine.initialize(load_rag=RAG_ENABLED)
-    print(f"  Parlant engine initialized: {parlant_engine.model_name}")
+    print(f"  Triage engine: {parlant_engine.model_name}")
 
     # Report status
-    print(f"  Parlant agent: ENABLED (guideline-based generation)")
-    print(f"  Ollama model: {OLLAMA_MODEL}")
+    engine_status = parlant_engine.get_engine_status()
+    if engine_status.get("parlant_available"):
+        print(f"  LLM backend: Parlant Agent (Ollama {OLLAMA_MODEL})")
+    elif engine_status.get("gguf_available"):
+        print(f"  LLM backend: GGUF (local inference)")
+    else:
+        print(f"  LLM backend: Rule-based only (no LLM)")
     print(f"  RAG available: {parlant_engine.rag_available}")
 
     if CHROMADB_AVAILABLE:

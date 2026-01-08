@@ -1,0 +1,666 @@
+{
+  "metadata": [
+    {
+      "id": "RGLr9VEXcO",
+      "version": "0.6.0"
+    }
+  ],
+  "sessions": [
+    {
+      "id": "H6e44jxdD3",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:18:06.524727+00:00",
+      "customer_id": "guest",
+      "agent_id": "plk0BJRFhM",
+      "mode": "auto",
+      "title": "Triage-test-123",
+      "consumption_offsets": {
+        "client": 0
+      },
+      "agent_states": []
+    },
+    {
+      "id": "JFDjpm94wm",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:30:24.094866+00:00",
+      "customer_id": "guest",
+      "agent_id": "plk0BJRFhM",
+      "mode": "auto",
+      "title": "Triage-default",
+      "consumption_offsets": {
+        "client": 0
+      },
+      "agent_states": []
+    },
+    {
+      "id": "UXkISRiMaw",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T16:39:41.534966+00:00",
+      "customer_id": "guest",
+      "agent_id": "plk0BJRFhM",
+      "mode": "auto",
+      "title": "Triage-default",
+      "consumption_offsets": {
+        "client": 0
+      },
+      "agent_states": []
+    }
+  ],
+  "events": [
+    {
+      "id": "L1FUCK4vJG",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:18:06.529439+00:00",
+      "session_id": "H6e44jxdD3",
+      "source": "customer",
+      "kind": "message",
+      "offset": 0,
+      "correlation_id": "Rw7YQdOCKxz",
+      "data": {
+        "message": "PATIENT DATA:\nDEMOGRAPHICS:\n  - Age: 55 years [CITE:demo_age]\n  - Sex: male [CITE:demo_sex]\n\nCHIEF COMPLAINT: Chest Pain [CITE:chief_complaint]\n\nTRIAGE PRIORITY: ORANGE [CITE:risk_band]\n\nREPORTED SYMPTOMS:\n  - Pain Severity: 8 [CITE:pain_severity]\n  - Pain Location: center of chest [CITE:pain_location]\n  - Shortness Of Breath: Yes [CITE:shortness_of_breath]\n  - Duration: 30 minutes [CITE:duration]\n\nCLINICAL ALERTS:\n  - [ORANGE] Severe chest pain (8-10 on pain scale) [CITE:alert_0]\n  - [GREEN] No high-risk factors identified - standard assessment needed [CITE:alert_1]\n\nQUESTION: What triage level should this patient be assigned?\n\nProvide a clear answer, brief reasoning citing patient data, and 3 follow-up questions.",
+        "participant": {
+          "id": "guest",
+          "display_name": "Guest"
+        },
+        "flagged": false,
+        "tags": []
+      },
+      "deleted": false
+    },
+    {
+      "id": "lWJnkb4JSf",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:18:06.530888+00:00",
+      "session_id": "H6e44jxdD3",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 1,
+      "correlation_id": "Rw7YQdOCKxz::process",
+      "data": {
+        "status": "acknowledged",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "OzrSnmqgE3",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:18:08.423880+00:00",
+      "session_id": "H6e44jxdD3",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 2,
+      "correlation_id": "Rw7YQdOCKxz::process",
+      "data": {
+        "status": "ready",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "va7cSpgThZ",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:18:10.031832+00:00",
+      "session_id": "H6e44jxdD3",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 3,
+      "correlation_id": "Rw7YQdOCKxz::process",
+      "data": {
+        "status": "processing",
+        "data": {
+          "stage": "Interpreting"
+        }
+      },
+      "deleted": false
+    },
+    {
+      "id": "rCwu1pIUwJ",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:18:10.061439+00:00",
+      "session_id": "H6e44jxdD3",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 4,
+      "correlation_id": "Rw7YQdOCKxz::process",
+      "data": {
+        "status": "typing",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "06iuwR6wiZ",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:30:24.098412+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "customer",
+      "kind": "message",
+      "offset": 0,
+      "correlation_id": "RaCKjsRUY82",
+      "data": {
+        "message": "PATIENT DATA:\nDEMOGRAPHICS:\n  - Age: 45 years [CITE:demo_age]\n  - Sex: male [CITE:demo_sex]\n\nCHIEF COMPLAINT: Chest Discomfort [CITE:chief_complaint]\n\nTRIAGE PRIORITY: GREEN [CITE:risk_band]\n\nREPORTED SYMPTOMS:\n  - Chief Complaint: chest_discomfort [CITE:chief_complaint]\n  - Pain Type: pressure [CITE:pain_type]\n  - Pain Location: center [CITE:pain_location]\n  - Radiation: left_arm [CITE:radiation]\n  - Severity: 7 [CITE:severity]\n  - Duration: 30min_2hr [CITE:duration]\n  - Associated Symptoms: ['sweating', 'nausea'] [CITE:associated_symptoms]\n\nCLINICAL ALERTS:\n  - [GREEN] No high-risk factors identified - standard assessment needed [CITE:alert_0]\n\nQUESTION: Provide a brief 2-3 sentence summary of this patient's condition and triage priority.\n\nProvide a clear answer, brief reasoning citing patient data, and 3 follow-up questions.",
+        "participant": {
+          "id": "guest",
+          "display_name": "Guest"
+        },
+        "flagged": false,
+        "tags": []
+      },
+      "deleted": false
+    },
+    {
+      "id": "dID7px2oKU",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:30:24.100767+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 1,
+      "correlation_id": "RaCKjsRUY82::process",
+      "data": {
+        "status": "acknowledged",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "zxucOcKT3l",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:30:26.098369+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 2,
+      "correlation_id": "RaCKjsRUY82::process",
+      "data": {
+        "status": "ready",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "5cSR6MDuSI",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:30:27.851388+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 3,
+      "correlation_id": "RaCKjsRUY82::process",
+      "data": {
+        "status": "processing",
+        "data": {
+          "stage": "Interpreting"
+        }
+      },
+      "deleted": false
+    },
+    {
+      "id": "oBWVFc1beD",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:30:27.927035+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 4,
+      "correlation_id": "RaCKjsRUY82::process",
+      "data": {
+        "status": "typing",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "2lnHFOrlXA",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:33:53.102580+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "customer",
+      "kind": "message",
+      "offset": 5,
+      "correlation_id": "RW276yqO2KC",
+      "data": {
+        "message": "PATIENT DATA:\nDEMOGRAPHICS:\n  - Age: 45 years [CITE:demo_age]\n  - Sex: male [CITE:demo_sex]\n\nCHIEF COMPLAINT: Chest Discomfort [CITE:chief_complaint]\n\nTRIAGE PRIORITY: GREEN [CITE:risk_band]\n\nREPORTED SYMPTOMS:\n  - Chief Complaint: chest_discomfort [CITE:chief_complaint]\n  - Pain Type: pressure [CITE:pain_type]\n  - Pain Location: center [CITE:pain_location]\n  - Radiation: left_arm [CITE:radiation]\n  - Severity: 7 [CITE:severity]\n  - Duration: 30min_2hr [CITE:duration]\n  - Associated Symptoms: ['sweating', 'nausea'] [CITE:associated_symptoms]\n\nCLINICAL ALERTS:\n  - [GREEN] No high-risk factors identified - standard assessment needed [CITE:alert_0]\n\nQUESTION: What is the risk level and why?\n\nProvide a clear answer, brief reasoning citing patient data, and 3 follow-up questions.",
+        "participant": {
+          "id": "guest",
+          "display_name": "Guest"
+        },
+        "flagged": false,
+        "tags": []
+      },
+      "deleted": false
+    },
+    {
+      "id": "HXr8QLVp4N",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:33:53.104456+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 6,
+      "correlation_id": "RaCKjsRUY82::process",
+      "data": {
+        "status": "cancelled",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "IopR4sVQ5G",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:33:53.105530+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 7,
+      "correlation_id": "RaCKjsRUY82::process",
+      "data": {
+        "status": "ready",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "o3hIUxJghB",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:33:53.107985+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 8,
+      "correlation_id": "RW276yqO2KC::process",
+      "data": {
+        "status": "acknowledged",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "S5yMO2Xipx",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:33:54.862754+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 9,
+      "correlation_id": "RW276yqO2KC::process",
+      "data": {
+        "status": "ready",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "zvKwjo2Jff",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:33:56.710688+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 10,
+      "correlation_id": "RW276yqO2KC::process",
+      "data": {
+        "status": "processing",
+        "data": {
+          "stage": "Interpreting"
+        }
+      },
+      "deleted": false
+    },
+    {
+      "id": "mRUqIE7bdO",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:33:56.729546+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 11,
+      "correlation_id": "RW276yqO2KC::process",
+      "data": {
+        "status": "typing",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "PzO6ZG09Qd",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:46:26.573644+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "customer",
+      "kind": "message",
+      "offset": 12,
+      "correlation_id": "RR3nSZYaP9b",
+      "data": {
+        "message": "PATIENT DATA:\nDEMOGRAPHICS:\n  - Age: 45 years [CITE:demo_age]\n  - Sex: male [CITE:demo_sex]\n\nCHIEF COMPLAINT: Chest Discomfort [CITE:chief_complaint]\n\nTRIAGE PRIORITY: GREEN [CITE:risk_band]\n\nREPORTED SYMPTOMS:\n  - Chief Complaint: chest_discomfort [CITE:chief_complaint]\n  - Pain Type: pressure [CITE:pain_type]\n  - Pain Location: center [CITE:pain_location]\n  - Radiation: left_arm [CITE:radiation]\n  - Severity: 7 [CITE:severity]\n  - Duration: 30min_2hr [CITE:duration]\n  - Associated Symptoms: ['sweating', 'nausea'] [CITE:associated_symptoms]\n\nCLINICAL ALERTS:\n  - [GREEN] No high-risk factors identified - standard assessment needed [CITE:alert_0]\n\nQUESTION: What is the risk level and why?\n\nProvide a clear answer, brief reasoning citing patient data, and 3 follow-up questions.",
+        "participant": {
+          "id": "guest",
+          "display_name": "Guest"
+        },
+        "flagged": false,
+        "tags": []
+      },
+      "deleted": false
+    },
+    {
+      "id": "GyEWomypua",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:46:26.577345+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 13,
+      "correlation_id": "RW276yqO2KC::process",
+      "data": {
+        "status": "cancelled",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "eXQ0Otb6Ss",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:46:26.579709+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 14,
+      "correlation_id": "RW276yqO2KC::process",
+      "data": {
+        "status": "ready",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "AoJI5fj09y",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:46:26.584739+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 15,
+      "correlation_id": "RR3nSZYaP9b::process",
+      "data": {
+        "status": "acknowledged",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "mj4uTeXRZv",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:46:28.324547+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 16,
+      "correlation_id": "RR3nSZYaP9b::process",
+      "data": {
+        "status": "ready",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "MVff9Fq5Da",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:46:29.868052+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 17,
+      "correlation_id": "RR3nSZYaP9b::process",
+      "data": {
+        "status": "processing",
+        "data": {
+          "stage": "Interpreting"
+        }
+      },
+      "deleted": false
+    },
+    {
+      "id": "D2riE2U1hU",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T11:46:29.909232+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 18,
+      "correlation_id": "RR3nSZYaP9b::process",
+      "data": {
+        "status": "typing",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "ZdBVhZ92Uk",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T12:09:32.899619+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "customer",
+      "kind": "message",
+      "offset": 19,
+      "correlation_id": "RxTzUNjkIZV",
+      "data": {
+        "message": "PATIENT DATA:\nDEMOGRAPHICS:\n  - Age: 45 years [CITE:demo_age]\n  - Sex: male [CITE:demo_sex]\n\nCHIEF COMPLAINT: Chest Discomfort [CITE:chief_complaint]\n\nTRIAGE PRIORITY: GREEN [CITE:risk_band]\n\nREPORTED SYMPTOMS:\n  - Chief Complaint: chest_discomfort [CITE:chief_complaint]\n  - Pain Type: pressure [CITE:pain_type]\n  - Pain Location: center [CITE:pain_location]\n  - Radiation: left_arm [CITE:radiation]\n  - Severity: 7 [CITE:severity]\n  - Duration: 30min_2hr [CITE:duration]\n  - Associated Symptoms: ['sweating', 'nausea'] [CITE:associated_symptoms]\n\nCLINICAL ALERTS:\n  - [GREEN] No high-risk factors identified - standard assessment needed [CITE:alert_0]\n\nQUESTION: Summarize this patient briefly\n\nProvide a clear answer, brief reasoning citing patient data, and 3 follow-up questions.",
+        "participant": {
+          "id": "guest",
+          "display_name": "Guest"
+        },
+        "flagged": false,
+        "tags": []
+      },
+      "deleted": false
+    },
+    {
+      "id": "QLVB6RK1mI",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T12:09:32.902721+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 20,
+      "correlation_id": "RR3nSZYaP9b::process",
+      "data": {
+        "status": "cancelled",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "uwGigkwGZX",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T12:09:32.904726+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 21,
+      "correlation_id": "RR3nSZYaP9b::process",
+      "data": {
+        "status": "ready",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "wHvCcoYycm",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T12:09:32.910720+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 22,
+      "correlation_id": "RxTzUNjkIZV::process",
+      "data": {
+        "status": "acknowledged",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "ojoOFImDl5",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T12:09:34.920163+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 23,
+      "correlation_id": "RxTzUNjkIZV::process",
+      "data": {
+        "status": "ready",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "NMHPBiQpnY",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T12:09:36.465437+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 24,
+      "correlation_id": "RxTzUNjkIZV::process",
+      "data": {
+        "status": "processing",
+        "data": {
+          "stage": "Interpreting"
+        }
+      },
+      "deleted": false
+    },
+    {
+      "id": "54gp0XBeJW",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T12:09:36.536338+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 25,
+      "correlation_id": "RxTzUNjkIZV::process",
+      "data": {
+        "status": "typing",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "5IslBXBHIT",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T12:54:54.645615+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 26,
+      "correlation_id": "RxTzUNjkIZV::process",
+      "data": {
+        "status": "ready",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "nybBCAEajk",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T12:54:54.664173+00:00",
+      "session_id": "JFDjpm94wm",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 27,
+      "correlation_id": "RxTzUNjkIZV::process",
+      "data": {
+        "status": "error",
+        "data": {
+          "exception": "['Traceback (most recent call last):\\n',\n '  File \"/usr/lib/python3.12/asyncio/tasks.py\", line 520, in wait_for\\n'\n '    return await fut\\n'\n '           ^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/ollama/_client.py\", '\n 'line 879, in generate\\n'\n '    return await self._request(\\n'\n '           ^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/ollama/_client.py\", '\n 'line 767, in _request\\n'\n '    return cls(**(await self._request_raw(*args, **kwargs)).json())\\n'\n '                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/ollama/_client.py\", '\n 'line 707, in _request_raw\\n'\n '    r = await self._client.request(*args, **kwargs)\\n'\n '        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/httpx/_client.py\", '\n 'line 1540, in request\\n'\n '    return await self.send(request, auth=auth, '\n 'follow_redirects=follow_redirects)\\n'\n '           '\n '^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/httpx/_client.py\", '\n 'line 1629, in send\\n'\n '    response = await self._send_handling_auth(\\n'\n '               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/httpx/_client.py\", '\n 'line 1657, in _send_handling_auth\\n'\n '    response = await self._send_handling_redirects(\\n'\n '               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/httpx/_client.py\", '\n 'line 1694, in _send_handling_redirects\\n'\n '    response = await self._send_single_request(request)\\n'\n '               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/httpx/_client.py\", '\n 'line 1730, in _send_single_request\\n'\n '    response = await transport.handle_async_request(request)\\n'\n '               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/httpx/_transports/default.py\", '\n 'line 394, in handle_async_request\\n'\n '    resp = await self._pool.handle_async_request(req)\\n'\n '           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/httpcore/_async/connection_pool.py\", '\n 'line 256, in handle_async_request\\n'\n '    raise exc from None\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/httpcore/_async/connection_pool.py\", '\n 'line 236, in handle_async_request\\n'\n '    response = await connection.handle_async_request(\\n'\n '               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/httpcore/_async/connection.py\", '\n 'line 103, in handle_async_request\\n'\n '    return await self._connection.handle_async_request(request)\\n'\n '           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/httpcore/_async/http11.py\", '\n 'line 136, in handle_async_request\\n'\n '    raise exc\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/httpcore/_async/http11.py\", '\n 'line 106, in handle_async_request\\n'\n '    ) = await self._receive_response_headers(**kwargs)\\n'\n '        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/httpcore/_async/http11.py\", '\n 'line 177, in _receive_response_headers\\n'\n '    event = await self._receive_event(timeout=timeout)\\n'\n '            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/httpcore/_async/http11.py\", '\n 'line 217, in _receive_event\\n'\n '    data = await self._network_stream.read(\\n'\n '           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/httpcore/_backends/anyio.py\", '\n 'line 35, in read\\n'\n '    return await self._stream.receive(max_bytes=max_bytes)\\n'\n '           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/anyio/_backends/_asyncio.py\", '\n 'line 1292, in receive\\n'\n '    await self._protocol.read_event.wait()\\n',\n '  File \"/usr/lib/python3.12/asyncio/locks.py\", line 212, in wait\\n'\n '    await fut\\n',\n 'asyncio.exceptions.CancelledError\\n',\n '\\nThe above exception was the direct cause of the following exception:\\n\\n',\n 'Traceback (most recent call last):\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/parlant/adapters/nlp/ollama_service.py\", '\n 'line 241, in generate\\n'\n '    response = await asyncio.wait_for(\\n'\n '               ^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File \"/usr/lib/python3.12/asyncio/tasks.py\", line 519, in wait_for\\n'\n '    async with timeouts.timeout(timeout):\\n',\n '  File \"/usr/lib/python3.12/asyncio/timeouts.py\", line 115, in __aexit__\\n'\n '    raise TimeoutError from exc_val\\n',\n 'TimeoutError\\n',\n '\\nDuring handling of the above exception, another exception occurred:\\n\\n',\n 'Traceback (most recent call last):\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/parlant/core/engines/alpha/message_generator.py\", '\n 'line 245, in _do_generate_events\\n'\n '    generation_info, response_message = await '\n 'self._generate_response_message(\\n'\n '                                        '\n '^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/parlant/core/engines/alpha/message_generator.py\", '\n 'line 703, in _generate_response_message\\n'\n '    message_event_response = await self._schematic_generator.generate(\\n'\n '                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/parlant/core/nlp/policies.py\", '\n 'line 135, in wrapped_func\\n'\n '    return await func(state, *args, **kwargs)\\n'\n '           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/parlant/core/nlp/policies.py\", '\n 'line 144, in wrapped_func\\n'\n '    return await policy.apply(state, func, *args, **kwargs)\\n'\n '           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/parlant/core/nlp/policies.py\", '\n 'line 65, in apply\\n'\n '    raise e\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/parlant/core/nlp/policies.py\", '\n 'line 60, in apply\\n'\n '    return await func(state, *args, **kwargs)\\n'\n '           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/parlant/core/nlp/policies.py\", '\n 'line 125, in wrapped_func\\n'\n '    return await func(*args, **kwargs)\\n'\n '           ^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/parlant/adapters/nlp/ollama_service.py\", '\n 'line 257, in generate\\n'\n '    raise OllamaTimeoutError(\\n',\n 'parlant.adapters.nlp.ollama_service.OllamaTimeoutError: Request timed out '\n 'after 300.0s. Consider increasing timeout or using a smaller model.\\n',\n '\\nThe above exception was the direct cause of the following exception:\\n\\n',\n 'Traceback (most recent call last):\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/parlant/core/engines/alpha/engine.py\", '\n 'line 173, in process\\n'\n '    await self._do_process(loaded_context)\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/parlant/core/engines/alpha/engine.py\", '\n 'line 305, in _do_process\\n'\n '    message_generation_inspections = await self._generate_messages(context, '\n 'latch)\\n'\n '                                     '\n '^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/parlant/core/engines/alpha/engine.py\", '\n 'line 884, in _generate_messages\\n'\n '    for event_generation_result in await self._get_message_composer(\\n'\n '                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/parlant/core/engines/alpha/message_generator.py\", '\n 'line 156, in generate_response\\n'\n '    return await self._do_generate_events(\\n'\n '           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n',\n '  File '\n '\"/home/aditya/Desktop/Aditya_files/Personal/Entrepreneurship/triage_mvp/venv/lib/python3.12/site-packages/parlant/core/engines/alpha/message_generator.py\", '\n 'line 272, in _do_generate_events\\n'\n '    raise MessageCompositionError() from last_generation_exception\\n',\n 'parlant.core.engines.alpha.message_event_composer.MessageCompositionError: '\n 'Message composition failed\\n']"
+        }
+      },
+      "deleted": false
+    },
+    {
+      "id": "1DsEgIoeJ7",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T16:39:41.540062+00:00",
+      "session_id": "UXkISRiMaw",
+      "source": "customer",
+      "kind": "message",
+      "offset": 0,
+      "correlation_id": "RzWhXyvmeCS",
+      "data": {
+        "message": "PATIENT DATA:\nDEMOGRAPHICS:\n  - Age: 45 years [CITE:demo_age]\n  - Sex: male [CITE:demo_sex]\n\nCHIEF COMPLAINT: Chest Discomfort [CITE:chief_complaint]\n\nTRIAGE PRIORITY: GREEN [CITE:risk_band]\n\nREPORTED SYMPTOMS:\n  - Chief Complaint: chest_discomfort [CITE:chief_complaint]\n  - Pain Type: pressure [CITE:pain_type]\n  - Pain Location: center [CITE:pain_location]\n  - Radiation: left_arm [CITE:radiation]\n  - Severity: 7 [CITE:severity]\n  - Duration: 30min_2hr [CITE:duration]\n  - Associated Symptoms: ['sweating', 'nausea'] [CITE:associated_symptoms]\n\nCLINICAL ALERTS:\n  - [GREEN] No high-risk factors identified - standard assessment needed [CITE:alert_0]\n\nQUESTION: What is the problem with this patient ?\\\n\nProvide a clear answer, brief reasoning citing patient data, and 3 follow-up questions.",
+        "participant": {
+          "id": "guest",
+          "display_name": "Guest"
+        },
+        "flagged": false,
+        "tags": []
+      },
+      "deleted": false
+    },
+    {
+      "id": "Kx7BdoNdVX",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T16:39:41.542497+00:00",
+      "session_id": "UXkISRiMaw",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 1,
+      "correlation_id": "RzWhXyvmeCS::process",
+      "data": {
+        "status": "acknowledged",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "14PTrqcc4E",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T16:39:43.464790+00:00",
+      "session_id": "UXkISRiMaw",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 2,
+      "correlation_id": "RzWhXyvmeCS::process",
+      "data": {
+        "status": "ready",
+        "data": {}
+      },
+      "deleted": false
+    },
+    {
+      "id": "yrr53ELBUV",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T16:39:44.837602+00:00",
+      "session_id": "UXkISRiMaw",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 3,
+      "correlation_id": "RzWhXyvmeCS::process",
+      "data": {
+        "status": "processing",
+        "data": {
+          "stage": "Interpreting"
+        }
+      },
+      "deleted": false
+    },
+    {
+      "id": "13vwjasZCR",
+      "version": "0.6.0",
+      "creation_utc": "2026-01-08T16:39:44.875877+00:00",
+      "session_id": "UXkISRiMaw",
+      "source": "ai_agent",
+      "kind": "status",
+      "offset": 4,
+      "correlation_id": "RzWhXyvmeCS::process",
+      "data": {
+        "status": "typing",
+        "data": {}
+      },
+      "deleted": false
+    }
+  ],
+  "inspections": []
+}
