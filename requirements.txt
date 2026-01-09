@@ -1,55 +1,95 @@
 # =============================================================================
-# Offline Triage Pre-Screen MVP (Parlant-Native)
-# Python 3.10–3.12
+# Clinical Admin Edge (CAE) System - Dependencies
+# 100% Local/Offline Ambient Admin Assistant for Medical Clinics
+# Python 3.10-3.12
 # =============================================================================
 
 # =============================================================================
-# Web Framework
+# Web Framework & API
 # =============================================================================
 fastapi>=0.115.0
-uvicorn[standard]>=0.24.0
-
-# =============================================================================
-# Data Validation
-# =============================================================================
+uvicorn[standard]>=0.30.0
+websockets>=12.0
 pydantic>=2.5.0
-python-multipart>=0.0.6
-
-# =============================================================================
-# Async & File Operations
-# =============================================================================
+httpx>=0.27.0
 aiofiles>=24.1.0
+python-multipart>=0.0.9
 
 # =============================================================================
-# Parlant Agent Framework (Core LLM Engine)
+# Parlant Agent Framework (Agentic LLM Engine)
 # =============================================================================
 parlant>=3.0.3
+ollama>=0.3.0
 
 # =============================================================================
-# Ollama Client (Required by Parlant for LLM)
+# Audio Processing - Faster-Whisper (GPU/CPU)
+# Automatically uses GPU if available, falls back to CPU
 # =============================================================================
-ollama>=0.1.9
+faster-whisper>=1.0.0
+numpy>=1.26.0
+sounddevice>=0.4.6
 
 # =============================================================================
-# Vector DB / RAG
+# Vision - Screen Reading & OCR
+# DeepSeek-VL2 for EMR coordinate mapping
 # =============================================================================
-chromadb>=0.4.24
+transformers>=4.45.0
+torch>=2.1.0
+accelerate>=0.30.0
+Pillow>=10.0.0
+mss>=9.0.0
 
 # =============================================================================
-# DrBERT / French Medical BERT (Optional - for enhanced RAG)
-# Note: transformers <4.50 required for parlant tokenizers compatibility
+# RPA - Robotic Process Automation
+# Cross-platform keyboard/mouse automation for EMR data entry
 # =============================================================================
-transformers>=4.41.0,<4.50.0
-sentence-transformers>=2.2.2
-# torch>=2.0.0  # Uncomment if using GPU acceleration for DrBERT
+pyautogui>=0.9.54
+pygetwindow>=0.0.9
 
 # =============================================================================
-# PDF Generation
+# Vector Database - Protocol RAG
+# Embedded Qdrant for protocol retrieval
 # =============================================================================
-reportlab>=4.4.0
+qdrant-client>=1.9.0
+sentence-transformers>=3.0.0
+
+# =============================================================================
+# Database - Session & Sync State
+# =============================================================================
+aiosqlite>=0.20.0
 
 # =============================================================================
 # Utilities
 # =============================================================================
-requests>=2.32.0
+python-dotenv>=1.0.0
+structlog>=24.1.0
 tqdm>=4.66.0
+
+# =============================================================================
+# GPU Acceleration Notes
+# =============================================================================
+# The system automatically detects GPU availability and allocates services:
+#
+# HIGH VRAM (8GB+):
+#   - Faster-Whisper: GPU (large-v3 model, float16)
+#   - Ollama LLM: Full GPU offload
+#   - Sentence Transformers: GPU
+#
+# MEDIUM VRAM (4-8GB):
+#   - Faster-Whisper: GPU (medium model, int8)
+#   - Ollama LLM: Partial GPU offload (20 layers)
+#   - Sentence Transformers: CPU
+#
+# LOW VRAM (<4GB):
+#   - Faster-Whisper: GPU (small model, int8)
+#   - Ollama LLM: CPU only
+#   - Sentence Transformers: CPU
+#
+# CPU ONLY:
+#   - All services run on CPU
+#   - Faster-Whisper: base model, int8
+#
+# To install with CUDA support for PyTorch:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+#
+# =============================================================================

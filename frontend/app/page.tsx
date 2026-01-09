@@ -209,23 +209,32 @@ function HeroSection({ language, onLanguageChange }: { language: LanguageCode; o
           }`}
           style={{ transitionDelay: "1800ms" }}
         >
-          <Link href={`/triage?lang=${language}`}>
+          <Link href={`/receptionist?lang=${language}`}>
             <Button
               size="lg"
               className="bg-indigo-600 hover:bg-indigo-700 dark:bg-blue-600 dark:hover:bg-blue-700 text-white px-8 py-6 text-lg rounded-full shadow-lg shadow-indigo-500/25 dark:shadow-blue-500/25 transition-all duration-300 hover:scale-105"
             >
-              {language === "fr" ? "Commencer le Triage" : "Start Triage"}
+              {language === "fr" ? "Portail Réception" : "Receptionist Portal"}
               <ArrowRight className="ml-2 h-5 w-5" />
             </Button>
           </Link>
-          <Link href={`/staff?lang=${language}`}>
+          <Link href={`/clinician?lang=${language}`}>
             <Button
               size="lg"
               variant="outline"
               className="border-indigo-300 dark:border-white/30 text-indigo-700 dark:text-white/80 hover:bg-indigo-50 dark:hover:bg-white/10 px-8 py-6 text-lg rounded-full transition-all duration-300 hover:scale-105"
             >
               <Users className="mr-2 h-5 w-5" />
-              {language === "fr" ? "Portail Personnel" : "Staff Portal"}
+              {language === "fr" ? "Portail Clinicien" : "Clinician Portal"}
+            </Button>
+          </Link>
+          <Link href={`/admin?lang=${language}`}>
+            <Button
+              size="lg"
+              variant="ghost"
+              className="text-indigo-600 dark:text-white/60 hover:bg-indigo-50 dark:hover:bg-white/10 px-8 py-6 text-lg rounded-full transition-all duration-300 hover:scale-105"
+            >
+              {language === "fr" ? "Portail Admin" : "Admin Portal"}
             </Button>
           </Link>
         </div>
@@ -532,15 +541,17 @@ function HorizonGlowFooter({ language }: { language: LanguageCode }) {
     const translations: Record<string, Record<string, string>> = {
       en: {
         tagline: "THE FUTURE OF ADMIN IS NOW HERE",
-        triage: "Triage",
-        staffPortal: "Staff Portal",
+        receptionist: "Receptionist",
+        clinician: "Clinician",
+        admin: "Admin",
         documentation: "Documentation",
         copyright: "© 2024 Kairos. All rights reserved.",
       },
       fr: {
         tagline: "L'AVENIR DE L'ADMINISTRATION EST ARRIVÉ",
-        triage: "Triage",
-        staffPortal: "Portail Personnel",
+        receptionist: "Réception",
+        clinician: "Clinicien",
+        admin: "Admin",
         documentation: "Documentation",
         copyright: "© 2024 Kairos. Tous droits réservés.",
       }
@@ -596,11 +607,14 @@ function HorizonGlowFooter({ language }: { language: LanguageCode }) {
           {getText("tagline")}
         </p>
         <div className="flex gap-6 text-sm text-gray-600 dark:text-gray-400">
-          <Link href={`/triage?lang=${language}`} className="hover:text-indigo-600 dark:hover:text-blue-400 transition-colors">
-            {getText("triage")}
+          <Link href={`/receptionist?lang=${language}`} className="hover:text-indigo-600 dark:hover:text-blue-400 transition-colors">
+            {getText("receptionist")}
           </Link>
-          <Link href={`/staff?lang=${language}`} className="hover:text-indigo-600 dark:hover:text-blue-400 transition-colors">
-            {getText("staffPortal")}
+          <Link href={`/clinician?lang=${language}`} className="hover:text-indigo-600 dark:hover:text-blue-400 transition-colors">
+            {getText("clinician")}
+          </Link>
+          <Link href={`/admin?lang=${language}`} className="hover:text-indigo-600 dark:hover:text-blue-400 transition-colors">
+            {getText("admin")}
           </Link>
           <a href="#" className="hover:text-indigo-600 dark:hover:text-blue-400 transition-colors">
             {getText("documentation")}
