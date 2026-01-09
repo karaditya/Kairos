@@ -355,10 +355,10 @@ export default function AdminDashboard() {
                       <span>{t("totalProtocols", lang)}:</span>
                       <span className="font-medium">{protocolStats.total}</span>
                     </div>
-                    {Object.entries(protocolStats.by_language).map(([lang, count]) => (
-                      <div key={lang} className="flex justify-between text-sm text-gray-500">
-                        <span>{lang.toUpperCase()}:</span>
-                        <span>{count}</span>
+                    {protocolStats.by_language && Object.entries(protocolStats.by_language).map(([langCode, count]) => (
+                      <div key={langCode} className="flex justify-between text-sm text-gray-500">
+                        <span>{langCode.toUpperCase()}:</span>
+                        <span>{count as number}</span>
                       </div>
                     ))}
                   </div>
