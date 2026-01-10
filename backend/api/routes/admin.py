@@ -208,6 +208,7 @@ async def system_status():
     from services.parlant.agent_factory import get_parlant_status
     from services.audio.whisper_engine import get_whisper_status
     from services.vision.deepseek_vl2 import get_vision_status
+    from services.vision.ocr_fallback import get_ocr_status
     from services.rag.qdrant_client import get_qdrant_status
 
     return {
@@ -216,6 +217,7 @@ async def system_status():
         "parlant": await get_parlant_status(),
         "whisper": await get_whisper_status(),
         "vision": await get_vision_status(),
+        "ocr_fallback": await get_ocr_status(),
         "qdrant": await get_qdrant_status(),
     }
 

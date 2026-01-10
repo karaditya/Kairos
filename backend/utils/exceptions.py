@@ -93,6 +93,26 @@ class VisionModelError(VisionError):
         )
 
 
+class OCRError(VisionError):
+    """OCR extraction error (EasyOCR/Tesseract fallback)."""
+
+    def __init__(self, reason: str, method: str = "unknown"):
+        super().__init__(
+            message=f"OCR error ({method}): {reason}",
+            details={"reason": reason, "method": method},
+        )
+
+
+class OCRNotAvailableError(VisionError):
+    """No OCR engine available."""
+
+    def __init__(self):
+        super().__init__(
+            message="No OCR engine available. Install easyocr or pytesseract.",
+            details={"hint": "pip install easyocr or pip install pytesseract"},
+        )
+
+
 # =============================================================================
 # AUDIO ERRORS
 # =============================================================================
@@ -172,6 +192,35 @@ class CoordinateMapError(RPAError):
         super().__init__(
             message=f"Coordinate map error for field '{field}': {reason}",
             details={"field": field, "reason": reason},
+        )
+
+
+class RPAVerificationError(RPAError):
+    """RPA action verification failed."""
+
+    def __init__(self, target_field: str, expected: str, found: bool, confidence: float):
+        super().__init__(
+            message=f"Verification failed for '{target_field}': expected text not found",
+            details={
+                "target_field": target_field,
+                "expected": expected,
+                "found": found,
+                "confidence": confidence,
+            },
+        )
+
+
+class RPARetryExhaustedError(RPAError):
+    """RPA action failed after all retry attempts."""
+
+    def __init__(self, action: str, attempts: int, last_error: str):
+        super().__init__(
+            message=f"RPA action '{action}' failed after {attempts} attempts: {last_error}",
+            details={
+                "action": action,
+                "attempts": attempts,
+                "last_error": last_error,
+            },
         )
 
 
